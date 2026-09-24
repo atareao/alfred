@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 import { useMainChat } from '../hooks/useMainChat';
+import { api } from '../api/client';
 
 // ---------------------------------------------------------------------------
 // Hoisted shared storage — allows mock modules to capture SSE callbacks that
@@ -12,7 +13,8 @@ const { capturedBrowserContext } = vi.hoisted(() => ({ capturedBrowserContext: {
 vi.mock('../api/client', () => ({
   api: {
     getMainConversation: vi.fn().mockResolvedValue({ id: 'conv-1' }),
-    listMessages: vi.fn().mockResolvedValue({ data: [], next_cursor: null }),
+    listMessages: vi.fn().mockResolvedValue({ data: [], next_cursor: undefined }),
+    getSettings: vi.fn().mockResolvedValue({}),
   },
   BASE_URL: 'http://localhost:3000',
 }));
@@ -187,5 +189,80 @@ describe('useMainChat', () => {
     expect(capturedBrowserContext.current).toHaveProperty('latitude');
     expect(capturedBrowserContext.current).toHaveProperty('longitude');
     expect(capturedBrowserContext.current).toHaveProperty('location_name');
+  });
+
+  // -----------------------------------------------------------------------
+  // message_page_size — Configurable page size from settings
+  //
+  // Current code hardcodes 50 in both initial load and loadMore.
+  // After the change, useMainChat SHALL read message_page_size from
+  // api.getSettings() and use that value instead.
+  // -----------------------------------------------------------------------
+  it('uses message_page_size from settings for initial load', async () => {
+    // Mock getSettings to return message_page_size = 25
+    vi.mocked(api.getSettings).mockResolvedValue({ message_page_size: '25' });
+
+    const { result } = renderHook(() => useMainChat());
+
+    // Wait for the initial conversation load to finish
+    await vi.waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    }, { timeout: 3000 });
+
+    // ------------------------------------------------------------------
+    // RED phase assertion — this SHOULD FAIL because useMainChat
+    // currently hardcodes 50 instead of reading from settings.
+    //
+    // After the GREEN phase, useMainChat will:
+    //   1. Call api.getSettings() on mount
+    //   2. Use the returned message_page_size value
+    //   3. Call api.listMessages(conv.id, 25) instead of (conv.id, 50)
+    // ------------------------------------------------------------------
+    expect(api.listMessages).toHaveBeenCalledWith('conv-1', 25);
+  });
+
+  // -----------------------------------------------------------------------
+  // message_page_size — loadMore uses the same configurable value
+  //
+  // Current code hardcodes 50 in loadMore as well.
+  // After the change, loadMore SHALL use the same message_page_size value.
+  // -----------------------------------------------------------------------
+  it('uses message_page_size from settings for loadMore', async () => {
+    // Mock getSettings to return message_page_size = 25
+    vi.mocked(api.getSettings).mockResolvedValue({ message_page_size: '25' });
+
+    // Mock listMessages to return a cursor so loadMore can proceed
+    vi.mocked(api.listMessages).mockResolvedValue({
+      data: [{ id: 'old-1', conversation_id: 'conv-1', role: 'user', content: 'old', created_at: '2026-01-01T00:00:00Z' }],
+      next_cursor: 'cursor-abc',
+    });
+
+    const { result } = renderHook(() => useMainChat());
+
+    // Wait for initial load
+    await vi.waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    }, { timeout: 3000 });
+
+    // Reset the mock to track new calls
+    vi.mocked(api.listMessages).mockClear();
+    vi.mocked(api.listMessages).mockResolvedValue({
+      data: [],
+      next_cursor: undefined,
+    });
+
+    // Call loadMore — it should use the same page size as initial load
+    await act(async () => {
+      await result.current.loadMore();
+    });
+
+    // ------------------------------------------------------------------
+    // RED phase assertion — this SHOULD FAIL because loadMore currently
+    // hardcodes 50 instead of reading from settings.
+    //
+    // After the GREEN phase, loadMore will use the same message_page_size
+    // value that was read during initial load.
+    // ------------------------------------------------------------------
+    expect(api.listMessages).toHaveBeenCalledWith('conv-1', 25, expect.any(String));
   });
 });

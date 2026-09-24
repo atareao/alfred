@@ -68,6 +68,23 @@ TBD - created by archiving change message-schema-enrichment. Update Purpose afte
 **Then** `PRAGMA table_info(messages)` SHALL include `tokens_count`, `collapsed_content`, `collapsed_tokens_count`, `is_indexed`, `summary_ref`
 
 #### Scenario: Migration is idempotent
-**Given** a database where `run_migrations()` has already been executed  
-**When** `run_migrations()` is executed again  
+**Given** a database where `run_migrations()` has already been executed
+**When** `run_migrations()` is executed again
 **Then** it SHALL succeed without error
+
+### Requirement: Message list endpoint SHALL use configurable page size
+
+**Given** una petición GET `/api/conversations/{id}/messages`
+**When** no se especifica `limit` en query params
+**Then** el handler SHALL leer `message_page_size` de settings y usarlo como límite por defecto
+**And** si el setting no existe, SHALL usar 50 como fallback
+
+#### Scenario: GET sin limit usa el setting
+**Given** `message_page_size` = 25 en settings
+**When** GET `/api/conversations/conv-id/messages`
+**Then** devuelve 25 mensajes
+
+#### Scenario: GET con limit explícito sobreescribe el setting
+**Given** `message_page_size` = 25 en settings
+**When** GET `/api/conversations/conv-id/messages?limit=10`
+**Then** devuelve 10 mensajes

@@ -175,44 +175,6 @@ impl MessagesRepo {
         Ok((data, next_cursor))
     }
 
-    /// Return the last N messages in chronological order (not the first N).
-    /// Used for rehydrating the session window at server startup.
-    pub fn list_recent(
-        conn: &Connection,
-        conversation_id: &str,
-        limit: i64,
-    ) -> Result<Vec<Message>, rusqlite::Error> {
-        let actual_limit = limit.clamp(1, 200);
-        let mut stmt = conn.prepare(
-            "SELECT id, conversation_id, role, content, tool_calls, tool_results, \
-             tokens_count, collapsed_content, collapsed_tokens_count, is_indexed, summary_ref, created_at \
-             FROM messages WHERE conversation_id = ?1 \
-             ORDER BY created_at DESC LIMIT ?2",
-        )?;
-        let mut rows = stmt.query(params![conversation_id, actual_limit])?;
-        let mut items = Vec::new();
-        while let Some(row) = rows.next()? {
-            let tc: Option<String> = row.get(4)?;
-            let tr: Option<String> = row.get(5)?;
-            items.push(Message {
-                id: row.get(0)?,
-                conversation_id: row.get(1)?,
-                role: row.get(2)?,
-                content: row.get(3)?,
-                tool_calls: tc.and_then(|s| serde_json::from_str(&s).ok()),
-                tool_results: tr.and_then(|s| serde_json::from_str(&s).ok()),
-                tokens_count: row.get(6)?,
-                collapsed_content: row.get(7)?,
-                collapsed_tokens_count: row.get(8)?,
-                is_indexed: row.get(9)?,
-                summary_ref: row.get(10)?,
-                created_at: row.get(11)?,
-            });
-        }
-        items.reverse(); // back to chronological order
-        Ok(items)
-    }
-
     pub fn list_by_token_budget(
         conn: &Connection,
         conversation_id: &str,
@@ -395,49 +357,6 @@ mod tests {
         MessagesRepo::create(&conn, &conv_id, "user", "Msg", None, None, 2000, None).unwrap();
         let deleted = MessagesRepo::delete_by_conversation(&conn, &conv_id).unwrap();
         assert_eq!(deleted, 1);
-    }
-
-    #[test]
-    fn test_list_recent_returns_chronological_order() {
-        let (conn, conv_id) = setup_with_conversation();
-        MessagesRepo::create(&conn, &conv_id, "user", "First", None, None, 2000, None).unwrap();
-        MessagesRepo::create(
-            &conn,
-            &conv_id,
-            "assistant",
-            "Second",
-            None,
-            None,
-            2000,
-            None,
-        )
-        .unwrap();
-        MessagesRepo::create(&conn, &conv_id, "user", "Third", None, None, 2000, None).unwrap();
-        let recent = MessagesRepo::list_recent(&conn, &conv_id, 10).unwrap();
-        assert_eq!(recent.len(), 3);
-        assert_eq!(recent[0].content, "First");
-        assert_eq!(recent[1].content, "Second");
-        assert_eq!(recent[2].content, "Third");
-    }
-
-    #[test]
-    fn test_list_recent_respects_limit() {
-        let (conn, conv_id) = setup_with_conversation();
-        MessagesRepo::create(&conn, &conv_id, "user", "A", None, None, 2000, None).unwrap();
-        MessagesRepo::create(&conn, &conv_id, "user", "B", None, None, 2000, None).unwrap();
-        MessagesRepo::create(&conn, &conv_id, "user", "C", None, None, 2000, None).unwrap();
-        let recent = MessagesRepo::list_recent(&conn, &conv_id, 2).unwrap();
-        assert_eq!(recent.len(), 2);
-        // The 2 most recent are "B" and "C", reversed to chronological => "B", "C"
-        assert_eq!(recent[0].content, "B");
-        assert_eq!(recent[1].content, "C");
-    }
-
-    #[test]
-    fn test_list_recent_empty_conversation() {
-        let (conn, conv_id) = setup_with_conversation();
-        let recent = MessagesRepo::list_recent(&conn, &conv_id, 10).unwrap();
-        assert!(recent.is_empty());
     }
 
     /// After creating a message, `tokens_count` must be automatically
