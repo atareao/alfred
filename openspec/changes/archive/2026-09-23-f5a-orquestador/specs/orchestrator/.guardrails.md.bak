@@ -1,0 +1,238 @@
+## ADDED Requirements
+
+### Requirement: Guardrails system
+The guardrails system validates every tool execution request against the tool's permission level and manages HITL approval flow.
+
+**Contracts:**
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ApprovalStatus {
+    Pending,
+    Approved,
+    Denied,
+}
+
+#[derive(Debug, Clone)]
+pub struct ApprovalRequest {
+    pub id: String,
+    pub tool_name: String,
+    pub arguments: serde_json::Value,
+    pub reason: String,
+    pub status: ApprovalStatus,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+pub struct Guardrails {
+    registry: Arc<ToolRegistry>,
+    pending_approvals: Arc<Mutex<HashMap<String, ApprovalRequest>>>,
+}
+
+impl Guardrails {
+    pub fn new(registry: Arc<ToolRegistry>) -> Self;
+
+    /// Check if a tool execution is allowed. Returns Ok if NoConfirm or Notify.
+    /// Returns Err with ApprovalRequired if ExplicitApproval.
+    pub async fn check(&self, tool_name: &str, args: &serde_json::Value) -> Result<GuardrailResult, GuardrailError>;
+
+    /// Create an approval request for explicit approval
+    pub fn request_approval(&self, tool_name: &str, args: serde_json::Value, reason: String) -> ApprovalRequest;
+
+    /// Resolve a pending approval
+    pub fn resolve_approval(&self, request_id: &str, approved: bool) -> Result<(), GuardrailError>;
+}
+
+pub enum GuardrailResult {
+    /// Execute immediately
+    Allowed { notify: bool },
+    /// Pending user approval
+    RequiresApproval { request_id: String },
+}
+
+pub enum GuardrailError {
+    ToolNotFound(String),
+    RequestNotFound(String),
+    AlreadyResolved(String),
+}
+```
+
+**Scenarios:**
+#### Scenario: NoConfirm tool passes through
+Given a Guardrails with a NoConfirm tool
+When `check()` is called for that tool
+Then GuardrailResult::Allowed { notify: false } is returned
+
+#### Scenario: Notify tool executes with notification
+Given a Guardrails with a Notify tool
+When `check()` is called for that tool
+Then GuardrailResult::Allowed { notify: true } is returned
+
+#### Scenario: ExplicitApproval tool requires approval
+Given a Guardrails with an ExplicitApproval tool
+When `check()` is called for that tool
+Then GuardrailResult::RequiresApproval is returned with a request_id
+
+#### Scenario: Approve a pending request
+Given a Guardrails with a pending approval request
+When `resolve_approval(request_id, true)` is called
+Then the request is marked as Approved
+And subsequent check confirms it
+
+#### Scenario: Deny a pending request
+Given a Guardrails with a pending approval request
+When `resolve_approval(request_id, false)` is called
+Then the request is marked as Denied
+And subsequent check returns GuardrailError
+
+---
+
+### Requirement: ReAct Agent (Orchestrator)
+The orchestrator runs the ReAct loop: think → act (tool calls) → observe → repeat, with max iterations.
+
+**Contracts:**
+```rust
+pub struct Orchestrator {
+    llm: Arc<dyn LLMProvider>,
+    registry: Arc<ToolRegistry>,
+    guardrails: Arc<Guardrails>,
+    context_builder: Arc<ContextBuilder>,
+    config: OrchestratorConfig,
+}
+
+pub struct OrchestratorConfig {
+    pub max_iterations: usize,          // Default 10
+    pub max_tokens_per_turn: u32,       // Default 4096
+    pub enable_reflection: bool,        // Default true
+    pub system_prompt_template: String, // Template with {profile} placeholder
+}
+
+impl Orchestrator {
+    pub fn new(
+        llm: Arc<dyn LLMProvider>,
+        registry: Arc<ToolRegistry>,
+        guardrails: Arc<Guardrails>,
+        context_builder: Arc<ContextBuilder>,
+        config: OrchestratorConfig,
+    ) -> Self;
+
+    /// Process a user message through the full ReAct loop
+    pub async fn process_message(
+        &self,
+        conversation_id: &str,
+        profile_id: &str,
+        user_message: &str,
+        override_cmd: Option<Override>,
+    ) -> Result<AgentResponse, AgentError>;
+
+    /// Stream the response via SSE
+    pub async fn process_message_stream(
+        &self,
+        conversation_id: &str,
+        profile_id: &str,
+        user_message: &str,
+        override_cmd: Option<Override>,
+        tx: mpsc::Sender<SSEEvent>,
+    ) -> Result<(), AgentError>;
+
+    /// Single ReAct iteration
+    async fn iteration(&self, state: &mut AgentState) -> Result<IterationResult, AgentError>;
+}
+
+pub struct AgentResponse {
+    pub message: Message,
+    pub tool_calls: Vec<ToolCall>,
+    pub reflection: Option<Reflection>,
+    pub iterations: usize,
+}
+
+pub enum IterationResult {
+    Complete(String),          // LLM responded with final answer
+    ToolRequest(ToolCall),     // LLM wants to call a tool
+    MaxIterationsReached,      // Safety limit
+}
+
+pub struct AgentState {
+    pub messages: Vec<Message>,
+    pub iteration_count: usize,
+    pub tool_results: Vec<ToolResult>,
+}
+
+pub enum AgentError {
+    LLMError(LLMError),
+    ToolError(ToolError),
+    GuardrailError(GuardrailError),
+    ContextError(ContextError),
+    MaxIterationsExceeded,
+    Internal(String),
+}
+```
+
+**Scenarios:**
+#### Scenario: Simple chat — no tool calls
+Given an Orchestrator
+When `process_message()` is called with "Hola, ¿cómo estás?"
+Then AgentResponse is returned with a text message
+And tool_calls is empty
+And iterations is 1
+
+#### Scenario: Single tool call flow
+Given an Orchestrator with a "get_events" tool registered
+When `process_message()` is called with "¿Qué tengo mañana?"
+Then the ReAct loop runs:
+  - LLM returns tool_call (get_events)
+  - Tool is executed
+  - Result is fed back to LLM
+  - LLM returns final answer
+And tool_calls contains 1 entry
+
+#### Scenario: Multi-tool flow
+Given an Orchestrator with multiple tools
+When `process_message()` is called with a query requiring 2 tools
+Then the ReAct loop runs 3+ iterations (tool1 → result → tool2 → result → final)
+
+#### Scenario: Max iterations reached
+Given an Orchestrator configured with max_iterations: 3
+When the LLM keeps calling tools for 3+ iterations
+Then AgentError::MaxIterationsExceeded is returned
+
+---
+
+### Requirement: Reflection (Second-order analysis)
+After the ReAct loop, the reflection module evaluates the response quality.
+
+**Contracts:**
+```rust
+pub struct Reflection {
+    pub is_coherent: bool,
+    pub is_complete: bool,
+    pub needs_clarification: Option<String>,
+    pub suggested_followup: Option<String>,
+}
+
+pub struct ReflectionAnalyzer {
+    llm: Arc<dyn LLMProvider>,
+}
+
+impl ReflectionAnalyzer {
+    pub fn new(llm: Arc<dyn LLMProvider>) -> Self;
+
+    /// Analyze the conversation so far and the final response
+    pub async fn analyze(
+        &self,
+        conversation: &[Message],
+        response: &str,
+    ) -> Result<Reflection, AgentError>;
+}
+```
+
+**Scenarios:**
+#### Scenario: Coherent and complete response
+Given a ReflectionAnalyzer
+When `analyze()` is called with a clear question and good answer
+Then is_coherent is true
+And is_complete is true
+And needs_clarification is None
+
+#### Scenario: Ambiguous response triggers clarification
+Given a ReflectionAnalyzer
+When `analyze()` detects the answer is vague or incomplete
+Then needs_clarification contains a follow-up question string

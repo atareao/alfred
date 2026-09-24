@@ -1,0 +1,19 @@
+services:
+  alfred:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    volumes:
+      - alfred_data:/app/data
+    environment:
+      - DATABASE_URL=/app/data/alfred.db
+      - RUST_LOG=debug
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - OPENROUTER_MODEL=${OPENROUTER_MODEL}
+      - OPENWEATHER_API_KEY=${OPENWEATHER_API_KEY}
+      - AUTH_ENABLED=false
+
+volumes:
+  alfred_data:

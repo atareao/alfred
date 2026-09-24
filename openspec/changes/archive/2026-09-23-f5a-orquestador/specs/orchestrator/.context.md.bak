@@ -1,0 +1,190 @@
+## ADDED Requirements
+
+### Requirement: Context Classifier
+The classifier determines the user's intent and selects the appropriate context strategy (A, B, C, or override).
+
+**Contracts:**
+```rust
+#[derive(Debug, Clone, PartialEq)]
+pub enum ContextStrategy {
+    /// Sliding window + RAG (default, daily use)
+    SlidingWindow,
+    /// Full historical analysis (SQL queries)
+    Historical,
+    /// Vector search + full thread
+    RAG,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Override {
+    None,
+    Historical(String),   // !historico <query>
+    Doc(String),          // !doc <query>
+    Reset,                // !reset
+}
+
+pub struct Classification {
+    pub strategy: ContextStrategy,
+    pub override_cmd: Override,
+    pub confidence: f32,
+}
+
+pub struct ContextClassifier;
+
+impl ContextClassifier {
+    pub fn new() -> Self;
+
+    /// Classify a user message to determine context strategy
+    pub fn classify(&self, message: &str) -> Classification;
+
+    /// Check for manual override commands
+    pub fn check_override(&self, message: &str) -> Override;
+}
+```
+
+**Scenarios:**
+#### Scenario: Default message uses SlidingWindow
+Given a ContextClassifier
+When `classify()` is called with "Añade leche a la compra"
+Then a Classification with strategy SlidingWindow is returned
+
+#### Scenario: !historico override forces Historical
+Given a ContextClassifier
+When `check_override()` receives "!historico ¿qué planes hicimos para el puente?"
+Then Override::Historical("¿qué planes hicimos para el puente?") is returned
+
+#### Scenario: !doc override forces RAG
+Given a ContextClassifier
+When `check_override()` receives "!doc ¿qué recomendación de hotel me dio Juan?"
+Then Override::Doc("¿qué recomendación de hotel me dio Juan?") is returned
+
+#### Scenario: !reset returns Reset override
+Given a ContextClassifier
+When `check_override()` receives "!reset"
+Then Override::Reset is returned
+
+#### Scenario: No override returns None
+Given a ContextClassifier
+When `check_override()` receives a message without "!" prefix
+Then Override::None is returned
+
+---
+
+### Requirement: Context Builder
+The context builder constructs the final LLM prompt using one of three strategies.
+
+**Contracts:**
+```rust
+pub struct ContextBuilder {
+    session_window: SessionWindow,
+    profile_repo: Arc<ProfileRepo>,
+    search_service: Arc<SearchService>,
+}
+
+impl ContextBuilder {
+    pub fn new(session_window: SessionWindow, profile_repo: Arc<ProfileRepo>, search_service: Arc<SearchService>) -> Self;
+
+    /// Build context for a given strategy
+    pub async fn build(
+        &self,
+        strategy: ContextStrategy,
+        profile_id: &str,
+        user_message: &str,
+    ) -> Result<BuiltContext, ContextError>;
+}
+
+pub struct BuiltContext {
+    pub system_prompt: String,
+    pub messages: Vec<Message>,      // Full message list for the LLM
+    pub token_estimate: usize,
+    pub rag_memories: Vec<Memory>,
+    pub session_summary: Option<String>,
+}
+
+pub enum ContextError {
+    ProfileNotFound,
+    SearchError(String),
+    WindowError(String),
+}
+```
+
+**Scenarios:**
+#### Scenario: Strategy A builds sliding window context
+Given a ContextBuilder with a conversation of 15 messages
+When `build(SlidingWindow, ...)` is called
+Then the result contains system_prompt + profile + session_summary + last 8 messages
+And rag_memories has 2-3 relevant entries
+And token_estimate is under 2000
+
+#### Scenario: Strategy B builds historical context
+Given a ContextBuilder
+When `build(Historical, ...)` is called
+Then the result includes a comprehensive historical analysis prompt
+
+#### Scenario: Strategy C builds RAG context
+Given a ContextBuilder
+When `build(RAG, ...)` is called
+Then the result includes vector search results as context
+
+---
+
+### Requirement: Sliding Window + Session Summary
+Maintains a window of recent messages and summarizes older ones when the window overflows.
+
+**Contracts:**
+```rust
+pub struct SessionWindow {
+    conversation_id: String,
+    recent_messages: VecDeque<Message>,  // Max 12
+    summary: Option<String>,             // Compressed summary of older messages
+    max_window: usize,                   // Default 12
+    compact_threshold: usize,            // When to compact, default 8
+}
+
+impl SessionWindow {
+    pub fn new(conversation_id: &str) -> Self;
+
+    /// Add a message to the window, auto-compacting if needed
+    pub async fn add_message(&mut self, msg: Message) -> Result<(), WindowError>;
+
+    /// Get current window (summary + recent messages)
+    pub fn get_window(&self) -> WindowView;
+
+    /// Manually trigger compaction (summarize oldest messages)
+    pub async fn compact(&mut self) -> Result<(), WindowError>;
+
+    /// Reset the window (clear messages and summary)
+    pub fn reset(&mut self);
+}
+
+pub struct WindowView {
+    pub summary: Option<String>,
+    pub messages: Vec<Message>,
+    pub message_count: usize,
+}
+```
+
+**Scenarios:**
+#### Scenario: New window starts empty
+Given a new SessionWindow for a conversation
+When `get_window()` is called
+Then messages is empty
+And summary is None
+
+#### Scenario: Adding message under threshold
+Given a SessionWindow with 5 messages
+When a 6th message is added
+Then `get_window()` returns 6 messages
+And summary is still None
+
+#### Scenario: Adding message over threshold triggers compact
+Given a SessionWindow with 10 messages
+When an 11th message is added
+Then the 4 oldest messages are summarized
+And `get_window()` returns 8 recent messages + a summary
+
+#### Scenario: Reset clears everything
+Given a SessionWindow with 10 messages and a summary
+When `reset()` is called
+Then messages is empty
+And summary is None

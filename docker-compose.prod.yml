@@ -1,0 +1,44 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    ports:
+      - "3000:3000"
+    environment:
+      - DATABASE_URL=/data/alfred.db
+      - LOG_LEVEL=info
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - OPENWEATHER_API_KEY=${OPENWEATHER_API_KEY}
+      - AUTH_ENABLED=true
+      - AUTH_ISSUER_URL=${AUTH_ISSUER_URL}
+      - AUTH_CLIENT_ID=${AUTH_CLIENT_ID}
+      - AUTH_CLIENT_SECRET=${AUTH_CLIENT_SECRET}
+      - JWT_SECRET=${JWT_SECRET}
+    volumes:
+      - alfred_data:/data
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  pocketid:
+    image: ghcr.io/pocket-id/pocket-id:latest
+    ports:
+      - "8080:80"
+    environment:
+      - PUBLIC_APP_URL=${POCKETID_URL:-http://localhost:8080}
+    volumes:
+      - pocketid_data:/app/data
+    restart: unless-stopped
+
+volumes:
+  alfred_data:
+  pocketid_data:

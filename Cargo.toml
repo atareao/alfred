@@ -1,0 +1,90 @@
+[package]
+name = "alfred"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = "0.7"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.31", features = ["bundled", "load_extension"] }
+tower-http = { version = "0.5", features = ["cors", "fs"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+thiserror = "1"
+dotenvy = "0.15"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+async-trait = "0.1"
+tokio-stream = "0.1"
+base64 = "0.22"
+futures = "0.3"
+async-stream = "0.3"
+
+[features]
+vec0 = []
+
+[dev-dependencies]
+axum-test-helper = "0.4"
+futures = "0.3"
+serial_test = "3"
+tower = { version = "0.4", features = ["util"] }
+
+[[test]]
+name = "health"
+path = "tests/api/health.rs"
+
+[[test]]
+name = "migrations"
+path = "tests/db/migrations.rs"
+
+[[test]]
+name = "conversations"
+path = "tests/api/conversations.rs"
+
+[[test]]
+name = "messages"
+path = "tests/api/messages.rs"
+
+[[test]]
+name = "profile"
+path = "tests/api/profile.rs"
+
+[[test]]
+name = "memories"
+path = "tests/api/memories.rs"
+
+[[test]]
+name = "tools"
+path = "tests/api/tools.rs"
+
+[[test]]
+name = "search"
+path = "tests/api/search.rs"
+
+[[test]]
+name = "chat"
+path = "tests/api/chat.rs"
+
+[[test]]
+name = "cors"
+path = "tests/api/cors.rs"
+
+[[bin]]
+name = "seed"
+path = "src/bin/seed.rs"
+
+[[test]]
+name = "seed"
+path = "tests/db/seed.rs"
+
+[[test]]
+name = "export"
+path = "tests/api/export.rs"
+
+[[test]]
+name = "frontend-serving"
+path = "tests/api/frontend_serving.rs"
