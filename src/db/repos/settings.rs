@@ -63,6 +63,10 @@ impl SettingsRepo {
             "INSERT OR IGNORE INTO settings (key, value) VALUES (?1, ?2)",
             rusqlite::params!["collapse_prompt", "Resume el siguiente texto manteniendo la información clave, los datos importantes y el contexto necesario. Sé conciso."],
         )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO settings (key, value) VALUES (?1, ?2)",
+            rusqlite::params!["message_page_size", "50"],
+        )?;
         Ok(())
     }
 }
@@ -144,5 +148,15 @@ mod tests {
         SettingsRepo::delete(&conn, "foo").unwrap();
         let value = SettingsRepo::get(&conn, "foo").unwrap();
         assert_eq!(value, None);
+    }
+
+    /// After seed_defaults(), the message_page_size setting must exist with value "50".
+    /// RED: seed_defaults() does NOT yet seed message_page_size → this test WILL fail.
+    #[test]
+    fn test_message_page_size_seeded() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::run_migrations(&conn).unwrap();
+        let value = SettingsRepo::get(&conn, "message_page_size").unwrap();
+        assert_eq!(value, Some("50".to_string()));
     }
 }

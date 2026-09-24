@@ -11,6 +11,7 @@ export function useMainChat() {
   const [error, setError] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [cursor, setCursor] = useState<string | undefined>(undefined);
+  const [pageSize, setPageSize] = useState<number>(50);
   const [streamingContent, setStreamingContent] = useState<string>('');
   const [streaming, setStreaming] = useState(false);
   const [activeTools, setActiveTools] = useState<string[]>([]);
@@ -22,12 +23,17 @@ export function useMainChat() {
   useEffect(() => {
     let mounted = true;
     setLoading(true);
-    api.getMainConversation()
-      .then(conv => {
+    Promise.all([
+      api.getMainConversation(),
+      api.getSettings(),
+    ])
+      .then(([conv, settings]) => {
         if (!mounted) return;
         setConversationId(conv.id);
-        console.log('[useMainChat] Conversation loaded:', conv.id);
-        return api.listMessages(conv.id, 50).then(resp => {
+        const ps = parseInt(settings.message_page_size || '50');
+        setPageSize(ps);
+        console.log('[useMainChat] Conversation loaded:', conv.id, 'pageSize:', ps);
+        return api.listMessages(conv.id, ps).then(resp => {
           if (!mounted) return;
           setMessages(resp.data);
           setHasMore(resp.next_cursor != null);
@@ -120,14 +126,14 @@ export function useMainChat() {
   const loadMore = useCallback(async () => {
     if (!conversationId || !cursor) return;
     try {
-      const resp = await api.listMessages(conversationId, 50, cursor);
+      const resp = await api.listMessages(conversationId, pageSize, cursor);
       setMessages(prev => [...resp.data, ...prev]);
       setHasMore(resp.next_cursor != null);
       setCursor(resp.next_cursor);
     } catch (err: any) {
       setError(err.message);
     }
-  }, [conversationId, cursor]);
+  }, [conversationId, cursor, pageSize]);
 
   return {
     conversationId,
