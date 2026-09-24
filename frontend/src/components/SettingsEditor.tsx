@@ -19,15 +19,17 @@ export const SettingsEditor: React.FC<SettingsEditorProps> = ({ visible, onClose
       form.setFieldsValue({
         max_window_tokens: parseInt(settings.max_window_tokens || '10000'),
         system_prompt: settings.system_prompt || '',
+        message_page_size: parseInt(settings.message_page_size || '50'),
       });
     }
   }, [settings, visible, form]);
 
-  const handleSubmit = async (values: { max_window_tokens: number; system_prompt: string }) => {
+  const handleSubmit = async (values: { max_window_tokens: number; system_prompt: string; message_page_size: number }) => {
     try {
       await updateSettings({
         max_window_tokens: values.max_window_tokens.toString(),
         system_prompt: values.system_prompt,
+        message_page_size: values.message_page_size.toString(),
       });
       message.success('Ajustes guardados');
       onClose();
@@ -43,6 +45,7 @@ export const SettingsEditor: React.FC<SettingsEditorProps> = ({ visible, onClose
       form.setFieldsValue({
         max_window_tokens: 10000,
         system_prompt: '',
+        message_page_size: 50,
       });
       message.success('Valores por defecto restaurados');
     } catch {
@@ -84,6 +87,14 @@ export const SettingsEditor: React.FC<SettingsEditorProps> = ({ visible, onClose
           help="Instrucciones personalizadas para Alfred. Vacío = usar prompt por defecto."
         >
           <TextArea rows={10} placeholder={settings?.system_prompt_default || "Dejar vacío para usar el prompt por defecto"} />
+        </Form.Item>
+
+        <Form.Item
+          label="Tamaño de página"
+          name="message_page_size"
+          help="Número de mensajes por página al cargar el historial"
+        >
+          <InputNumber min={10} max={100} step={10} style={{ width: '100%' }} />
         </Form.Item>
 
         <Space>
