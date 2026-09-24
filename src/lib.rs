@@ -18,6 +18,7 @@ use axum::{extract::State, Json, Router};
 use rusqlite::Connection;
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
+use tokio::sync::mpsc;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
@@ -35,6 +36,7 @@ pub struct AppState {
     pub guardrails: Option<Arc<Guardrails>>,
     pub tool_registry: Option<Arc<ToolRegistry>>,
     pub auth_config: Option<crate::auth::AuthConfig>,
+    pub collapse_tx: Option<mpsc::Sender<String>>,
 }
 
 impl AppState {
@@ -55,6 +57,7 @@ impl AppState {
             guardrails: None,
             tool_registry: None,
             auth_config: None,
+            collapse_tx: None,
         }
     }
 
@@ -77,6 +80,7 @@ impl AppState {
             guardrails: None,
             tool_registry: None,
             auth_config: None,
+            collapse_tx: None,
         }
     }
 
@@ -139,6 +143,7 @@ impl AppState {
             context_builder,
             config,
             db.clone(),
+            None,
         ));
 
         // 6. Create auth config from environment
@@ -161,6 +166,7 @@ impl AppState {
             guardrails: Some(guardrails),
             tool_registry: Some(tool_registry),
             auth_config: Some(auth_config),
+            collapse_tx: None,
         })
     }
 
@@ -315,6 +321,7 @@ pub fn app() -> Router {
         guardrails: None,
         tool_registry: None,
         auth_config: None,
+        collapse_tx: None,
     };
     app_with_state(state)
 }
