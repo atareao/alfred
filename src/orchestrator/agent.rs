@@ -174,6 +174,7 @@ pub struct Orchestrator {
     pub classifier: ContextClassifier,
     pub config: OrchestratorConfig,
     pub db: Arc<std::sync::Mutex<rusqlite::Connection>>,
+    pub collapse_tx: Option<mpsc::Sender<String>>,
 }
 
 impl Orchestrator {
@@ -184,6 +185,7 @@ impl Orchestrator {
         context_builder: Arc<ContextBuilder>,
         config: OrchestratorConfig,
         db: Arc<std::sync::Mutex<rusqlite::Connection>>,
+        collapse_tx: Option<mpsc::Sender<String>>,
     ) -> Self {
         Self {
             llm,
@@ -193,6 +195,7 @@ impl Orchestrator {
             classifier: ContextClassifier::new(),
             config,
             db,
+            collapse_tx,
         }
     }
 
@@ -585,6 +588,11 @@ impl Orchestrator {
                 .db
                 .lock()
                 .map_err(|e| AgentError::Internal(e.to_string()))?;
+            let collapse_callback = self.collapse_tx.clone().map(|tx| {
+                Box::new(move |msg_id: String| {
+                    let _ = tx.try_send(msg_id);
+                }) as Box<dyn Fn(String)>
+            });
             let msg = crate::db::repos::messages::MessagesRepo::create(
                 &db_guard,
                 conversation_id,
@@ -593,7 +601,7 @@ impl Orchestrator {
                 None,
                 None,
                 2000,
-                None,
+                collapse_callback,
             )
             .map_err(|e| AgentError::Internal(e.to_string()))?;
             msg.id
@@ -771,6 +779,11 @@ impl Orchestrator {
                     .db
                     .lock()
                     .map_err(|e| AgentError::Internal(e.to_string()))?;
+                let collapse_callback = self.collapse_tx.clone().map(|tx| {
+                    Box::new(move |msg_id: String| {
+                        let _ = tx.try_send(msg_id);
+                    }) as Box<dyn Fn(String)>
+                });
                 let msg = crate::db::repos::messages::MessagesRepo::create(
                     &db_guard,
                     conversation_id,
@@ -779,7 +792,7 @@ impl Orchestrator {
                     None,
                     None,
                     2000,
-                    None,
+                    collapse_callback,
                 )
                 .map_err(|e| AgentError::Internal(e.to_string()))?;
                 msg.id
@@ -1242,6 +1255,7 @@ mod tests {
             context_builder,
             config,
             db.clone(),
+            None,
         );
 
         // 5. Call process_message_stream
@@ -1282,5 +1296,103 @@ mod tests {
             "Assistant message should contain the original content, got: {}",
             last_msg.content
         );
+    }
+
+    /// Given an Orchestrator processing a long user message (8000 chars),
+    /// when the message is persisted via MessagesRepo::create(),
+    /// then the collapse callback SHOULD fire and send the message_id through
+    /// the collapse channel.
+    ///
+    /// RED: This test will fail because the orchestrator currently passes
+    /// `None` as the `on_collapse_needed` callback to MessagesRepo::create(),
+    /// so no message_id arrives on collapse_rx.
+    #[tokio::test]
+    async fn test_collapse_callback_fires_for_long_user_message() {
+        use crate::db::repos::conversations::ConversationsRepo;
+        use crate::db::schema::run_migrations;
+
+        // 1. Create in-memory SQLite connection and run migrations
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        let db = Arc::new(std::sync::Mutex::new(conn));
+
+        // 2. Create a conversation in the DB
+        let conv = ConversationsRepo::create(&db.lock().unwrap(), "Collapse Test").unwrap();
+
+        // 3. Create a simple mock LLM that returns plain text
+        struct SimpleMockLLM;
+
+        #[async_trait::async_trait]
+        impl LLMProvider for SimpleMockLLM {
+            async fn chat(&self, _request: ChatRequest) -> Result<ChatResponse, LLMError> {
+                Ok(ChatResponse {
+                    message: ChatMessage {
+                        role: "assistant".into(),
+                        content: "This is a simple response to a very long message.".into(),
+                        tool_calls: None,
+                        tool_result: None,
+                        tool_call_id: None,
+                    },
+                    usage: None,
+                })
+            }
+
+            async fn chat_stream(
+                &self,
+                _request: ChatRequest,
+            ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, LLMError>> + Send>>, LLMError>
+            {
+                panic!("chat_stream not used in this test")
+            }
+
+            async fn embed(&self, _input: &str) -> Result<Vec<f32>, LLMError> {
+                Ok(vec![])
+            }
+        }
+
+        // 4. Create collapse channel that should receive the message_id
+        let (collapse_tx, mut collapse_rx) = mpsc::channel::<String>(16);
+
+        // 5. Create orchestrator
+        let llm = Arc::new(SimpleMockLLM);
+        let registry = Arc::new(ToolRegistry::new());
+        let guardrails = Arc::new(Guardrails::new(registry.clone()));
+        let context_builder = Arc::new(ContextBuilder::new());
+        let config = OrchestratorConfig::default();
+
+        let orchestrator = Orchestrator::new(
+            llm,
+            registry,
+            guardrails,
+            context_builder,
+            config,
+            db.clone(),
+            Some(collapse_tx),
+        );
+
+        // 6. Call process_message_stream with a very long message (8000 chars)
+        let long_msg = "x".repeat(8000);
+        let (tx, _rx) = mpsc::channel(100);
+        let result = orchestrator
+            .process_message_stream(&conv.id, "profile-id", &long_msg, None, tx)
+            .await;
+
+        // The stream should succeed (the mock LLM responds)
+        assert!(result.is_ok(), "Stream should succeed");
+
+        // 7. Verify that the collapse channel received the message_id
+        //    This assertion WILL FAIL because the orchestrator passes None
+        //    as the collapse callback.
+        let received =
+            tokio::time::timeout(std::time::Duration::from_millis(500), collapse_rx.recv()).await;
+
+        assert!(
+            received.is_ok(),
+            "Should have received message_id via collapse channel for long message"
+        );
+        let msg_id = received
+            .unwrap()
+            .expect("Should have received Some(msg_id)");
+        assert!(!msg_id.is_empty(), "message_id should not be empty");
     }
 }

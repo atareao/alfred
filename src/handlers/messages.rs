@@ -52,6 +52,12 @@ pub async fn create_message(
         .db
         .lock()
         .map_err(|e| AppError::Internal(e.to_string()))?;
+    let collapse_callback = state.collapse_tx.clone().map(|tx| {
+        Box::new(move |msg_id: String| {
+            let _ = tx.try_send(msg_id);
+        }) as Box<dyn Fn(String)>
+    });
+
     let msg = crate::db::repos::messages::MessagesRepo::create(
         &db,
         &conv_id,
@@ -60,7 +66,7 @@ pub async fn create_message(
         body.tool_calls.as_ref(),
         body.tool_results.as_ref(),
         2000,
-        None,
+        collapse_callback,
     )
     .map_err(|e| match e {
         rusqlite::Error::InvalidParameterName(_) => {
@@ -90,6 +96,7 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::Request;
+    use tokio::sync::mpsc;
     use tower::ServiceExt;
 
     /// Given message_page_size = 25 in settings
@@ -151,5 +158,67 @@ mod tests {
             25,
             "Should return 25 messages (from message_page_size setting), not the hardcoded 50"
         );
+    }
+
+    /// Given an AppState and a collapse channel,
+    /// when a POST /api/conversations/{id}/messages with a long message (8000 chars) is sent,
+    /// then the message_id SHOULD arrive via the collapse channel.
+    ///
+    /// RED: This test will fail because the `create_message` handler currently
+    /// passes `None` as the `on_collapse_needed` callback to MessagesRepo::create(),
+    /// and AppState does not carry a `collapse_tx` field.
+    #[tokio::test]
+    async fn test_create_message_triggers_collapse_channel() {
+        // ── Setup: in-memory DB with migrations ──────────────────────────
+        let mut state = crate::AppState::new_in_memory_empty().await;
+
+        // Create a collapse channel that SHOULD receive the message_id
+        let (collapse_tx, mut collapse_rx) = mpsc::channel::<String>(16);
+        state.collapse_tx = Some(collapse_tx);
+
+        // Create a conversation
+        let conv_id = {
+            let db = state.db.lock().unwrap();
+            let conv =
+                crate::db::repos::conversations::ConversationsRepo::create(&db, "Collapse Test")
+                    .unwrap();
+            conv.id.clone()
+        };
+
+        // ── Action: POST a long message (8000 chars) ──────────────────────
+        let app = crate::app_with_state(state);
+        let long_content = "x".repeat(8000);
+        let body = serde_json::json!({
+            "role": "user",
+            "content": long_content,
+        });
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(&format!("/api/conversations/{}/messages", conv_id))
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        // ── Assert: the collapse channel should receive the message_id ─────
+        // This WILL FAIL because the handler passes None as the collapse callback
+        let received =
+            tokio::time::timeout(std::time::Duration::from_millis(500), collapse_rx.recv()).await;
+
+        assert!(
+            received.is_ok(),
+            "Should have received message_id via collapse channel for a long message (8000 chars)"
+        );
+        let msg_id = received
+            .unwrap()
+            .expect("Should have received Some(msg_id)");
+        assert!(!msg_id.is_empty(), "message_id should not be empty");
     }
 }
