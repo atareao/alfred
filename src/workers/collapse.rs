@@ -35,6 +35,7 @@ impl CollapseWorker {
         llm_provider: Arc<dyn LLMProvider>,
         mut rx: mpsc::Receiver<String>,
         collapse_prompt: String,
+        model: String,
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
             while let Some(message_id) = rx.recv().await {
@@ -49,7 +50,7 @@ impl CollapseWorker {
                 if let Some(msg) = msg {
                     // 2. Build LLM request
                     let request = ChatRequest {
-                        model: "mistralai/mistral-small".to_string(),
+                        model: model.clone(),
                         messages: vec![
                             ChatMessage {
                                 role: "system".to_string(),
@@ -193,7 +194,13 @@ mod tests {
         });
 
         let prompt = "Resume el siguiente mensaje en español.".to_string();
-        let _handle = CollapseWorker::start(pool.clone(), mock, rx, prompt);
+        let _handle = CollapseWorker::start(
+            pool.clone(),
+            mock,
+            rx,
+            prompt,
+            "mistralai/mistral-small".to_string(),
+        );
 
         // Send message ID through channel
         tx.send(msg_id.clone()).await.unwrap();
@@ -229,7 +236,13 @@ mod tests {
         let mock = Arc::new(MockLLMProvider { calls });
 
         let prompt = "Resume el siguiente mensaje.".to_string();
-        let _handle = CollapseWorker::start(pool.clone(), mock, rx, prompt);
+        let _handle = CollapseWorker::start(
+            pool.clone(),
+            mock,
+            rx,
+            prompt,
+            "mistralai/mistral-small".to_string(),
+        );
 
         // Send message ID
         tx.send(msg_id.clone()).await.unwrap();
@@ -273,7 +286,13 @@ mod tests {
         });
 
         let custom_prompt = "CUSTOM: Summarize this in one sentence.".to_string();
-        let _handle = CollapseWorker::start(pool.clone(), mock, rx, custom_prompt.clone());
+        let _handle = CollapseWorker::start(
+            pool.clone(),
+            mock,
+            rx,
+            custom_prompt.clone(),
+            "mistralai/mistral-small".to_string(),
+        );
 
         // Send message ID
         tx.send(msg_id.clone()).await.unwrap();
@@ -292,6 +311,40 @@ mod tests {
         assert_eq!(
             system_msg.content, custom_prompt,
             "System message should contain the custom collapse prompt"
+        );
+    }
+
+    /// Given a CollapseWorker started with a specific model,
+    /// when it processes a message,
+    /// then the ChatRequest.model must match the configured model.
+    ///
+    /// RED: This test will fail to compile because `CollapseWorker::start`
+    /// does not yet accept a `model` parameter.
+    #[tokio::test]
+    async fn test_worker_uses_configured_model() {
+        let (pool, conv_id) = test_db_with_conversation();
+        let msg_id = create_long_message(&pool, &conv_id);
+
+        let (tx, rx) = mpsc::channel::<String>(16);
+        let calls: Arc<Mutex<Vec<ChatRequest>>> = Arc::new(Mutex::new(Vec::new()));
+        let mock = Arc::new(MockLLMProvider {
+            calls: calls.clone(),
+        });
+
+        let prompt = "Resume el siguiente mensaje.".to_string();
+        let model = "google/gemini-2.0-flash-lite".to_string();
+        let _handle = CollapseWorker::start(pool.clone(), mock, rx, prompt, model.clone());
+
+        // Send message ID
+        tx.send(msg_id.clone()).await.unwrap();
+
+        // Give the worker time to process
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        let request = calls.lock().unwrap()[0].clone();
+        assert_eq!(
+            request.model, "google/gemini-2.0-flash-lite",
+            "ChatRequest.model should use the configured model, not the hardcoded default"
         );
     }
 }
