@@ -1,5 +1,5 @@
-use rusqlite::{params, Connection, Result as SqlResult};
 use serde::{Deserialize, Serialize};
+use sqlx::{Row, SqlitePool};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Habit {
@@ -30,31 +30,38 @@ pub struct HabitStreak {
 pub struct HabitsRepo;
 
 impl HabitsRepo {
-    fn row_to_habit(row: &rusqlite::Row) -> SqlResult<Habit> {
-        Ok(Habit {
-            id: row.get(0)?,
-            profile_id: row.get(1)?,
-            name: row.get(2)?,
-            frequency: row.get(3)?,
-            target: row.get(4)?,
-            created_at: row.get(5)?,
-        })
+    fn row_to_habit(row: &sqlx::sqlite::SqliteRow) -> Habit {
+        Habit {
+            id: row.get("id"),
+            profile_id: row.get("profile_id"),
+            name: row.get("name"),
+            frequency: row.get("frequency"),
+            target: row.get("target"),
+            created_at: row.get("created_at"),
+        }
     }
 
-    pub fn create(
-        conn: &Connection,
+    pub async fn create(
+        pool: &SqlitePool,
         profile_id: &str,
         name: &str,
         frequency: &str,
         target: Option<u32>,
-    ) -> SqlResult<Habit> {
+    ) -> Result<Habit, sqlx::Error> {
         let id = uuid::Uuid::new_v4().to_string();
         let now = chrono::Utc::now().to_rfc3339();
-        conn.execute(
+        sqlx::query(
             "INSERT INTO habits (id, profile_id, name, frequency, target, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![id, profile_id, name, frequency, target, now],
-        )?;
+        )
+        .bind(&id)
+        .bind(profile_id)
+        .bind(name)
+        .bind(frequency)
+        .bind(target)
+        .bind(&now)
+        .execute(pool)
+        .await?;
         Ok(Habit {
             id,
             profile_id: profile_id.to_string(),
@@ -65,40 +72,46 @@ impl HabitsRepo {
         })
     }
 
-    pub fn list(conn: &Connection, profile_id: &str) -> SqlResult<Vec<Habit>> {
-        let mut stmt = conn.prepare(
+    pub async fn list(pool: &SqlitePool, profile_id: &str) -> Result<Vec<Habit>, sqlx::Error> {
+        let rows = sqlx::query(
             "SELECT id, profile_id, name, frequency, target, created_at
              FROM habits WHERE profile_id = ?1
              ORDER BY created_at DESC",
-        )?;
-        let rows = stmt.query_map(params![profile_id], Self::row_to_habit)?;
-        let mut habits = Vec::new();
-        for row in rows {
-            habits.push(row?);
-        }
+        )
+        .bind(profile_id)
+        .fetch_all(pool)
+        .await?;
+
+        let habits: Vec<Habit> = rows.iter().map(Self::row_to_habit).collect();
         Ok(habits)
     }
 
-    pub fn find_by_id(conn: &Connection, id: &str) -> SqlResult<Option<Habit>> {
-        let mut stmt = conn.prepare(
+    pub async fn find_by_id(pool: &SqlitePool, id: &str) -> Result<Option<Habit>, sqlx::Error> {
+        let row = sqlx::query(
             "SELECT id, profile_id, name, frequency, target, created_at
              FROM habits WHERE id = ?1",
-        )?;
-        let mut rows = stmt.query_map(params![id], Self::row_to_habit)?;
-        match rows.next() {
-            Some(Ok(habit)) => Ok(Some(habit)),
-            _ => Ok(None),
+        )
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+
+        match row {
+            Some(r) => Ok(Some(Self::row_to_habit(&r))),
+            None => Ok(None),
         }
     }
 
     /// Log a habit completion for a given date.
     /// Uses INSERT OR REPLACE so logging twice on the same day keeps the completed=1 state.
-    pub fn log(conn: &Connection, habit_id: &str, date: &str) -> SqlResult<()> {
-        conn.execute(
+    pub async fn log(pool: &SqlitePool, habit_id: &str, date: &str) -> Result<(), sqlx::Error> {
+        sqlx::query(
             "INSERT OR REPLACE INTO habit_logs (habit_id, date, completed)
              VALUES (?1, ?2, 1)",
-            params![habit_id, date],
-        )?;
+        )
+        .bind(habit_id)
+        .bind(date)
+        .execute(pool)
+        .await?;
         Ok(())
     }
 
@@ -107,29 +120,26 @@ impl HabitsRepo {
     /// Current streak counts consecutive days backwards from today where the habit
     /// has a log entry. Longest streak is the longest historical run of consecutive
     /// logged days.
-    pub fn get_streaks(conn: &Connection, profile_id: &str) -> SqlResult<Vec<HabitStreak>> {
-        let habits = Self::list(conn, profile_id)?;
+    pub async fn get_streaks(
+        pool: &SqlitePool,
+        profile_id: &str,
+    ) -> Result<Vec<HabitStreak>, sqlx::Error> {
+        let habits = Self::list(pool, profile_id).await?;
         let today = chrono::Utc::now().date_naive();
 
         let mut streaks = Vec::new();
         for habit in &habits {
             // Fetch all completed log dates for this habit, ordered DESC
-            let mut stmt = conn.prepare(
+            let raw_dates: Vec<String> = sqlx::query_scalar(
                 "SELECT date FROM habit_logs
                  WHERE habit_id = ?1 AND completed = 1
                  ORDER BY date DESC",
-            )?;
-            let raw_dates: Vec<String> = stmt
-                .query_map(params![habit.id], |row| row.get(0))?
-                .filter_map(|r| r.ok())
-                .collect();
+            )
+            .bind(&habit.id)
+            .fetch_all(pool)
+            .await?;
 
             let total_count = raw_dates.len() as u32;
-
-            eprintln!(
-                "DEBUG get_streaks: habit={}, raw_dates={:?}, today={:?}",
-                habit.id, raw_dates, today
-            );
 
             // Parse dates
             let dates: Vec<chrono::NaiveDate> = raw_dates
@@ -157,7 +167,11 @@ impl HabitsRepo {
     /// Returns `(completed, expected)` where:
     /// - `completed` = number of days the habit was logged in the period
     /// - `expected` = target number of completions (days for daily, weeks for weekly)
-    pub fn get_stats(conn: &Connection, habit_id: &str, period: &str) -> SqlResult<(u32, u32)> {
+    pub async fn get_stats(
+        pool: &SqlitePool,
+        habit_id: &str,
+        period: &str,
+    ) -> Result<(u32, u32), sqlx::Error> {
         let days = match period {
             "week" => 7,
             "month" => 30,
@@ -165,20 +179,21 @@ impl HabitsRepo {
             _ => 7,
         };
 
-        let completed: u32 = conn.query_row(
+        let completed: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM habit_logs
              WHERE habit_id = ?1 AND completed = 1
                AND date >= date('now', '-' || ?2 || ' days')",
-            params![habit_id, days.to_string()],
-            |row| row.get(0),
-        )?;
+        )
+        .bind(habit_id)
+        .bind(days.to_string())
+        .fetch_one(pool)
+        .await?;
 
         // Determine expected count from the habit's frequency
-        let frequency: String = conn.query_row(
-            "SELECT frequency FROM habits WHERE id = ?1",
-            params![habit_id],
-            |row| row.get(0),
-        )?;
+        let frequency: String = sqlx::query_scalar("SELECT frequency FROM habits WHERE id = ?1")
+            .bind(habit_id)
+            .fetch_one(pool)
+            .await?;
 
         let expected = match frequency.as_str() {
             "daily" => days,
@@ -186,7 +201,7 @@ impl HabitsRepo {
             _ => days,
         };
 
-        Ok((completed, expected))
+        Ok((completed as u32, expected))
     }
 }
 
@@ -248,166 +263,198 @@ fn compute_longest_streak(dates: &[chrono::NaiveDate]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::schema::run_migrations;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
-    fn setup() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
-        conn.execute(
+    async fn setup() -> Result<SqlitePool, sqlx::Error> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(":memory:")
+                    .create_if_missing(true),
+            )
+            .await?;
+        sqlx::migrate::Migrator::new(std::path::Path::new("migrations"))
+            .await
+            .unwrap()
+            .run(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
             "INSERT INTO profiles (id, name, preferences) VALUES ('profile-1', 'Test', '{}')",
-            [],
         )
-        .unwrap();
-        conn
+        .execute(&pool)
+        .await?;
+        Ok(pool)
     }
 
-    fn create_daily_habit(conn: &Connection, name: &str) -> Habit {
-        HabitsRepo::create(conn, "profile-1", name, "daily", None).unwrap()
+    async fn create_daily_habit(pool: &SqlitePool, name: &str) -> Result<Habit, sqlx::Error> {
+        let habit = HabitsRepo::create(pool, "profile-1", name, "daily", None).await?;
+        Ok(habit)
     }
 
     // ── Habit CRUD ──────────────────────────────────────────────────────────
 
-    #[test]
-    fn test_create_habit() {
-        let conn = setup();
-        let habit = create_daily_habit(&conn, "Ejercicio");
+    #[tokio::test]
+    async fn test_create_habit() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
+        let habit = create_daily_habit(&pool, "Ejercicio").await?;
         assert_eq!(habit.name, "Ejercicio");
         assert_eq!(habit.frequency, "daily");
 
-        let found = HabitsRepo::find_by_id(&conn, &habit.id).unwrap().unwrap();
+        let found = HabitsRepo::find_by_id(&pool, &habit.id).await?.unwrap();
         assert_eq!(found.name, "Ejercicio");
+
+        Ok(())
     }
 
-    #[test]
-    fn test_list_habits() {
-        let conn = setup();
-        create_daily_habit(&conn, "Leer");
-        create_daily_habit(&conn, "Meditar");
+    #[tokio::test]
+    async fn test_list_habits() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
+        create_daily_habit(&pool, "Leer").await?;
+        create_daily_habit(&pool, "Meditar").await?;
 
-        let habits = HabitsRepo::list(&conn, "profile-1").unwrap();
+        let habits = HabitsRepo::list(&pool, "profile-1").await.unwrap();
         assert_eq!(habits.len(), 2);
+
+        Ok(())
     }
 
-    #[test]
-    fn test_find_by_id_not_found() {
-        let conn = setup();
-        let result = HabitsRepo::find_by_id(&conn, "nonexistent").unwrap();
+    #[tokio::test]
+    async fn test_find_by_id_not_found() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
+        let result = HabitsRepo::find_by_id(&pool, "nonexistent").await.unwrap();
         assert!(result.is_none());
+
+        Ok(())
     }
 
     // ── Habit Logging ───────────────────────────────────────────────────────
 
-    #[test]
-    fn test_log_habit() {
-        let conn = setup();
-        let habit = create_daily_habit(&conn, "Agua");
+    #[tokio::test]
+    async fn test_log_habit() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
+        let habit = create_daily_habit(&pool, "Agua").await?;
 
-        HabitsRepo::log(&conn, &habit.id, "2026-09-21").unwrap();
-        HabitsRepo::log(&conn, &habit.id, "2026-09-22").unwrap();
+        HabitsRepo::log(&pool, &habit.id, "2026-09-21").await?;
+        HabitsRepo::log(&pool, &habit.id, "2026-09-22").await?;
 
         // Repeated log on same day should not fail
-        HabitsRepo::log(&conn, &habit.id, "2026-09-22").unwrap();
+        HabitsRepo::log(&pool, &habit.id, "2026-09-22").await?;
+
+        Ok(())
     }
 
     // ── Streaks ─────────────────────────────────────────────────────────────
 
-    #[test]
-    fn test_streaks_empty() {
-        let conn = setup();
-        let _habit = create_daily_habit(&conn, "Vacío");
-        let streaks = HabitsRepo::get_streaks(&conn, "profile-1").unwrap();
+    #[tokio::test]
+    async fn test_streaks_empty() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
+        let _habit = create_daily_habit(&pool, "Vacío").await?;
+        let streaks = HabitsRepo::get_streaks(&pool, "profile-1").await.unwrap();
         assert_eq!(streaks.len(), 1);
         assert_eq!(streaks[0].current_streak, 0);
         assert_eq!(streaks[0].longest_streak, 0);
         assert_eq!(streaks[0].total_count, 0);
+
+        Ok(())
     }
 
-    #[test]
-    fn test_current_streak_active() {
+    #[tokio::test]
+    async fn test_current_streak_active() -> Result<(), Box<dyn std::error::Error>> {
         let today = chrono::Utc::now().date_naive();
-        let conn = setup();
-        let habit = create_daily_habit(&conn, "Correr");
+        let pool = setup().await?;
+        let habit = create_daily_habit(&pool, "Correr").await?;
 
         // Log today and the two previous days
-        HabitsRepo::log(&conn, &habit.id, &today.to_string()).unwrap();
-        HabitsRepo::log(&conn, &habit.id, &today.pred_opt().unwrap().to_string()).unwrap();
+        HabitsRepo::log(&pool, &habit.id, &today.to_string()).await?;
+        HabitsRepo::log(&pool, &habit.id, &today.pred_opt().unwrap().to_string()).await?;
         HabitsRepo::log(
-            &conn,
+            &pool,
             &habit.id,
             &today.pred_opt().unwrap().pred_opt().unwrap().to_string(),
         )
-        .unwrap();
+        .await?;
 
-        let streaks = HabitsRepo::get_streaks(&conn, "profile-1").unwrap();
+        let streaks = HabitsRepo::get_streaks(&pool, "profile-1").await.unwrap();
         assert_eq!(streaks[0].current_streak, 3);
         assert_eq!(streaks[0].longest_streak, 3);
         assert_eq!(streaks[0].total_count, 3);
+
+        Ok(())
     }
 
-    #[test]
-    fn test_current_streak_no_today() {
+    #[tokio::test]
+    async fn test_current_streak_no_today() -> Result<(), Box<dyn std::error::Error>> {
         let today = chrono::Utc::now().date_naive();
-        let conn = setup();
-        let habit = create_daily_habit(&conn, "Escribir");
+        let pool = setup().await?;
+        let habit = create_daily_habit(&pool, "Escribir").await?;
 
         // Log yesterday but not today
-        HabitsRepo::log(&conn, &habit.id, &today.pred_opt().unwrap().to_string()).unwrap();
+        HabitsRepo::log(&pool, &habit.id, &today.pred_opt().unwrap().to_string()).await?;
 
-        let streaks = HabitsRepo::get_streaks(&conn, "profile-1").unwrap();
+        let streaks = HabitsRepo::get_streaks(&pool, "profile-1").await.unwrap();
         assert_eq!(streaks[0].current_streak, 0);
         assert_eq!(streaks[0].longest_streak, 1);
         assert_eq!(streaks[0].total_count, 1);
+
+        Ok(())
     }
 
-    #[test]
-    fn test_longest_streak_gt_current() {
+    #[tokio::test]
+    async fn test_longest_streak_gt_current() -> Result<(), Box<dyn std::error::Error>> {
         let today = chrono::Utc::now().date_naive();
-        let conn = setup();
-        let habit = create_daily_habit(&conn, "Meditar");
+        let pool = setup().await?;
+        let habit = create_daily_habit(&pool, "Meditar").await?;
 
         // Log: 3-day streak a week ago, then just today
         let week_ago = today - chrono::Duration::days(7);
         for i in 0..3 {
             let d = week_ago + chrono::Duration::days(i);
-            HabitsRepo::log(&conn, &habit.id, &d.to_string()).unwrap();
+            HabitsRepo::log(&pool, &habit.id, &d.to_string()).await?;
         }
-        HabitsRepo::log(&conn, &habit.id, &today.to_string()).unwrap();
+        HabitsRepo::log(&pool, &habit.id, &today.to_string()).await?;
 
-        let streaks = HabitsRepo::get_streaks(&conn, "profile-1").unwrap();
+        let streaks = HabitsRepo::get_streaks(&pool, "profile-1").await.unwrap();
         assert_eq!(streaks[0].current_streak, 1);
         assert_eq!(streaks[0].longest_streak, 3);
         assert_eq!(streaks[0].total_count, 4);
+
+        Ok(())
     }
 
     // ── Stats ───────────────────────────────────────────────────────────────
 
-    #[test]
-    fn test_get_stats_weekly() {
-        let conn = setup();
-        let habit =
-            HabitsRepo::create(&conn, "profile-1", "Jardinería", "weekly", Some(1)).unwrap();
-        HabitsRepo::log(&conn, &habit.id, "2026-09-21").unwrap();
+    #[tokio::test]
+    async fn test_get_stats_weekly() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
+        let habit = HabitsRepo::create(&pool, "profile-1", "Jardinería", "weekly", Some(1)).await?;
+        HabitsRepo::log(&pool, &habit.id, "2026-09-21").await?;
 
-        let (completed, expected) = HabitsRepo::get_stats(&conn, &habit.id, "month").unwrap();
+        let (completed, expected) = HabitsRepo::get_stats(&pool, &habit.id, "month").await?;
         assert_eq!(completed, 1);
         // 30 days ≈ 5 weeks
         assert_eq!(expected, 5);
+
+        Ok(())
     }
 
-    #[test]
-    fn test_get_stats_daily() {
-        let conn = setup();
-        let habit = create_daily_habit(&conn, "Agua");
+    #[tokio::test]
+    async fn test_get_stats_daily() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
+        let habit = create_daily_habit(&pool, "Agua").await?;
 
         let today = chrono::Utc::now().date_naive();
         for i in 0..5 {
             let d = today - chrono::Duration::days(i);
-            HabitsRepo::log(&conn, &habit.id, &d.to_string()).unwrap();
+            HabitsRepo::log(&pool, &habit.id, &d.to_string()).await?;
         }
 
-        let (completed, expected) = HabitsRepo::get_stats(&conn, &habit.id, "week").unwrap();
+        let (completed, expected) = HabitsRepo::get_stats(&pool, &habit.id, "week").await?;
         assert_eq!(completed, 5);
         assert_eq!(expected, 7);
+
+        Ok(())
     }
 
     // ── Helper unit tests ───────────────────────────────────────────────────

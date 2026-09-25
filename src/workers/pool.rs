@@ -121,13 +121,28 @@ impl WorkerPool {
             let llm_provider = llm_provider.clone();
             let collapse_model = _config.collapse_model.clone();
 
-            // Leer collapse_prompt de settings
             let collapse_prompt = {
-                let conn = db.lock().unwrap();
-                crate::db::repos::settings::SettingsRepo::get(&conn, "collapse_prompt")
-                    .ok()
-                    .flatten()
-                    .unwrap_or_else(|| "Resume el siguiente texto manteniendo la información clave, los datos importantes y el contexto necesario. Sé conciso.".to_string())
+                // Read collapse_prompt from settings synchronously for now
+                let mut collapse_prompt = "Resume el siguiente texto manteniendo la información clave, los datos importantes y el contexto necesario. Sé conciso.".to_string();
+
+                // Spawn a separate task to read settings async and store the result
+                let db_for_prompt = db.clone();
+                let prompt_future = async move {
+                    crate::db::repos::settings::SettingsRepo::get(&db_for_prompt, "collapse_prompt")
+                        .await
+                        .ok()
+                        .flatten()
+                        .unwrap_or_else(|| "Resume el siguiente texto manteniendo la información clave, los datos importantes y el contexto necesario. Sé conciso.".to_string())
+                };
+
+                // We need to block on this because `start()` is not async
+                // Use tokio::runtime::Handle to run the future on the current runtime
+                if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                    collapse_prompt =
+                        tokio::task::block_in_place(|| handle.block_on(prompt_future));
+                }
+
+                collapse_prompt
             };
 
             let mut shutdown_rx = shutdown_tx.subscribe();
@@ -190,16 +205,29 @@ impl WorkerPool {
 mod tests {
     use super::*;
     use crate::config::Config;
+    use crate::db::repos::messages::MessagesRepo;
+    use crate::db::schema::run_migrations;
     use crate::llm::provider::{ChatMessage, ChatRequest, ChatResponse, LLMError, TokenUsage};
     use async_trait::async_trait;
-    use rusqlite::Connection;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use sqlx::SqlitePool;
     use std::sync::{Arc, Mutex};
 
     /// Create a minimal [`DbPool`] with an in-memory database for tests.
-    fn test_db() -> DbPool {
-        let conn =
-            Connection::open_in_memory().expect("Failed to create in-memory database for test");
-        Arc::new(Mutex::new(conn))
+    async fn test_db() -> DbPool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(":memory:")
+                    .create_if_missing(true),
+            )
+            .await
+            .expect("Failed to create in-memory database for test");
+        run_migrations(&pool)
+            .await
+            .expect("Failed to run migrations");
+        pool
     }
 
     /// A mock LLM provider that records chat requests and returns canned responses.
@@ -272,6 +300,8 @@ mod tests {
             auth_redirect_url: "http://localhost:3000/auth/callback".into(),
             jwt_secret: String::new(),
             openweather_api_key: None,
+            google_places_api_key: None,
+            brave_search_api_key: None,
             briefing_time: "08:15".into(),
             consolidation_time: "23:00".into(),
             travel_prep_days_before: 3,
@@ -282,9 +312,9 @@ mod tests {
 
     /// WorkerPool::start() must not panic and should return a pool with all
     /// four worker handles set to `Some`.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_worker_pool_start() {
-        let db = test_db();
+        let db = test_db().await;
         let config = test_config();
         let mut pool = WorkerPool::start(db, &config, test_llm_provider());
 
@@ -313,9 +343,9 @@ mod tests {
     }
 
     /// WorkerPool::shutdown() must cleanly abort all workers without panicking.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_worker_pool_shutdown() {
-        let db = test_db();
+        let db = test_db().await;
         let config = test_config();
         let mut pool = WorkerPool::start(db, &config, test_llm_provider());
 
@@ -339,34 +369,18 @@ mod tests {
     /// when a long message's ID is sent through the collapse channel,
     /// then the real CollapseWorker must process it and set collapsed_content in the DB.
     ///
-    /// RED: This test will fail because the WorkerPool currently has a placeholder
-    /// collapse worker that only logs — it does not call the real CollapseWorker.
-    #[tokio::test]
+    /// This test uses real sqllite and sqlx async pool. It requires `SQLX_OFFLINE=true`
+    /// or a running database to build queries; the in-memory pool avoids needing a server.
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_pool_uses_real_collapse_worker() {
-        use crate::db::repos::conversations::ConversationsRepo;
-        use crate::db::repos::messages::MessagesRepo;
-        use crate::db::schema::run_migrations;
-
-        // Create an in-memory DB with migrations, a conversation, and a long message
-        let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
-        let conv = ConversationsRepo::create(&conn, "CollapseWorker Pool Test").unwrap();
+        // Create an in-memory DB with migrations and a long message
+        let pool = test_db().await;
 
         let long_content = "x".repeat(8000);
-        let msg = MessagesRepo::create(
-            &conn,
-            &conv.id,
-            "user",
-            &long_content,
-            None,
-            None,
-            2000,
-            None,
-        )
-        .unwrap();
+        let msg = MessagesRepo::create(&pool, "user", &long_content, None, None, 2000, None)
+            .await
+            .unwrap();
         let msg_id = msg.id.clone();
-
-        let pool: DbPool = Arc::new(Mutex::new(conn));
 
         let config = test_config();
         let mut pool_workers = WorkerPool::start(pool.clone(), &config, test_llm_provider());
@@ -375,15 +389,15 @@ mod tests {
         if let Some(tx) = &pool_workers.collapse_tx {
             tx.send(msg_id.clone()).await.unwrap();
         } else {
-            panic!("collapse_tx should be Some");
+            panic!("collape_tx should be Some");
         }
 
         // Give the worker time to process
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
         // Verify the message was processed: collapsed_content should be set
-        let db = pool.lock().unwrap();
-        let processed = MessagesRepo::find_by_id(&db, &msg_id)
+        let processed = MessagesRepo::find_by_id(&pool, &msg_id)
+            .await
             .unwrap()
             .expect("Message should exist");
 

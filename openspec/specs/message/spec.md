@@ -5,25 +5,41 @@ TBD - created by archiving change message-schema-enrichment. Update Purpose afte
 
 ## Requirements
 
-### Requirement: estimate_tokens function SHALL compute token estimate
+### Requirement: estimate_markdown_tokens_heuristic SHALL compute token estimate via word + markdown heuristic
 **Given** a text string  
-**When** `estimate_tokens(text)` is called  
-**Then** it SHALL return `((text.chars().count() as f64) / 3.5).ceil() as usize + 4`
+**When** `estimate_markdown_tokens_heuristic(text)` is called  
+**Then** it SHALL return `(word_count * 1.33).trunc() + md_symbol_count`  
+**Where** word boundaries are whitespace or punctuation/Markdown symbols, and md_symbols are characters in `# * ` _ [] () > - + ! . , ; : ? " ' / \ = ~ |`
 
-#### Scenario: estimate_tokens with empty text
+#### Scenario: empty text
 **Given** empty text ""  
-**When** `estimate_tokens("")` is called  
-**Then** it SHALL return 4
+**When** `estimate_markdown_tokens_heuristic("")` is called  
+**Then** it SHALL return 0
 
-#### Scenario: estimate_tokens with short text
-**Given** text "Hola"  
-**When** `estimate_tokens("Hola")` is called  
-**Then** it SHALL return 6
+#### Scenario: plain text
+**Given** text "Hola" (1 word)  
+**When** `estimate_markdown_tokens_heuristic("Hola")` is called  
+**Then** it SHALL return 1
 
-#### Scenario: estimate_tokens with long text
-**Given** text of 3500 chars  
-**When** `estimate_tokens(text)` is called  
-**Then** it SHALL return 1004
+#### Scenario: markdown heading
+**Given** text "# Hello World" (2 words, `#` symbol)  
+**When** `estimate_markdown_tokens_heuristic("# Hello World")` is called  
+**Then** it SHALL return 3
+
+#### Scenario: markdown bold
+**Given** text "Some **bold** text" (3 words, 4 `*` symbols)  
+**When** `estimate_markdown_tokens_heuristic("Some **bold** text")` is called  
+**Then** it SHALL return 7
+
+#### Scenario: markdown list
+**Given** text "- Item one\n- Item two" (4 words, 2 `-` symbols)  
+**When** `estimate_markdown_tokens_heuristic(text)` is called  
+**Then** it SHALL return 7
+
+#### Scenario: inline code
+**Given** text "Use `let x = 1;`" (4 words, 4 md symbols)  
+**When** `estimate_markdown_tokens_heuristic(text)` is called  
+**Then** it SHALL return 9
 
 ### Requirement: Message model SHALL include new fields
 **Given** a message stored in the database  
@@ -32,7 +48,7 @@ TBD - created by archiving change message-schema-enrichment. Update Purpose afte
 #### Scenario: Creation computes tokens_count automatically
 **Given** content "Hola, ¿cómo estás?" (20 chars)  
 **When** saved via `MessagesRepo::create`  
-**Then** `msg.tokens_count` SHALL equal `estimate_tokens(content)`  
+**Then** `msg.tokens_count` SHALL equal `estimate_markdown_tokens_heuristic(content)`  
 **And** `msg.collapsed_content` SHALL be `None`  
 **And** `msg.collapsed_tokens_count` SHALL be `0`  
 **And** `msg.is_indexed` SHALL be `false`
@@ -46,12 +62,12 @@ TBD - created by archiving change message-schema-enrichment. Update Purpose afte
 **Given** `collapse_threshold_tokens` = 2000  
 **Given** a message with 100 chars  
 **When** saved  
-**Then** `tokens_count` SHALL be 33  
+**Then** `tokens_count` SHALL be < 2000  
 **And** the collapse callback SHALL NOT be invoked
 
 #### Scenario: Long message SHALL trigger collapse
 **Given** `collapse_threshold_tokens` = 2000  
-**Given** a message with 8000 chars  
+**Given** a message with sufficient content to exceed the threshold  
 **When** saved  
 **Then** `tokens_count` SHALL be >= 2000  
 **And** the collapse callback SHALL be invoked with the message `id`

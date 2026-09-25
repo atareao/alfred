@@ -1,5 +1,5 @@
-use rusqlite::{params, Connection, Result as SqlResult};
 use serde::{Deserialize, Serialize};
+use sqlx::{Row, SqlitePool};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
@@ -18,96 +18,115 @@ pub struct Event {
 pub struct EventsRepo;
 
 impl EventsRepo {
-    pub fn create(conn: &Connection, event: &Event) -> SqlResult<()> {
-        conn.execute(
+    pub async fn create(pool: &SqlitePool, event: &Event) -> Result<(), sqlx::Error> {
+        sqlx::query(
             "INSERT INTO events (id, profile_id, title, description, start_time, end_time, location, scope, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            params![event.id, event.profile_id, event.title, event.description, event.start_time, event.end_time, event.location, event.scope, event.created_at, event.updated_at],
-        )?;
+        )
+        .bind(&event.id)
+        .bind(&event.profile_id)
+        .bind(&event.title)
+        .bind(&event.description)
+        .bind(&event.start_time)
+        .bind(&event.end_time)
+        .bind(&event.location)
+        .bind(&event.scope)
+        .bind(&event.created_at)
+        .bind(&event.updated_at)
+        .execute(pool)
+        .await?;
         Ok(())
     }
 
-    pub fn find_by_id(conn: &Connection, id: &str) -> SqlResult<Option<Event>> {
-        let mut stmt = conn.prepare(
+    pub async fn find_by_id(pool: &SqlitePool, id: &str) -> Result<Option<Event>, sqlx::Error> {
+        let row = sqlx::query(
             "SELECT id, profile_id, title, description, start_time, end_time, location, scope, created_at, updated_at
-             FROM events WHERE id = ?1"
-        )?;
-        let mut rows = stmt.query_map(params![id], |row| {
-            Ok(Event {
-                id: row.get(0)?,
-                profile_id: row.get(1)?,
-                title: row.get(2)?,
-                description: row.get(3)?,
-                start_time: row.get(4)?,
-                end_time: row.get(5)?,
-                location: row.get(6)?,
-                scope: row.get(7)?,
-                created_at: row.get(8)?,
-                updated_at: row.get(9)?,
-            })
-        })?;
-        match rows.next() {
-            Some(Ok(event)) => Ok(Some(event)),
-            _ => Ok(None),
-        }
+             FROM events WHERE id = ?1",
+        )
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+
+        Ok(row.map(|r| Event {
+            id: r.get(0),
+            profile_id: r.get(1),
+            title: r.get(2),
+            description: r.get(3),
+            start_time: r.get(4),
+            end_time: r.get(5),
+            location: r.get(6),
+            scope: r.get(7),
+            created_at: r.get(8),
+            updated_at: r.get(9),
+        }))
     }
 
-    pub fn list_by_date_range(
-        conn: &Connection,
+    pub async fn list_by_date_range(
+        pool: &SqlitePool,
         profile_id: &str,
         start: &str,
         end: &str,
-    ) -> SqlResult<Vec<Event>> {
-        let mut stmt = conn.prepare(
+    ) -> Result<Vec<Event>, sqlx::Error> {
+        let rows = sqlx::query(
             "SELECT id, profile_id, title, description, start_time, end_time, location, scope, created_at, updated_at
              FROM events WHERE profile_id = ?1 AND start_time >= ?2 AND end_time <= ?3
-             ORDER BY start_time ASC"
-        )?;
-        let rows = stmt.query_map(params![profile_id, start, end], |row| {
-            Ok(Event {
-                id: row.get(0)?,
-                profile_id: row.get(1)?,
-                title: row.get(2)?,
-                description: row.get(3)?,
-                start_time: row.get(4)?,
-                end_time: row.get(5)?,
-                location: row.get(6)?,
-                scope: row.get(7)?,
-                created_at: row.get(8)?,
-                updated_at: row.get(9)?,
+             ORDER BY start_time ASC",
+        )
+        .bind(profile_id)
+        .bind(start)
+        .bind(end)
+        .fetch_all(pool)
+        .await?;
+
+        let events: Vec<Event> = rows
+            .iter()
+            .map(|r| Event {
+                id: r.get(0),
+                profile_id: r.get(1),
+                title: r.get(2),
+                description: r.get(3),
+                start_time: r.get(4),
+                end_time: r.get(5),
+                location: r.get(6),
+                scope: r.get(7),
+                created_at: r.get(8),
+                updated_at: r.get(9),
             })
-        })?;
-        let mut events = Vec::new();
-        for row in rows {
-            events.push(row?);
-        }
+            .collect();
+
         Ok(events)
     }
 
-    pub fn update(
-        conn: &Connection,
+    pub async fn update(
+        pool: &SqlitePool,
         id: &str,
         title: Option<&str>,
         description: Option<&str>,
         location: Option<&str>,
-    ) -> SqlResult<()> {
+    ) -> Result<(), sqlx::Error> {
         let now = chrono::Utc::now().to_rfc3339();
-        conn.execute(
+        sqlx::query(
             "UPDATE events SET title = COALESCE(?1, title), description = COALESCE(?2, description), location = COALESCE(?3, location), updated_at = ?4 WHERE id = ?5",
-            params![title, description, location, now, id],
-        )?;
+        )
+        .bind(title)
+        .bind(description)
+        .bind(location)
+        .bind(&now)
+        .bind(id)
+        .execute(pool)
+        .await?;
         Ok(())
     }
 
-    pub fn find_free_slots(
-        conn: &Connection,
+    pub async fn find_free_slots(
+        pool: &SqlitePool,
         profile_id: &str,
         date: &str,
         duration_min: i64,
-    ) -> SqlResult<Vec<(String, String)>> {
+    ) -> Result<Vec<(String, String)>, sqlx::Error> {
         let day_start = format!("{}T00:00:00Z", date);
         let day_end = format!("{}T23:59:59Z", date);
-        let events = Self::list_by_date_range(conn, profile_id, &day_start, &day_end)?;
+        let events = Self::list_by_date_range(pool, profile_id, &day_start, &day_end).await?;
 
         // Helper to parse a datetime string; expects RFC 3339 format (with trailing Z).
         fn parse_dt(s: &str) -> Option<chrono::DateTime<chrono::FixedOffset>> {
@@ -146,22 +165,34 @@ impl EventsRepo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::schema::run_migrations;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
-    fn setup() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
-        conn.execute(
+    async fn setup() -> Result<SqlitePool, sqlx::Error> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(":memory:")
+                    .create_if_missing(true),
+            )
+            .await?;
+        sqlx::migrate::Migrator::new(std::path::Path::new("migrations"))
+            .await
+            .unwrap()
+            .run(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
             "INSERT INTO profiles (id, name, preferences) VALUES ('profile-1', 'Test', '{}')",
-            [],
         )
-        .unwrap();
-        conn
+        .execute(&pool)
+        .await?;
+        Ok(pool)
     }
 
-    #[test]
-    fn test_create_event() {
-        let conn = setup();
+    #[tokio::test]
+    async fn test_create_event() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
         let event = Event {
             id: "evt-1".into(),
             profile_id: "profile-1".into(),
@@ -174,22 +205,26 @@ mod tests {
             created_at: "2026-09-23T00:00:00Z".into(),
             updated_at: "2026-09-23T00:00:00Z".into(),
         };
-        EventsRepo::create(&conn, &event).unwrap();
-        let found = EventsRepo::find_by_id(&conn, "evt-1").unwrap().unwrap();
+        EventsRepo::create(&pool, &event).await.unwrap();
+        let found = EventsRepo::find_by_id(&pool, "evt-1").await?.unwrap();
         assert_eq!(found.title, "Reunión");
         assert_eq!(found.scope, "shared");
+
+        Ok(())
     }
 
-    #[test]
-    fn test_find_by_id_not_found() {
-        let conn = setup();
-        let found = EventsRepo::find_by_id(&conn, "nonexistent").unwrap();
+    #[tokio::test]
+    async fn test_find_by_id_not_found() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
+        let found = EventsRepo::find_by_id(&pool, "nonexistent").await.unwrap();
         assert!(found.is_none());
+
+        Ok(())
     }
 
-    #[test]
-    fn test_list_by_date_range() {
-        let conn = setup();
+    #[tokio::test]
+    async fn test_list_by_date_range() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
         let event = Event {
             id: "evt-2".into(),
             profile_id: "profile-1".into(),
@@ -202,20 +237,22 @@ mod tests {
             created_at: "2026-09-23T00:00:00Z".into(),
             updated_at: "2026-09-23T00:00:00Z".into(),
         };
-        EventsRepo::create(&conn, &event).unwrap();
+        EventsRepo::create(&pool, &event).await.unwrap();
         let events = EventsRepo::list_by_date_range(
-            &conn,
+            &pool,
             "profile-1",
             "2026-09-24T00:00:00Z",
             "2026-09-24T23:59:59Z",
         )
-        .unwrap();
+        .await?;
         assert_eq!(events.len(), 1);
+
+        Ok(())
     }
 
-    #[test]
-    fn test_list_by_date_range_outside() {
-        let conn = setup();
+    #[tokio::test]
+    async fn test_list_by_date_range_outside() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
         let event = Event {
             id: "evt-3".into(),
             profile_id: "profile-1".into(),
@@ -228,20 +265,22 @@ mod tests {
             created_at: "2026-09-23T00:00:00Z".into(),
             updated_at: "2026-09-23T00:00:00Z".into(),
         };
-        EventsRepo::create(&conn, &event).unwrap();
+        EventsRepo::create(&pool, &event).await.unwrap();
         let events = EventsRepo::list_by_date_range(
-            &conn,
+            &pool,
             "profile-1",
             "2026-09-24T00:00:00Z",
             "2026-09-24T23:59:59Z",
         )
-        .unwrap();
+        .await?;
         assert!(events.is_empty());
+
+        Ok(())
     }
 
-    #[test]
-    fn test_update_event() {
-        let conn = setup();
+    #[tokio::test]
+    async fn test_update_event() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
         let event = Event {
             id: "evt-4".into(),
             profile_id: "profile-1".into(),
@@ -254,16 +293,18 @@ mod tests {
             created_at: "2026-09-23T00:00:00Z".into(),
             updated_at: "2026-09-23T00:00:00Z".into(),
         };
-        EventsRepo::create(&conn, &event).unwrap();
-        EventsRepo::update(&conn, "evt-4", Some("Actualizado"), None, Some("Oficina")).unwrap();
-        let found = EventsRepo::find_by_id(&conn, "evt-4").unwrap().unwrap();
+        EventsRepo::create(&pool, &event).await.unwrap();
+        EventsRepo::update(&pool, "evt-4", Some("Actualizado"), None, Some("Oficina")).await?;
+        let found = EventsRepo::find_by_id(&pool, "evt-4").await?.unwrap();
         assert_eq!(found.title, "Actualizado");
         assert_eq!(found.location.unwrap(), "Oficina");
+
+        Ok(())
     }
 
-    #[test]
-    fn test_find_free_slots() {
-        let conn = setup();
+    #[tokio::test]
+    async fn test_find_free_slots() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
         let event = Event {
             id: "evt-5".into(),
             profile_id: "profile-1".into(),
@@ -276,10 +317,12 @@ mod tests {
             created_at: "".into(),
             updated_at: "".into(),
         };
-        EventsRepo::create(&conn, &event).unwrap();
-        let slots = EventsRepo::find_free_slots(&conn, "profile-1", "2026-09-24", 30).unwrap();
+        EventsRepo::create(&pool, &event).await.unwrap();
+        let slots = EventsRepo::find_free_slots(&pool, "profile-1", "2026-09-24", 30).await?;
         assert!(!slots.is_empty());
         // Should have a slot before 10:00 and after 11:00
         assert!(slots.len() >= 2);
+
+        Ok(())
     }
 }

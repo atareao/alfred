@@ -1,75 +1,51 @@
-use rusqlite::{params, Connection};
-
-/// Register sqlite-vec extension. Gracefully degrades if not available.
-pub fn register_vector_ext(_conn: &Connection) -> Result<(), String> {
-    #[cfg(not(feature = "vec0"))]
-    {
-        tracing::info!("sqlite-vec feature disabled");
-    }
-    #[cfg(feature = "vec0")]
-    {
-        unsafe {
-            _conn.load_extension_enable().map_err(|e| e.to_string())?;
-        }
-        let result = _conn.execute_batch("SELECT load_extension('vec0');");
-        unsafe {
-            _conn.load_extension_disable().map_err(|e| e.to_string())?;
-        }
-        if let Err(e) = result {
-            tracing::warn!(
-                "sqlite-vec not available ({}), falling back to FTS5 only",
-                e
-            );
-        } else {
-            tracing::info!("sqlite-vec registered successfully");
-        }
-    }
-    Ok(())
-}
+use sqlx::{Row, SqlitePool};
 
 /// Store an embedding vector for a message
-pub fn store_message_embedding(
-    conn: &Connection,
+pub async fn store_message_embedding(
+    pool: &SqlitePool,
     message_id: &str,
     embedding: &[f32],
-) -> Result<(), rusqlite::Error> {
+) -> Result<(), sqlx::Error> {
     let emb_json = serde_json::to_string(embedding).unwrap_or_default();
-    conn.execute(
-        "INSERT OR REPLACE INTO message_embeddings (id, embedding) VALUES (?1, ?2)",
-        params![message_id, emb_json],
-    )?;
+    sqlx::query("INSERT OR REPLACE INTO message_embeddings (id, embedding) VALUES (?1, ?2)")
+        .bind(message_id)
+        .bind(&emb_json)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
 /// Store an embedding vector for a memory
-pub fn store_memory_embedding(
-    conn: &Connection,
+pub async fn store_memory_embedding(
+    pool: &SqlitePool,
     memory_id: &str,
     embedding: &[f32],
-) -> Result<(), rusqlite::Error> {
+) -> Result<(), sqlx::Error> {
     let emb_json = serde_json::to_string(embedding).unwrap_or_default();
-    conn.execute(
-        "INSERT OR REPLACE INTO memory_embeddings (id, embedding) VALUES (?1, ?2)",
-        params![memory_id, emb_json],
-    )?;
+    sqlx::query("INSERT OR REPLACE INTO memory_embeddings (id, embedding) VALUES (?1, ?2)")
+        .bind(memory_id)
+        .bind(&emb_json)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
 /// Search message vectors by cosine similarity
-pub fn search_message_vectors(
-    conn: &Connection,
+pub async fn search_message_vectors(
+    pool: &SqlitePool,
     query_embedding: &[f32],
     limit: i64,
-) -> Result<Vec<(String, f64)>, rusqlite::Error> {
+) -> Result<Vec<(String, f64)>, sqlx::Error> {
     let actual_limit = limit.clamp(1, 100);
-    let mut stmt =
-        conn.prepare("SELECT id, embedding FROM message_embeddings WHERE embedding IS NOT NULL")?;
-    let mut rows = stmt.query([])?;
+    let rows =
+        sqlx::query("SELECT id, embedding FROM message_embeddings WHERE embedding IS NOT NULL")
+            .fetch_all(pool)
+            .await?;
 
     let mut results: Vec<(String, f64)> = Vec::new();
-    while let Some(row) = rows.next()? {
-        let id: String = row.get(0)?;
-        let emb_str: String = row.get(1)?;
+    for row in rows {
+        let id: String = row.get(0);
+        let emb_str: String = row.get(1);
         if let Ok(emb) = serde_json::from_str::<Vec<f32>>(&emb_str) {
             let score = cosine_similarity(query_embedding, &emb);
             results.push((id, score));
@@ -82,20 +58,21 @@ pub fn search_message_vectors(
 }
 
 /// Search memory vectors by cosine similarity
-pub fn search_memory_vectors(
-    conn: &Connection,
+pub async fn search_memory_vectors(
+    pool: &SqlitePool,
     query_embedding: &[f32],
     limit: i64,
-) -> Result<Vec<(String, f64)>, rusqlite::Error> {
+) -> Result<Vec<(String, f64)>, sqlx::Error> {
     let actual_limit = limit.clamp(1, 100);
-    let mut stmt =
-        conn.prepare("SELECT id, embedding FROM memory_embeddings WHERE embedding IS NOT NULL")?;
-    let mut rows = stmt.query([])?;
+    let rows =
+        sqlx::query("SELECT id, embedding FROM memory_embeddings WHERE embedding IS NOT NULL")
+            .fetch_all(pool)
+            .await?;
 
     let mut results: Vec<(String, f64)> = Vec::new();
-    while let Some(row) = rows.next()? {
-        let id: String = row.get(0)?;
-        let emb_str: String = row.get(1)?;
+    for row in rows {
+        let id: String = row.get(0);
+        let emb_str: String = row.get(1);
         if let Ok(emb) = serde_json::from_str::<Vec<f32>>(&emb_str) {
             let score = cosine_similarity(query_embedding, &emb);
             results.push((id, score));
@@ -124,15 +101,30 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+    use sqlx::SqlitePool;
 
-    fn setup() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS message_embeddings (id TEXT PRIMARY KEY, embedding TEXT);
-             CREATE TABLE IF NOT EXISTS memory_embeddings (id TEXT PRIMARY KEY, embedding TEXT);",
+    async fn setup() -> Result<SqlitePool, sqlx::Error> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(":memory:")
+                    .create_if_missing(true),
+            )
+            .await?;
+        // Create embedding tables directly (no need for full migration)
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS message_embeddings (id TEXT PRIMARY KEY, embedding TEXT);",
         )
-        .unwrap();
-        conn
+        .execute(&pool)
+        .await?;
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS memory_embeddings (id TEXT PRIMARY KEY, embedding TEXT);",
+        )
+        .execute(&pool)
+        .await?;
+        Ok(pool)
     }
 
     #[test]
@@ -150,31 +142,34 @@ mod tests {
         assert!((score - 0.0).abs() < 0.001);
     }
 
-    #[test]
-    fn test_store_and_search_message() {
-        let conn = setup();
-        store_message_embedding(&conn, "msg1", &[1.0, 0.0, 0.0]).unwrap();
+    #[tokio::test]
+    async fn test_store_and_search_message() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
+        store_message_embedding(&pool, "msg1", &[1.0, 0.0, 0.0]).await?;
 
-        let results = search_message_vectors(&conn, &[1.0, 0.0, 0.0], 10).unwrap();
+        let results = search_message_vectors(&pool, &[1.0, 0.0, 0.0], 10).await?;
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0, "msg1");
         assert!((results[0].1 - 1.0).abs() < 0.001);
+        Ok(())
     }
 
-    #[test]
-    fn test_search_orders_by_similarity() {
-        let conn = setup();
-        store_message_embedding(&conn, "close", &[1.0, 0.0, 0.0]).unwrap();
-        store_message_embedding(&conn, "far", &[0.0, 0.0, 1.0]).unwrap();
+    #[tokio::test]
+    async fn test_search_orders_by_similarity() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
+        store_message_embedding(&pool, "close", &[1.0, 0.0, 0.0]).await?;
+        store_message_embedding(&pool, "far", &[0.0, 0.0, 1.0]).await?;
 
-        let results = search_message_vectors(&conn, &[0.9, 0.1, 0.0], 10).unwrap();
+        let results = search_message_vectors(&pool, &[0.9, 0.1, 0.0], 10).await?;
         assert_eq!(results[0].0, "close");
+        Ok(())
     }
 
-    #[test]
-    fn test_empty_embedding_returns_empty() {
-        let conn = setup();
-        let results = search_message_vectors(&conn, &[1.0, 0.0], 10).unwrap();
+    #[tokio::test]
+    async fn test_empty_embedding_returns_empty() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
+        let results = search_message_vectors(&pool, &[1.0, 0.0], 10).await?;
         assert!(results.is_empty());
+        Ok(())
     }
 }

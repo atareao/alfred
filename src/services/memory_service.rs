@@ -1,4 +1,4 @@
-use rusqlite::Connection;
+use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::db::vector;
@@ -18,7 +18,7 @@ impl MemoryConsolidator {
     /// Simplified for F4: stores assistant messages as "conversation" memories
     pub async fn consolidate(
         &self,
-        conn: &Connection,
+        pool: &SqlitePool,
         message: &Message,
     ) -> Result<Vec<Memory>, String> {
         if message.role != "assistant" || message.content.trim().is_empty() {
@@ -29,11 +29,18 @@ impl MemoryConsolidator {
         let id = Uuid::new_v4().to_string();
         let now = chrono::Utc::now().to_rfc3339();
 
-        conn.execute(
+        sqlx::query(
             "INSERT INTO memories (id, profile_id, content, category, source, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            rusqlite::params![id, "default", message.content, "conversation", "assistant", now],
         )
-        .map_err(|e | format!("Failed to store memory: {}", e))?;
+        .bind(&id)
+        .bind("default")
+        .bind(&message.content)
+        .bind("conversation")
+        .bind("assistant")
+        .bind(&now)
+        .execute(pool)
+        .await
+        .map_err(|e| format!("Failed to store memory: {}", e))?;
 
         let memory = Memory {
             id: id.clone(),
@@ -46,8 +53,15 @@ impl MemoryConsolidator {
         };
 
         // Generate embedding for the new memory
-        if let Ok(embedding) = self.provider.embed(&memory.content).await {
-            let _ = vector::store_memory_embedding(conn, &memory.id, &embedding);
+        if let Ok(embedding) = self
+            .provider
+            .embed(&memory.content)
+            .await
+            .map_err(|e| format!("Embedding failed: {}", e))
+        {
+            let _ = vector::store_memory_embedding(pool, &memory.id, &embedding)
+                .await
+                .map_err(|e| format!("Failed to store embedding: {}", e));
         }
 
         Ok(vec![memory])

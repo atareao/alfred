@@ -1,5 +1,5 @@
-use rusqlite::{params, Connection, Result as SqlResult};
 use serde::{Deserialize, Serialize};
+use sqlx::{Row, SqlitePool};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Reminder {
@@ -14,101 +14,109 @@ pub struct Reminder {
 pub struct RemindersRepo;
 
 impl RemindersRepo {
-    pub fn create(conn: &Connection, reminder: &Reminder) -> SqlResult<()> {
-        conn.execute(
+    pub async fn create(pool: &SqlitePool, reminder: &Reminder) -> Result<(), sqlx::Error> {
+        sqlx::query(
             "INSERT INTO reminders (id, profile_id, text, datetime, status, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![
-                reminder.id,
-                reminder.profile_id,
-                reminder.text,
-                reminder.datetime,
-                reminder.status,
-                reminder.created_at,
-            ],
-        )?;
+        )
+        .bind(&reminder.id)
+        .bind(&reminder.profile_id)
+        .bind(&reminder.text)
+        .bind(&reminder.datetime)
+        .bind(&reminder.status)
+        .bind(&reminder.created_at)
+        .execute(pool)
+        .await?;
         Ok(())
     }
 
-    pub fn find_by_id(conn: &Connection, id: &str) -> SqlResult<Option<Reminder>> {
-        let mut stmt = conn.prepare(
+    pub async fn find_by_id(pool: &SqlitePool, id: &str) -> Result<Option<Reminder>, sqlx::Error> {
+        let row = sqlx::query(
             "SELECT id, profile_id, text, datetime, status, created_at
              FROM reminders WHERE id = ?1",
-        )?;
-        let mut rows = stmt.query_map(params![id], |row| {
-            Ok(Reminder {
-                id: row.get(0)?,
-                profile_id: row.get(1)?,
-                text: row.get(2)?,
-                datetime: row.get(3)?,
-                status: row.get(4)?,
-                created_at: row.get(5)?,
-            })
-        })?;
-        match rows.next() {
-            Some(Ok(reminder)) => Ok(Some(reminder)),
-            _ => Ok(None),
+        )
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+
+        match row {
+            Some(r) => Ok(Some(Reminder {
+                id: r.get("id"),
+                profile_id: r.get("profile_id"),
+                text: r.get("text"),
+                datetime: r.get("datetime"),
+                status: r.get("status"),
+                created_at: r.get("created_at"),
+            })),
+            None => Ok(None),
         }
     }
 
-    pub fn list(
-        conn: &Connection,
+    pub async fn list(
+        pool: &SqlitePool,
         profile_id: &str,
         status: Option<&str>,
-    ) -> SqlResult<Vec<Reminder>> {
+    ) -> Result<Vec<Reminder>, sqlx::Error> {
         let mut sql = String::from(
             "SELECT id, profile_id, text, datetime, status, created_at
              FROM reminders WHERE profile_id = ?1",
         );
-        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> =
-            vec![Box::new(profile_id.to_string())];
 
-        if let Some(s) = status {
-            param_values.push(Box::new(s.to_string()));
-            sql.push_str(&format!(" AND status = ?{}", param_values.len()));
+        if status.is_some() {
+            sql.push_str(" AND status = ?2");
         }
 
         sql.push_str(" ORDER BY datetime ASC");
 
-        let mut stmt = conn.prepare(&sql)?;
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-            param_values.iter().map(|p| p.as_ref()).collect();
-        let rows = stmt.query_map(param_refs.as_slice(), |row| {
-            Ok(Reminder {
-                id: row.get(0)?,
-                profile_id: row.get(1)?,
-                text: row.get(2)?,
-                datetime: row.get(3)?,
-                status: row.get(4)?,
-                created_at: row.get(5)?,
-            })
-        })?;
-        let mut reminders = Vec::new();
-        for row in rows {
-            reminders.push(row?);
+        let mut query = sqlx::query(&sql).bind(profile_id);
+        if let Some(s) = status {
+            query = query.bind(s);
         }
+
+        let rows = query.fetch_all(pool).await?;
+
+        let reminders: Vec<Reminder> = rows
+            .iter()
+            .map(|r| Reminder {
+                id: r.get("id"),
+                profile_id: r.get("profile_id"),
+                text: r.get("text"),
+                datetime: r.get("datetime"),
+                status: r.get("status"),
+                created_at: r.get("created_at"),
+            })
+            .collect();
+
         Ok(reminders)
     }
 
-    pub fn dismiss(conn: &Connection, id: &str) -> SqlResult<()> {
-        conn.execute(
-            "UPDATE reminders SET status = 'dismissed' WHERE id = ?1",
-            params![id],
-        )?;
+    pub async fn dismiss(pool: &SqlitePool, id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE reminders SET status = 'dismissed' WHERE id = ?1")
+            .bind(id)
+            .execute(pool)
+            .await?;
         Ok(())
     }
 
     /// Snooze a reminder to a new date/time and reset status to pending.
-    pub fn snooze(conn: &Connection, id: &str, new_datetime: &str) -> SqlResult<()> {
-        conn.execute(
-            "UPDATE reminders SET status = 'pending', datetime = ?1 WHERE id = ?2",
-            params![new_datetime, id],
-        )?;
+    pub async fn snooze(
+        pool: &SqlitePool,
+        id: &str,
+        new_datetime: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE reminders SET status = 'pending', datetime = ?1 WHERE id = ?2")
+            .bind(new_datetime)
+            .bind(id)
+            .execute(pool)
+            .await?;
         Ok(())
     }
 
-    pub fn delete(conn: &Connection, id: &str) -> SqlResult<()> {
-        conn.execute("DELETE FROM reminders WHERE id = ?1", params![id])?;
+    pub async fn delete(pool: &SqlitePool, id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM reminders WHERE id = ?1")
+            .bind(id)
+            .execute(pool)
+            .await?;
         Ok(())
     }
 }
@@ -116,17 +124,47 @@ impl RemindersRepo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::schema::run_migrations;
+    use sqlx::sqlite::SqlitePoolOptions;
 
-    fn setup() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
-        conn.execute(
-            "INSERT INTO profiles (id, name, preferences) VALUES ('profile-1', 'Test', '{}')",
-            [],
+    async fn setup() -> Result<SqlitePool, sqlx::Error> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await?;
+
+        // Create profiles table (needed for FK constraint)
+        sqlx::query(
+            "CREATE TABLE profiles (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                preferences TEXT NOT NULL DEFAULT '{}'
+            )",
         )
-        .unwrap();
-        conn
+        .execute(&pool)
+        .await?;
+
+        // Create reminders table matching production schema
+        sqlx::query(
+            "CREATE TABLE reminders (
+                id TEXT PRIMARY KEY,
+                profile_id TEXT NOT NULL REFERENCES profiles(id),
+                text TEXT NOT NULL,
+                datetime TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await?;
+
+        // Insert test profile
+        sqlx::query(
+            "INSERT INTO profiles (id, name, preferences) VALUES ('profile-1', 'Test', '{}')",
+        )
+        .execute(&pool)
+        .await?;
+
+        Ok(pool)
     }
 
     fn sample_reminder(id: &str, text: &str, datetime: &str) -> Reminder {
@@ -140,65 +178,75 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_create_reminder() {
-        let conn = setup();
+    #[tokio::test]
+    async fn test_create_reminder() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
         let reminder = sample_reminder("rem-1", "Comprar leche", "2026-09-24T10:00:00Z");
-        RemindersRepo::create(&conn, &reminder).unwrap();
-        let found = RemindersRepo::find_by_id(&conn, "rem-1").unwrap().unwrap();
+        RemindersRepo::create(&pool, &reminder).await.unwrap();
+        let found = RemindersRepo::find_by_id(&pool, "rem-1").await?.unwrap();
         assert_eq!(found.text, "Comprar leche");
         assert_eq!(found.status, "pending");
+
+        Ok(())
     }
 
-    #[test]
-    fn test_dismiss_reminder() {
-        let conn = setup();
+    #[tokio::test]
+    async fn test_dismiss_reminder() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
         RemindersRepo::create(
-            &conn,
+            &pool,
             &sample_reminder("rem-2", "Reunión", "2026-09-24T15:00:00Z"),
         )
-        .unwrap();
-        RemindersRepo::dismiss(&conn, "rem-2").unwrap();
-        let found = RemindersRepo::find_by_id(&conn, "rem-2").unwrap().unwrap();
+        .await?;
+        RemindersRepo::dismiss(&pool, "rem-2").await.unwrap();
+        let found = RemindersRepo::find_by_id(&pool, "rem-2").await?.unwrap();
         assert_eq!(found.status, "dismissed");
+
+        Ok(())
     }
 
-    #[test]
-    fn test_snooze_reminder() {
-        let conn = setup();
+    #[tokio::test]
+    async fn test_snooze_reminder() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
         RemindersRepo::create(
-            &conn,
+            &pool,
             &sample_reminder("rem-3", "Llamar", "2026-09-24T10:00:00Z"),
         )
-        .unwrap();
-        RemindersRepo::snooze(&conn, "rem-3", "2026-09-24T12:00:00Z").unwrap();
-        let found = RemindersRepo::find_by_id(&conn, "rem-3").unwrap().unwrap();
+        .await?;
+        RemindersRepo::snooze(&pool, "rem-3", "2026-09-24T12:00:00Z").await?;
+        let found = RemindersRepo::find_by_id(&pool, "rem-3").await?.unwrap();
         assert_eq!(found.status, "pending");
         assert_eq!(found.datetime, "2026-09-24T12:00:00Z");
+
+        Ok(())
     }
 
-    #[test]
-    fn test_list_reminders_by_status() {
-        let conn = setup();
-        RemindersRepo::create(&conn, &sample_reminder("r1", "A", "2026-09-24T10:00:00Z")).unwrap();
-        RemindersRepo::create(&conn, &sample_reminder("r2", "B", "2026-09-24T11:00:00Z")).unwrap();
-        RemindersRepo::dismiss(&conn, "r2").unwrap();
+    #[tokio::test]
+    async fn test_list_reminders_by_status() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
+        RemindersRepo::create(&pool, &sample_reminder("r1", "A", "2026-09-24T10:00:00Z")).await?;
+        RemindersRepo::create(&pool, &sample_reminder("r2", "B", "2026-09-24T11:00:00Z")).await?;
+        RemindersRepo::dismiss(&pool, "r2").await.unwrap();
 
-        let pending = RemindersRepo::list(&conn, "profile-1", Some("pending")).unwrap();
+        let pending = RemindersRepo::list(&pool, "profile-1", Some("pending")).await?;
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].id, "r1");
 
-        let dismissed = RemindersRepo::list(&conn, "profile-1", Some("dismissed")).unwrap();
+        let dismissed = RemindersRepo::list(&pool, "profile-1", Some("dismissed")).await?;
         assert_eq!(dismissed.len(), 1);
         assert_eq!(dismissed[0].id, "r2");
+
+        Ok(())
     }
 
-    #[test]
-    fn test_delete_reminder() {
-        let conn = setup();
-        RemindersRepo::create(&conn, &sample_reminder("r3", "C", "2026-09-24T12:00:00Z")).unwrap();
-        RemindersRepo::delete(&conn, "r3").unwrap();
-        let found = RemindersRepo::find_by_id(&conn, "r3").unwrap();
+    #[tokio::test]
+    async fn test_delete_reminder() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
+        RemindersRepo::create(&pool, &sample_reminder("r3", "C", "2026-09-24T12:00:00Z")).await?;
+        RemindersRepo::delete(&pool, "r3").await.unwrap();
+        let found = RemindersRepo::find_by_id(&pool, "r3").await.unwrap();
         assert!(found.is_none());
+
+        Ok(())
     }
 }

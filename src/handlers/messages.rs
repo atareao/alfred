@@ -8,34 +8,24 @@ use crate::AppState;
 
 pub async fn list_messages(
     State(state): State<AppState>,
-    Path(conv_id): Path<String>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<PaginatedResponse<Message>>, AppError> {
-    let db = state
-        .db
-        .lock()
-        .map_err(|e| AppError::Internal(e.to_string()))?;
-    // Verify conversation exists
-    let _conv = crate::db::repos::conversations::ConversationsRepo::find_by_id(&db, &conv_id)
-        .map_err(|e| AppError::Internal(e.to_string()))?
-        .ok_or_else(|| AppError::NotFound(format!("Conversation {} not found", conv_id)))?;
-
     let limit = if let Some(l) = params.limit {
         l
     } else {
-        crate::db::repos::settings::SettingsRepo::get(&db, "message_page_size")
+        crate::db::repos::settings::SettingsRepo::get(&state.db, "message_page_size")
+            .await
             .ok()
             .flatten()
             .and_then(|v| v.parse::<i64>().ok())
             .unwrap_or(50)
     };
-    let (data, next_cursor) = crate::db::repos::messages::MessagesRepo::list_by_conversation(
-        &db,
-        &conv_id,
+    let (data, next_cursor) = crate::db::repos::messages::MessagesRepo::list_all(
+        &state.db,
         limit,
         params.cursor.as_deref(),
     )
-    .map_err(|e| AppError::Internal(e.to_string()))?;
+    .await?;
     Ok(Json(PaginatedResponse {
         data,
         next_cursor,
@@ -45,22 +35,16 @@ pub async fn list_messages(
 
 pub async fn create_message(
     State(state): State<AppState>,
-    Path(conv_id): Path<String>,
     Json(body): Json<CreateMessage>,
 ) -> Result<(StatusCode, Json<Message>), AppError> {
-    let db = state
-        .db
-        .lock()
-        .map_err(|e| AppError::Internal(e.to_string()))?;
     let collapse_callback = state.collapse_tx.clone().map(|tx| {
         Box::new(move |msg_id: String| {
             let _ = tx.try_send(msg_id);
-        }) as Box<dyn Fn(String)>
+        }) as Box<dyn Fn(String) + Send>
     });
 
     let msg = crate::db::repos::messages::MessagesRepo::create(
-        &db,
-        &conv_id,
+        &state.db,
         &body.role,
         &body.content,
         body.tool_calls.as_ref(),
@@ -68,25 +52,16 @@ pub async fn create_message(
         2000,
         collapse_callback,
     )
-    .map_err(|e| match e {
-        rusqlite::Error::InvalidParameterName(_) => {
-            AppError::NotFound(format!("Conversation {} not found", conv_id))
-        }
-        _ => AppError::Internal(e.to_string()),
-    })?;
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
     Ok((StatusCode::CREATED, Json(msg)))
 }
 
 pub async fn get_message(
     State(state): State<AppState>,
-    Path((_conv_id, msg_id)): Path<(String, String)>,
+    Path(msg_id): Path<String>,
 ) -> Result<Json<Message>, AppError> {
-    let db = state
-        .db
-        .lock()
-        .map_err(|e| AppError::Internal(e.to_string()))?;
-    let msg = crate::db::repos::messages::MessagesRepo::find_by_id(&db, &msg_id)
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let msg = crate::db::repos::messages::MessagesRepo::find_by_id(&state.db, &msg_id).await?;
     msg.ok_or_else(|| AppError::NotFound(format!("Message {} not found", msg_id)))
         .map(Json)
 }
@@ -100,57 +75,43 @@ mod tests {
     use tower::ServiceExt;
 
     /// Given message_page_size = 25 in settings
-    /// When GET /api/conversations/{id}/messages (without limit param)
+    /// When GET /api/messages (without limit param)
     /// Then returns 25 messages (not the hardcoded 50)
-    ///
-    /// RED: The handler currently uses `params.limit.unwrap_or(50)` instead
-    /// of reading from settings → this test WILL fail.
     #[tokio::test]
-    async fn test_list_messages_uses_setting_default() {
+    async fn test_list_messages_uses_setting_default() -> Result<(), Box<dyn std::error::Error>> {
         // ── Setup: in-memory DB with migrations ──────────────────────────
         let state = crate::AppState::new_in_memory_empty().await;
 
-        // Create a conversation and insert 60 messages
-        let conv_id = {
-            let db = state.db.lock().unwrap();
-            let conv =
-                crate::db::repos::conversations::ConversationsRepo::create(&db, "Test").unwrap();
-            let conv_id = conv.id.clone();
-            for i in 0..60 {
-                crate::db::repos::messages::MessagesRepo::create(
-                    &db,
-                    &conv_id,
-                    "user",
-                    &format!("Message {}", i),
-                    None,
-                    None,
-                    2000,
-                    None,
-                )
-                .unwrap();
-            }
-            // Set message_page_size to 25
-            crate::db::repos::settings::SettingsRepo::set(&db, "message_page_size", "25").unwrap();
-            conv_id
-        };
+        // Insert 60 messages directly (no conversation needed)
+        for i in 0..60 {
+            crate::db::repos::messages::MessagesRepo::create(
+                &state.db,
+                "user",
+                &format!("Message {}", i),
+                None,
+                None,
+                2000,
+                None,
+            )
+            .await?;
+        }
+        // Set message_page_size to 25
+        crate::db::repos::settings::SettingsRepo::set(&state.db, "message_page_size", "25").await?;
 
         // ── Action: call handler via the router ──────────────────────────
         let app = crate::app_with_state(state);
         let resp = app
             .oneshot(
                 Request::builder()
-                    .uri(&format!("/api/conversations/{}/messages", conv_id))
+                    .uri("/api/messages")
                     .body(Body::empty())
                     .unwrap(),
             )
-            .await
-            .unwrap();
+            .await?;
 
         // ── Assert: should return 25 (from setting), not 50 ──────────────
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await?;
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let data = json["data"].as_array().unwrap();
         assert_eq!(
@@ -158,17 +119,15 @@ mod tests {
             25,
             "Should return 25 messages (from message_page_size setting), not the hardcoded 50"
         );
+        Ok(())
     }
 
     /// Given an AppState and a collapse channel,
-    /// when a POST /api/conversations/{id}/messages with a long message (8000 chars) is sent,
+    /// when a POST /api/messages with a long message (8000 chars) is sent,
     /// then the message_id SHOULD arrive via the collapse channel.
-    ///
-    /// RED: This test will fail because the `create_message` handler currently
-    /// passes `None` as the `on_collapse_needed` callback to MessagesRepo::create(),
-    /// and AppState does not carry a `collapse_tx` field.
     #[tokio::test]
-    async fn test_create_message_triggers_collapse_channel() {
+    async fn test_create_message_triggers_collapse_channel(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // ── Setup: in-memory DB with migrations ──────────────────────────
         let mut state = crate::AppState::new_in_memory_empty().await;
 
@@ -176,18 +135,9 @@ mod tests {
         let (collapse_tx, mut collapse_rx) = mpsc::channel::<String>(16);
         state.collapse_tx = Some(collapse_tx);
 
-        // Create a conversation
-        let conv_id = {
-            let db = state.db.lock().unwrap();
-            let conv =
-                crate::db::repos::conversations::ConversationsRepo::create(&db, "Collapse Test")
-                    .unwrap();
-            conv.id.clone()
-        };
-
-        // ── Action: POST a long message (8000 chars) ──────────────────────
+        // ── Action: POST a long message (2000+ words for ~2660 tokens) ──────
         let app = crate::app_with_state(state);
-        let long_content = "x".repeat(8000);
+        let long_content = "x ".repeat(2000);
         let body = serde_json::json!({
             "role": "user",
             "content": long_content,
@@ -197,28 +147,27 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(&format!("/api/conversations/{}/messages", conv_id))
+                    .uri("/api/messages")
                     .header("Content-Type", "application/json")
                     .body(Body::from(serde_json::to_string(&body).unwrap()))
                     .unwrap(),
             )
-            .await
-            .unwrap();
+            .await?;
 
         assert_eq!(resp.status(), StatusCode::CREATED);
 
         // ── Assert: the collapse channel should receive the message_id ─────
-        // This WILL FAIL because the handler passes None as the collapse callback
         let received =
             tokio::time::timeout(std::time::Duration::from_millis(500), collapse_rx.recv()).await;
 
-        assert!(
-            received.is_ok(),
-            "Should have received message_id via collapse channel for a long message (8000 chars)"
-        );
-        let msg_id = received
-            .unwrap()
-            .expect("Should have received Some(msg_id)");
-        assert!(!msg_id.is_empty(), "message_id should not be empty");
+        match received {
+            Ok(Some(msg_id)) => {
+                assert!(!msg_id.is_empty(), "message_id should not be empty");
+            }
+            _ => {
+                panic!("Should have received message_id via collapse channel for a long message (8000 chars)");
+            }
+        }
+        Ok(())
     }
 }

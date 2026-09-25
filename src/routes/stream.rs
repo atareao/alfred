@@ -5,8 +5,8 @@
 //!
 //! ## Routes
 //!
-//! * `POST /api/conversations/:id/messages-stream` — SSE stream of [`SSEEvent`]s
-//! * `POST /api/approval/:request_id`              — Resolve a pending approval
+//! * `POST /api/chat/stream`        — SSE stream of [`SSEEvent`]s
+//! * `POST /api/approval/:request_id` — Resolve a pending approval
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -41,7 +41,7 @@ pub struct ApprovalBody {
 // Handlers
 // ---------------------------------------------------------------------------
 
-/// `POST /api/conversations/:id/messages-stream`
+/// `POST /api/chat/stream`
 ///
 /// Sends a message to the orchestrator and returns the response as an SSE
 /// stream of [`SSEEvent`] values.
@@ -50,18 +50,14 @@ pub struct ApprovalBody {
 /// single static chunk to preserve backward compatibility.
 pub async fn stream_message(
     State(state): State<AppState>,
-    Path(conversation_id): Path<String>,
     Json(query): Json<MessageQuery>,
 ) -> Sse<Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>>> {
     tracing::info!(
-        conversation_id = %conversation_id,
         content_len = %query.content.len(),
         "📥 SSE stream request received"
     );
 
     // If orchestrator is not configured, fall back to stub response.
-    // This preserves backward compatibility with tests that use app()
-    // or new_in_memory() (which set orchestrator to None).
     if state.orchestrator.is_none() {
         tracing::warn!("Orchestrator is None, using fallback stub response");
         let event = SSEEvent::Chunk {
@@ -75,14 +71,21 @@ pub async fn stream_message(
     let orchestrator = state.orchestrator.unwrap();
     let (tx, mut rx) = tokio::sync::mpsc::channel::<SSEEvent>(32);
 
-    let conv_id = conversation_id.clone();
-    tracing::info!("Spawning orchestrator task for conversation {}", conv_id);
     let content = query.content.clone();
     let browser_context = query.browser_context.clone();
     tokio::spawn(async move {
-        let _ = orchestrator
-            .process_message_stream(&conv_id, "profile-1", &content, browser_context, tx)
-            .await;
+        if let Err(e) = orchestrator
+            .process_message_stream("profile-1", &content, browser_context, tx.clone())
+            .await
+        {
+            tracing::error!(error = %e, "❌ Orchestrator error, sending error to client");
+            let _ = tx
+                .send(SSEEvent::Error {
+                    message: format!("Error: {}", e),
+                })
+                .await
+                .ok();
+        }
     });
 
     let stream = async_stream::stream! {
@@ -141,10 +144,7 @@ pub async fn resolve_approval(
 pub fn routes() -> axum::Router<AppState> {
     use axum::routing::post;
     axum::Router::new()
-        .route(
-            "/api/conversations/:id/messages-stream",
-            post(stream_message),
-        )
+        .route("/api/chat/stream", post(stream_message))
         .route("/api/approval/:request_id", post(resolve_approval))
 }
 
@@ -165,10 +165,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_approval_endpoint_returns_ok() {
-        // Given a running app
-        // When POST /api/approval/test-request with { "approved": true }
-        // Then 200 OK is returned with the expected shape
-        let app = crate::app();
+        let app = crate::app().await;
         let response = app
             .oneshot(
                 Request::builder()
@@ -186,10 +183,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_approval_endpoint_structure() {
-        // Given a running app
-        // When POST /api/approval/req-1 with { "approved": false }
-        // Then the response body contains the expected fields
-        let app = crate::app();
+        let app = crate::app().await;
         let response = app
             .oneshot(
                 Request::builder()
@@ -214,10 +208,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_approval_missing_body_returns_error() {
-        // Given a running app
-        // When POST /api/approval/req-1 with NO body
-        // Then 400 or 422 is returned (missing field)
-        let app = crate::app();
+        let app = crate::app().await;
         let response = app
             .oneshot(
                 Request::builder()
@@ -230,7 +221,6 @@ mod tests {
             .await
             .unwrap();
 
-        // Missing `approved` field should fail deserialization
         assert!(response.status().is_client_error());
     }
 
@@ -240,15 +230,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_stream_endpoint_returns_sse() {
-        // Given a running app
-        // When POST /api/conversations/conv-1/messages-stream with a message
-        // Then 200 OK is returned with SSE content-type
-        let app = crate::app();
+        let app = crate::app().await;
         let response = app
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
-                    .uri("/api/conversations/conv-1/messages-stream")
+                    .uri("/api/chat/stream")
                     .header("content-type", "application/json")
                     .body(Body::from(r#"{"content":"Hello"}"#))
                     .unwrap(),
@@ -258,7 +245,6 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
 
-        // SSE streams should have content-type text/event-stream
         let content_type = response
             .headers()
             .get("content-type")
@@ -273,15 +259,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_stream_endpoint_rejects_missing_content() {
-        // Given a running app
-        // When POST /api/conversations/conv-1/messages-stream with empty body
-        // Then 400 or 422 is returned
-        let app = crate::app();
+        let app = crate::app().await;
         let response = app
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
-                    .uri("/api/conversations/conv-1/messages-stream")
+                    .uri("/api/chat/stream")
                     .header("content-type", "application/json")
                     .body(Body::from(r"{}"))
                     .unwrap(),
@@ -289,21 +272,17 @@ mod tests {
             .await
             .unwrap();
 
-        // Missing `content` field should fail deserialization
         assert!(response.status().is_client_error());
     }
 
     #[tokio::test]
     async fn test_stream_endpoint_route_not_found_for_get() {
-        // Given a running app
-        // When GET /api/conversations/conv-1/messages-stream (wrong method)
-        // Then 405 Method Not Allowed
-        let app = crate::app();
+        let app = crate::app().await;
         let response = app
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri("/api/conversations/conv-1/messages-stream")
+                    .uri("/api/chat/stream")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -315,15 +294,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_stream_endpoint_accepts_browser_context() {
-        // Given a running app
-        // When POST with content + browser_context
-        // Then 200 OK is returned with SSE content-type
-        let app = crate::app();
+        let app = crate::app().await;
         let response = app
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
-                    .uri("/api/conversations/conv-1/messages-stream")
+                    .uri("/api/chat/stream")
                     .header("content-type", "application/json")
                     .body(Body::from(
                         r#"{"content":"Hello","browser_context":{"timestamp":"2026-09-24T08:00:00Z","timezone":"Europe/Madrid","latitude":39.36,"longitude":-0.41,"location_name":"Silla, Valencia, España"}}"#

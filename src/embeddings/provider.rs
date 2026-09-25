@@ -12,6 +12,12 @@ pub enum EmbeddingError {
     ModelNotAvailable(String),
 }
 
+impl From<reqwest::Error> for EmbeddingError {
+    fn from(e: reqwest::Error) -> Self {
+        EmbeddingError::Api(e.to_string())
+    }
+}
+
 #[async_trait]
 pub trait EmbeddingProvider: Send + Sync {
     /// Generate an embedding vector for a text string

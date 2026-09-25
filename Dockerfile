@@ -52,6 +52,7 @@ RUN apk add --no-cache --update \
 WORKDIR /app
 COPY --from=backend-builder /build/target/release/alfred /app/alfred
 COPY --from=frontend-builder /build/dist /app/static
+COPY migrations ./migrations
 
 EXPOSE 3000
 CMD ["/app/alfred"]

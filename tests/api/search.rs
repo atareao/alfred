@@ -13,16 +13,8 @@ async fn test_search_empty_query_returns_400() {
 async fn test_search_with_messages() {
     let app = TestApp::new().await;
 
-    // Create a conversation and add a message
-    let conv_resp = app
-        .post("/api/conversations")
-        .json(&json!({"title": "Test"}))
-        .send()
-        .await;
-    let conv = conv_resp.json::<serde_json::Value>().await;
-    let conv_id = conv["id"].as_str().unwrap();
-
-    app.post(&format!("/api/conversations/{}/messages", conv_id))
+    // Create a message directly
+    app.post("/api/messages")
         .json(&json!({"role": "user", "content": "receta de pasta carbonara"}))
         .send()
         .await;

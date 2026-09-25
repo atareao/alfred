@@ -1,17 +1,14 @@
-export interface Conversation {
-  id: string;
-  title: string;
-  created_at: string;
-  updated_at: string;
-}
-
 export interface Message {
   id: string;
-  conversation_id: string;
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
   tool_calls?: unknown;
   tool_results?: unknown;
+  tokens_count?: number;
+  collapsed_content?: string | null;
+  collapsed_tokens_count?: number;
+  is_indexed?: boolean;
+  summary_ref?: string | null;
   created_at: string;
 }
 
@@ -78,4 +75,9 @@ export interface SSEStreamEvent {
   tool_name?: string;
   reason?: string;
   approved?: boolean;
+}
+
+export interface ChatInitResponse {
+  messages: Message[];
+  settings: Record<string, string>;
 }

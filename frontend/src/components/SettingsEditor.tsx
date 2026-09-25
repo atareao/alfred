@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Drawer, Form, InputNumber, Input, Button, message, Space } from 'antd';
+import { Drawer, Form, InputNumber, Input, Button, message, Space, Divider } from 'antd';
 import { useSettings } from '../hooks/useSettings';
 
 const { TextArea } = Input;
@@ -17,19 +17,27 @@ export const SettingsEditor: React.FC<SettingsEditorProps> = ({ visible, onClose
   useEffect(() => {
     if (settings && visible) {
       form.setFieldsValue({
+        font_size: parseInt(settings.font_size || '16'),
         max_window_tokens: parseInt(settings.max_window_tokens || '10000'),
         system_prompt: settings.system_prompt || '',
         message_page_size: parseInt(settings.message_page_size || '50'),
+        openweather_api_key: settings.openweather_api_key || '',
+        google_places_api_key: settings.google_places_api_key || '',
+        brave_search_api_key: settings.brave_search_api_key || '',
       });
     }
   }, [settings, visible, form]);
 
-  const handleSubmit = async (values: { max_window_tokens: number; system_prompt: string; message_page_size: number }) => {
+  const handleSubmit = async (values: { font_size: number; max_window_tokens: number; system_prompt: string; message_page_size: number; openweather_api_key: string; google_places_api_key: string; brave_search_api_key: string }) => {
     try {
       await updateSettings({
+        font_size: values.font_size.toString(),
         max_window_tokens: values.max_window_tokens.toString(),
         system_prompt: values.system_prompt,
         message_page_size: values.message_page_size.toString(),
+        openweather_api_key: values.openweather_api_key || '',
+        google_places_api_key: values.google_places_api_key || '',
+        brave_search_api_key: values.brave_search_api_key || '',
       });
       message.success('Ajustes guardados');
       onClose();
@@ -43,9 +51,13 @@ export const SettingsEditor: React.FC<SettingsEditorProps> = ({ visible, onClose
     try {
       await resetToDefaults();
       form.setFieldsValue({
+        font_size: 16,
         max_window_tokens: 10000,
         system_prompt: '',
         message_page_size: 50,
+        openweather_api_key: '',
+        google_places_api_key: '',
+        brave_search_api_key: '',
       });
       message.success('Valores por defecto restaurados');
     } catch {
@@ -68,6 +80,19 @@ export const SettingsEditor: React.FC<SettingsEditorProps> = ({ visible, onClose
         layout="vertical"
         onFinish={handleSubmit}
       >
+        <Form.Item
+          label="Tamaño de fuente"
+          name="font_size"
+          help="Tamaño de fuente en píxeles para el chat (12-24)"
+        >
+          <InputNumber
+            min={12}
+            max={24}
+            step={1}
+            style={{ width: '100%' }}
+          />
+        </Form.Item>
+
         <Form.Item
           label="Ventana de contexto (tokens)"
           name="max_window_tokens"
@@ -95,6 +120,32 @@ export const SettingsEditor: React.FC<SettingsEditorProps> = ({ visible, onClose
           help="Número de mensajes por página al cargar el historial"
         >
           <InputNumber min={10} max={100} step={10} style={{ width: '100%' }} />
+        </Form.Item>
+
+        <Divider>API Keys</Divider>
+
+        <Form.Item
+          label="OpenWeatherMap API Key"
+          name="openweather_api_key"
+          help="API key para el clima. Se configura desde aquí o vía OPENWEATHER_API_KEY env."
+        >
+          <Input.Password placeholder="Dejar vacío para usar variable de entorno" />
+        </Form.Item>
+
+        <Form.Item
+          label="Google Places API Key"
+          name="google_places_api_key"
+          help="API key para búsqueda de lugares. Se configura desde aquí o vía GOOGLE_PLACES_API_KEY env."
+        >
+          <Input.Password placeholder="Dejar vacío para usar variable de entorno" />
+        </Form.Item>
+
+        <Form.Item
+          label="Brave Search API Key"
+          name="brave_search_api_key"
+          help="API key para búsqueda web. Se configura desde aquí o vía BRAVE_SEARCH_API_KEY env."
+        >
+          <Input.Password placeholder="Dejar vacío para usar variable de entorno" />
         </Form.Item>
 
         <Space>

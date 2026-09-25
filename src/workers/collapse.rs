@@ -7,7 +7,7 @@ use tracing;
 use crate::db::repos::messages::MessagesRepo;
 use crate::db::DbPool;
 use crate::llm::provider::{ChatMessage, ChatRequest, LLMProvider};
-use crate::models::message::estimate_tokens;
+use crate::models::message::estimate_markdown_tokens_heuristic;
 
 /// Background worker that collapses long messages by sending them to an LLM
 /// for summarisation.
@@ -42,9 +42,9 @@ impl CollapseWorker {
                 tracing::info!(message_id = %message_id, "CollapseWorker processing message");
 
                 // 1. Read message from DB
-                let msg = {
-                    let conn = db.lock().unwrap();
-                    MessagesRepo::find_by_id(&conn, &message_id).ok().flatten()
+                let msg = match MessagesRepo::find_by_id(&db, &message_id).await {
+                    Ok(Some(msg)) => Some(msg),
+                    _ => None,
                 };
 
                 if let Some(msg) = msg {
@@ -77,15 +77,19 @@ impl CollapseWorker {
                     match llm_provider.chat(request).await {
                         Ok(response) => {
                             let collapsed = response.message.content;
-                            let collapsed_tokens = estimate_tokens(&collapsed);
+                            let collapsed_tokens = estimate_markdown_tokens_heuristic(&collapsed);
 
                             // 4. Update DB
-                            let conn = db.lock().unwrap();
-                            let result = conn.execute(
+                            let update_result = sqlx::query(
                                 "UPDATE messages SET collapsed_content = ?1, collapsed_tokens_count = ?2 WHERE id = ?3",
-                                rusqlite::params![collapsed, collapsed_tokens, message_id],
-                            );
-                            if let Err(e) = result {
+                            )
+                             .bind(&collapsed)
+                             .bind(collapsed_tokens as i64)
+                             .bind(&message_id)
+                             .execute(&db)
+                             .await;
+
+                            if let Err(e) = update_result {
                                 tracing::error!(message_id = %message_id, error = %e, "CollapseWorker failed to update DB");
                             } else {
                                 tracing::info!(message_id = %message_id, collapsed_tokens = %collapsed_tokens, "CollapseWorker completed");
@@ -107,12 +111,12 @@ impl CollapseWorker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::repos::conversations::ConversationsRepo;
     use crate::db::repos::messages::MessagesRepo;
     use crate::db::schema::run_migrations;
     use crate::llm::provider::{ChatMessage, ChatRequest, ChatResponse, LLMError, TokenUsage};
     use async_trait::async_trait;
-    use rusqlite::Connection;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use sqlx::SqlitePool;
     use std::sync::{Arc, Mutex};
 
     /// A mock LLM provider that records every [`ChatRequest`] it receives and
@@ -161,31 +165,35 @@ mod tests {
         }
     }
 
-    /// Helper: create an in-memory DbPool with migrations and a conversation.
-    fn test_db_with_conversation() -> (DbPool, String) {
-        let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
-        let conv = ConversationsRepo::create(&conn, "Test Conv").unwrap();
-        let pool: DbPool = Arc::new(Mutex::new(conn));
-        (pool, conv.id)
+    /// Helper: create an in-memory DbPool with migrations.
+    async fn test_db() -> Result<DbPool, sqlx::Error> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(":memory:")
+                    .create_if_missing(true),
+            )
+            .await?;
+        run_migrations(&pool).await.unwrap();
+        Ok(pool)
     }
 
     /// Helper: create a long message (> 2000 tokens) and return its id.
-    fn create_long_message(pool: &DbPool, conv_id: &str) -> String {
+    async fn create_long_message(pool: &DbPool) -> Result<String, sqlx::Error> {
         let long_content = "x".repeat(8000);
-        let db = pool.lock().unwrap();
-        let msg = MessagesRepo::create(&db, conv_id, "user", &long_content, None, None, 2000, None)
-            .unwrap();
-        msg.id
+        let msg = MessagesRepo::create(pool, "user", &long_content, None, None, 2000, None).await?;
+        Ok(msg.id)
     }
 
     /// Given a running CollapseWorker with a mock LLM provider,
     /// when a message ID is sent through the channel,
     /// then the LLM provider's `chat()` must be called with the correct request.
     #[tokio::test]
-    async fn test_worker_receives_message_id_and_calls_llm() {
-        let (pool, conv_id) = test_db_with_conversation();
-        let msg_id = create_long_message(&pool, &conv_id);
+    async fn test_worker_receives_message_id_and_calls_llm(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = test_db().await?;
+        let msg_id = create_long_message(&pool).await?;
 
         let (tx, rx) = mpsc::channel::<String>(16);
         let calls: Arc<Mutex<Vec<ChatRequest>>> = Arc::new(Mutex::new(Vec::new()));
@@ -221,15 +229,17 @@ mod tests {
             request.messages.iter().any(|m| m.role == "system"),
             "Request should contain a system message with the collapse prompt"
         );
+        Ok(())
     }
 
     /// Given a running CollapseWorker,
     /// when a message is collapsed,
     /// then the database must have its `collapsed_content` updated.
     #[tokio::test]
-    async fn test_worker_updates_collapsed_content_in_db() {
-        let (pool, conv_id) = test_db_with_conversation();
-        let msg_id = create_long_message(&pool, &conv_id);
+    async fn test_worker_updates_collapsed_content_in_db() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let pool = test_db().await?;
+        let msg_id = create_long_message(&pool).await?;
 
         let (tx, rx) = mpsc::channel::<String>(16);
         let calls: Arc<Mutex<Vec<ChatRequest>>> = Arc::new(Mutex::new(Vec::new()));
@@ -251,9 +261,8 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
         // Verify the DB was updated
-        let db = pool.lock().unwrap();
-        let msg = MessagesRepo::find_by_id(&db, &msg_id)
-            .unwrap()
+        let msg = MessagesRepo::find_by_id(&pool, &msg_id)
+            .await?
             .expect("Message should exist");
 
         assert!(
@@ -269,15 +278,16 @@ mod tests {
             msg.collapsed_tokens_count > 0,
             "collapsed_tokens_count should be > 0"
         );
+        Ok(())
     }
 
     /// Given a custom collapse prompt,
     /// when the worker processes a message,
     /// then the prompt sent to the LLM must match the configured one.
     #[tokio::test]
-    async fn test_worker_uses_custom_prompt() {
-        let (pool, conv_id) = test_db_with_conversation();
-        let msg_id = create_long_message(&pool, &conv_id);
+    async fn test_worker_uses_custom_prompt() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = test_db().await?;
+        let msg_id = create_long_message(&pool).await?;
 
         let (tx, rx) = mpsc::channel::<String>(16);
         let calls: Arc<Mutex<Vec<ChatRequest>>> = Arc::new(Mutex::new(Vec::new()));
@@ -312,18 +322,16 @@ mod tests {
             system_msg.content, custom_prompt,
             "System message should contain the custom collapse prompt"
         );
+        Ok(())
     }
 
     /// Given a CollapseWorker started with a specific model,
     /// when it processes a message,
     /// then the ChatRequest.model must match the configured model.
-    ///
-    /// RED: This test will fail to compile because `CollapseWorker::start`
-    /// does not yet accept a `model` parameter.
     #[tokio::test]
-    async fn test_worker_uses_configured_model() {
-        let (pool, conv_id) = test_db_with_conversation();
-        let msg_id = create_long_message(&pool, &conv_id);
+    async fn test_worker_uses_configured_model() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = test_db().await?;
+        let msg_id = create_long_message(&pool).await?;
 
         let (tx, rx) = mpsc::channel::<String>(16);
         let calls: Arc<Mutex<Vec<ChatRequest>>> = Arc::new(Mutex::new(Vec::new()));
@@ -346,5 +354,6 @@ mod tests {
             request.model, "google/gemini-2.0-flash-lite",
             "ChatRequest.model should use the configured model, not the hardcoded default"
         );
+        Ok(())
     }
 }

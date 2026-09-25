@@ -1,5 +1,5 @@
-use rusqlite::Connection;
 use serde::Serialize;
+use sqlx::{Row, SqlitePool};
 use std::cmp::Ordering;
 
 use crate::db::fts;
@@ -44,7 +44,7 @@ impl SearchService {
     /// Hybrid search: vector + FTS5 with Reciprocal Rank Fusion
     pub async fn search(
         &self,
-        conn: &Connection,
+        pool: &SqlitePool,
         query: &str,
         search_type: SearchType,
         limit: i64,
@@ -59,7 +59,8 @@ impl SearchService {
         // Get FTS5 results
         let fts_results = match &search_type {
             SearchType::Messages | SearchType::All => {
-                fts::search_messages_fts(conn, query, actual_limit * 2)
+                fts::search_messages_fts(pool, query, actual_limit * 2)
+                    .await
                     .map_err(|e| format!("FTS5 search error: {}", e))?
                     .into_iter()
                     .map(|(id, content, _)| (id, content, "message".to_string()))
@@ -70,7 +71,8 @@ impl SearchService {
 
         let fts_memories = match &search_type {
             SearchType::Memories | SearchType::All => {
-                fts::search_memories_fts(conn, query, actual_limit * 2)
+                fts::search_memories_fts(pool, query, actual_limit * 2)
+                    .await
                     .map_err(|e| format!("FTS5 search error: {}", e))?
                     .into_iter()
                     .map(|(id, content, _)| (id, content, "memory".to_string()))
@@ -84,8 +86,9 @@ impl SearchService {
             Ok(embedding) => {
                 let msg_vec = match &search_type {
                     SearchType::Messages | SearchType::All => {
-                        vector::search_message_vectors(conn, &embedding, actual_limit * 2)
-                            .unwrap_or_default()
+                        vector::search_message_vectors(pool, &embedding, actual_limit * 2)
+                            .await
+                            .map_err(|e| format!("Vector search error: {}", e))?
                             .into_iter()
                             .map(|(id, score)| (id, score, "message".to_string()))
                             .collect::<Vec<_>>()
@@ -94,8 +97,9 @@ impl SearchService {
                 };
                 let mem_vec = match &search_type {
                     SearchType::Memories | SearchType::All => {
-                        vector::search_memory_vectors(conn, &embedding, actual_limit * 2)
-                            .unwrap_or_default()
+                        vector::search_memory_vectors(pool, &embedding, actual_limit * 2)
+                            .await
+                            .map_err(|e| format!("Vector search error: {}", e))?
                             .into_iter()
                             .map(|(id, score)| (id, score, "memory".to_string()))
                             .collect::<Vec<_>>()
@@ -144,20 +148,20 @@ impl SearchService {
         score_map.truncate(actual_limit as usize);
 
         // Build results with content and created_at
-        let results: Vec<SearchResult> = score_map
-            .into_iter()
-            .map(|(id, score, source)| {
-                let content = get_content_by_id(&fts_results, &fts_memories, &id);
-                let created_at = get_created_at(conn, &id, &source);
-                SearchResult {
-                    id,
-                    content,
-                    score,
-                    source,
-                    created_at,
-                }
-            })
-            .collect();
+        let mut results = Vec::with_capacity(score_map.len());
+        for (id, score, source) in score_map {
+            let content = get_content_by_id(&fts_results, &fts_memories, &id);
+            let created_at = get_created_at(pool, &id, &source)
+                .await
+                .map_err(|e| format!("Failed to get created_at: {}", e))?;
+            results.push(SearchResult {
+                id,
+                content,
+                score,
+                source,
+                created_at,
+            });
+        }
 
         Ok(results)
     }
@@ -183,22 +187,20 @@ fn get_content_by_id(
 }
 
 /// Helper to get created_at from the database
-fn get_created_at(conn: &Connection, id: &str, source: &str) -> String {
+async fn get_created_at(pool: &SqlitePool, id: &str, source: &str) -> Result<String, String> {
     let table = if source == "message" {
         "messages"
     } else {
         "memories"
     };
-    if let Ok(mut stmt) = conn.prepare(&format!("SELECT created_at FROM {} WHERE id = ?1", table)) {
-        if let Ok(mut rows) = stmt.query(rusqlite::params![id]) {
-            if let Ok(Some(row)) = rows.next() {
-                if let Ok(date) = row.get::<_, String>(0) {
-                    return date;
-                }
-            }
-        }
-    }
-    String::new()
+    let query_str = format!("SELECT created_at FROM {} WHERE id = ?1", table);
+    sqlx::query(&query_str)
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| format!("DB query error: {}", e))?
+        .map(|r| r.get::<String, _>(0))
+        .ok_or_else(|| format!("No {} found with id {}", source, id))
 }
 
 #[cfg(test)]
@@ -206,13 +208,21 @@ mod tests {
     use super::*;
     use crate::db::fts as fts_mod;
     use crate::db::schema;
-    use rusqlite::Connection;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use sqlx::SqlitePool;
 
-    fn setup() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        schema::run_migrations(&conn).unwrap();
-        fts_mod::create_fts_triggers(&conn).unwrap();
-        conn
+    async fn setup() -> Result<SqlitePool, sqlx::Error> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(":memory:")
+                    .create_if_missing(true),
+            )
+            .await?;
+        schema::run_migrations(&pool).await.unwrap();
+        fts_mod::create_fts_triggers(&pool).await.unwrap();
+        Ok(pool)
     }
 
     #[test]
@@ -237,46 +247,41 @@ mod tests {
         assert!(matches!(SearchType::from_str("unknown"), SearchType::All));
     }
 
-    #[test]
-    fn test_search_empty_query_returns_error() {
-        let conn = setup();
+    #[tokio::test]
+    async fn test_search_empty_query_returns_error() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
         let provider =
             crate::embeddings::create_provider(&crate::embeddings::EmbeddingConfig::default());
         let service = SearchService::new(provider);
 
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(service.search(&conn, "", SearchType::All, 10));
+        let result = service.search(&pool, "", SearchType::All, 10).await;
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "Query cannot be empty");
+        Ok(())
     }
 
-    #[test]
-    fn test_search_fts5_returns_results() {
-        let conn = setup();
-        // Insert a conversation first (FK constraint)
-        conn.execute(
-            "INSERT INTO conversations (id, title) VALUES (?1, ?2)",
-            rusqlite::params!["c1", "Test"],
-        )
-        .unwrap();
-        // Insert a message
-        conn.execute(
-            "INSERT INTO messages (id, conversation_id, role, content) VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params!["m1", "c1", "user", "receta de pasta carbonara"],
-        )
-        .unwrap();
+    #[tokio::test]
+    async fn test_search_fts5_returns_results() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
+        // Insert a message directly (no conversation FK needed)
+        sqlx::query("INSERT INTO messages (id, role, content) VALUES (?1, ?2, ?3)")
+            .bind("m1")
+            .bind("user")
+            .bind("receta de pasta carbonara")
+            .execute(&pool)
+            .await?;
 
         // FTS trigger should fire and index it
         let provider =
             crate::embeddings::create_provider(&crate::embeddings::EmbeddingConfig::default());
         let service = SearchService::new(provider);
 
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let results = rt
-            .block_on(service.search(&conn, "pasta", SearchType::Messages, 10))
-            .unwrap();
+        let results = service
+            .search(&pool, "pasta", SearchType::Messages, 10)
+            .await?;
         assert!(!results.is_empty());
         assert_eq!(results[0].id, "m1");
         assert_eq!(results[0].source, "message");
+        Ok(())
     }
 }

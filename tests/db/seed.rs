@@ -1,8 +1,11 @@
+use sqlx::sqlite::SqliteConnectOptions;
+use sqlx::SqlitePool;
 use std::process::Command;
 
-/// RED phase test: verifies that the seed binary creates profiles.
-#[test]
-fn test_seed_binary_populates_database() {
+/// Verifies that the seed binary creates profiles and other seed data in the
+/// database, then reads the resulting database using sqlx.
+#[tokio::test]
+async fn test_seed_binary_populates_database() {
     // Given a fresh database file
     let tmp_dir = std::env::temp_dir();
     let db_path = tmp_dir.join(format!("test_seed_{}.db", std::process::id()));
@@ -22,18 +25,24 @@ fn test_seed_binary_populates_database() {
     // Then it should exit successfully
     assert!(status.success(), "Seed binary should exit with status 0");
 
-    // And the database should have profiles
-    let conn = rusqlite::Connection::open(&db_path).unwrap();
-    let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM profiles", [], |row| row.get(0))
+    // And the database should have profiles — read using sqlx
+    let pool = SqlitePool::connect_with(
+        SqliteConnectOptions::new()
+            .filename(&db_path)
+            .create_if_missing(false)
+            .read_only(true),
+    )
+    .await
+    .expect("Failed to open seeded database with sqlx");
+
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM profiles")
+        .fetch_one(&pool)
+        .await
         .unwrap();
     assert_eq!(count, 2, "Expected 2 profiles to be seeded");
 
-    // And the database should have conversations
-    let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM conversations", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(count, 1, "Expected 1 conversation to be seeded");
+    // Close pool before cleanup
+    pool.close().await;
 
     // Clean up
     let _ = std::fs::remove_file(&db_path);
