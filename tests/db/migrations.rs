@@ -1,89 +1,102 @@
-use rusqlite::Connection;
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx::SqlitePool;
 
-/// RED phase test: asserts that `run_migrations` creates the `conversations` table.
-/// This will FAIL because the stub does not run any DDL.
-#[test]
-fn test_migrations_creates_conversations_table() {
-    let conn = Connection::open_in_memory().unwrap();
-    alfred::db::schema::run_migrations(&conn).unwrap();
-
-    let has_table: bool = conn
-        .query_row(
-            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='conversations'",
-            [],
-            |row| row.get(0),
+async fn setup() -> SqlitePool {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(":memory:")
+                .create_if_missing(true),
         )
+        .await
         .unwrap();
-
-    assert!(
-        has_table,
-        "Expected 'conversations' table to exist after migration"
-    );
+    alfred::db::schema::run_migrations(&pool).await.unwrap();
+    pool
 }
 
-/// RED phase test: asserts that `run_migrations` creates the `messages` table.
-/// This will FAIL because the stub does not run any DDL.
-#[test]
-fn test_migrations_creates_messages_table() {
-    let conn = Connection::open_in_memory().unwrap();
-    alfred::db::schema::run_migrations(&conn).unwrap();
+/// Asserts that `run_migrations` creates the `messages` table
+/// and does NOT include a `conversation_id` column.
+#[tokio::test]
+async fn test_migrations_creates_messages_table() {
+    let pool = setup().await;
 
-    let has_table: bool = conn
-        .query_row(
-            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='messages'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
+    let has_table: bool = sqlx::query_scalar(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='messages'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     assert!(
         has_table,
         "Expected 'messages' table to exist after migration"
     );
-}
 
-/// RED phase test: asserts that migration is idempotent (can be called twice).
-/// This will FAIL because the first assertion already fails.
-#[test]
-fn test_migration_is_idempotent() {
-    let conn = Connection::open_in_memory().unwrap();
-
-    // First call
-    alfred::db::schema::run_migrations(&conn).unwrap();
-
-    // Second call — should not error
-    alfred::db::schema::run_migrations(&conn).unwrap();
-
-    // Tables should exist
-    let tables: Vec<String> = conn
-        .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
-        .unwrap()
-        .query_map([], |row| row.get(0))
-        .unwrap()
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
+    // Verify no conversation_id column exists
+    let column_names: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM pragma_table_info('messages')")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
 
     assert!(
-        tables.contains(&"conversations".to_string()),
-        "Expected 'conversations' table after idempotent migration"
+        !column_names.contains(&"conversation_id".to_string()),
+        "Column 'conversation_id' should NOT exist in messages table"
     );
+}
+
+/// Asserts that `run_migrations` does NOT create the `conversations` table.
+#[tokio::test]
+async fn test_migrations_does_not_create_conversations() {
+    let pool = setup().await;
+
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='conversations'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    assert_eq!(
+        count, 0,
+        "Table 'conversations' should NOT exist after migration"
+    );
+}
+
+/// Asserts that migration is idempotent (can be called twice).
+#[tokio::test]
+async fn test_migration_is_idempotent() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(":memory:")
+                .create_if_missing(true),
+        )
+        .await
+        .unwrap();
+
+    // First call
+    alfred::db::schema::run_migrations(&pool).await.unwrap();
+
+    // Second call — should not error
+    alfred::db::schema::run_migrations(&pool).await.unwrap();
 }
 
 // ── F5c: Tools de Valor — Schema tests ─────────────────────────────────────
 
-/// RED phase test: asserts that `run_migrations` creates the `meal_plans` table.
-#[test]
-fn test_migrations_creates_meal_plans_table() {
-    let conn = Connection::open_in_memory().unwrap();
-    alfred::db::schema::run_migrations(&conn).unwrap();
+/// Asserts that `run_migrations` creates the `meal_plans` table.
+#[tokio::test]
+async fn test_migrations_creates_meal_plans_table() {
+    let pool = setup().await;
 
-    let has_table: bool = conn
-        .query_row(
-            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='meal_plans'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
+    let has_table: bool = sqlx::query_scalar(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='meal_plans'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     assert!(
         has_table,
@@ -91,19 +104,17 @@ fn test_migrations_creates_meal_plans_table() {
     );
 }
 
-/// RED phase test: asserts that `run_migrations` creates the `shopping_list` table.
-#[test]
-fn test_migrations_creates_shopping_list_table() {
-    let conn = Connection::open_in_memory().unwrap();
-    alfred::db::schema::run_migrations(&conn).unwrap();
+/// Asserts that `run_migrations` creates the `shopping_list` table.
+#[tokio::test]
+async fn test_migrations_creates_shopping_list_table() {
+    let pool = setup().await;
 
-    let has_table: bool = conn
-        .query_row(
-            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='shopping_list'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
+    let has_table: bool = sqlx::query_scalar(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='shopping_list'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     assert!(
         has_table,
@@ -111,19 +122,17 @@ fn test_migrations_creates_shopping_list_table() {
     );
 }
 
-/// RED phase test: asserts that `run_migrations` creates the `habits` table.
-#[test]
-fn test_migrations_creates_habits_table() {
-    let conn = Connection::open_in_memory().unwrap();
-    alfred::db::schema::run_migrations(&conn).unwrap();
+/// Asserts that `run_migrations` creates the `habits` table.
+#[tokio::test]
+async fn test_migrations_creates_habits_table() {
+    let pool = setup().await;
 
-    let has_table: bool = conn
-        .query_row(
-            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='habits'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
+    let has_table: bool = sqlx::query_scalar(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='habits'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     assert!(
         has_table,
@@ -131,19 +140,17 @@ fn test_migrations_creates_habits_table() {
     );
 }
 
-/// RED phase test: asserts that `run_migrations` creates the `habit_logs` table.
-#[test]
-fn test_migrations_creates_habit_logs_table() {
-    let conn = Connection::open_in_memory().unwrap();
-    alfred::db::schema::run_migrations(&conn).unwrap();
+/// Asserts that `run_migrations` creates the `habit_logs` table.
+#[tokio::test]
+async fn test_migrations_creates_habit_logs_table() {
+    let pool = setup().await;
 
-    let has_table: bool = conn
-        .query_row(
-            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='habit_logs'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
+    let has_table: bool = sqlx::query_scalar(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='habit_logs'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     assert!(
         has_table,
@@ -151,22 +158,28 @@ fn test_migrations_creates_habit_logs_table() {
     );
 }
 
-/// RED phase test: asserts idempotency covers the new F5c tables.
-#[test]
-fn test_idempotent_includes_new_tables() {
-    let conn = Connection::open_in_memory().unwrap();
+/// Asserts idempotency covers the new F5c tables.
+#[tokio::test]
+async fn test_idempotent_includes_new_tables() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(":memory:")
+                .create_if_missing(true),
+        )
+        .await
+        .unwrap();
 
     // Call twice
-    alfred::db::schema::run_migrations(&conn).unwrap();
-    alfred::db::schema::run_migrations(&conn).unwrap();
+    alfred::db::schema::run_migrations(&pool).await.unwrap();
+    alfred::db::schema::run_migrations(&pool).await.unwrap();
 
-    let tables: Vec<String> = conn
-        .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
-        .unwrap()
-        .query_map([], |row| row.get(0))
-        .unwrap()
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
+    let tables: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
 
     for table in &["meal_plans", "shopping_list", "habits", "habit_logs"] {
         assert!(

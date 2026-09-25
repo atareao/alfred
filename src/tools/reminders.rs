@@ -1,29 +1,22 @@
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
 use serde_json::Value;
-use std::sync::{Arc, Mutex};
-
-use rusqlite::Connection;
+use sqlx::SqlitePool;
 
 use crate::db::repos::reminders::{Reminder, RemindersRepo};
 use crate::tools::permission::Permission;
 use crate::tools::r#trait::{Tool, ToolError, ToolResult};
 
 pub struct RemindersTool {
-    db: Arc<Mutex<Connection>>,
+    db: SqlitePool,
 }
 
 impl RemindersTool {
-    pub fn new(db: Arc<Mutex<Connection>>) -> Self {
+    pub fn new(db: SqlitePool) -> Self {
         Self { db }
     }
 
     async fn set_reminder(&self, args: Value) -> Result<ToolResult, ToolError> {
-        let conn = self
-            .db
-            .lock()
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
-
         let profile_id = args
             .get("profile_id")
             .and_then(|v| v.as_str())
@@ -55,8 +48,7 @@ impl RemindersTool {
             created_at: Utc::now().to_rfc3339(),
         };
 
-        RemindersRepo::create(&conn, &reminder)
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
+        RemindersRepo::create(&self.db, &reminder).await?;
 
         Ok(ToolResult {
             success: true,
@@ -66,19 +58,13 @@ impl RemindersTool {
     }
 
     async fn list_reminders(&self, args: Value) -> Result<ToolResult, ToolError> {
-        let conn = self
-            .db
-            .lock()
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
-
         let profile_id = args
             .get("profile_id")
             .and_then(|v| v.as_str())
             .unwrap_or("default");
         let status = args.get("status").and_then(|v| v.as_str());
 
-        let reminders = RemindersRepo::list(&conn, profile_id, status)
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
+        let reminders = RemindersRepo::list(&self.db, profile_id, status).await?;
 
         Ok(ToolResult {
             success: true,
@@ -98,12 +84,7 @@ impl RemindersTool {
             return Err(ToolError::InvalidArguments("id is required".into()));
         }
 
-        let conn = self
-            .db
-            .lock()
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
-
-        RemindersRepo::dismiss(&conn, &id).map_err(|e| ToolError::ExecutionError(e.to_string()))?;
+        RemindersRepo::dismiss(&self.db, &id).await?;
 
         Ok(ToolResult {
             success: true,
@@ -124,17 +105,11 @@ impl RemindersTool {
             return Err(ToolError::InvalidArguments("id is required".into()));
         }
 
-        let conn = self
-            .db
-            .lock()
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
-
         // Compute new datetime: now + minutes
         let new_datetime = Utc::now() + Duration::minutes(minutes);
         let new_datetime_str = new_datetime.to_rfc3339();
 
-        RemindersRepo::snooze(&conn, &id, &new_datetime_str)
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
+        RemindersRepo::snooze(&self.db, &id, &new_datetime_str).await?;
 
         Ok(ToolResult {
             success: true,
@@ -197,36 +172,42 @@ impl Tool for RemindersTool {
 mod tests {
     use super::*;
     use crate::db::schema::run_migrations;
+    use sqlx::sqlite::SqlitePoolOptions;
 
-    fn setup_db() -> Arc<Mutex<Connection>> {
-        let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
-        conn.execute(
+    async fn setup_db() -> Result<SqlitePool, sqlx::Error> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await?;
+        run_migrations(&pool).await.unwrap();
+        sqlx::query(
             "INSERT INTO profiles (id, name, preferences) VALUES ('profile-1', 'Test', '{}')",
-            [],
         )
-        .unwrap();
-        Arc::new(Mutex::new(conn))
+        .execute(&pool)
+        .await?;
+        Ok(pool)
     }
 
     #[tokio::test]
-    async fn test_reminders_name_and_description() {
-        let db = setup_db();
+    async fn test_reminders_name_and_description() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = RemindersTool::new(db);
         assert_eq!(tool.name(), "reminders");
         assert_eq!(tool.description(), "Gestión de recordatorios con alarma");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_reminders_permission() {
-        let db = setup_db();
+    async fn test_reminders_permission() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = RemindersTool::new(db);
         assert_eq!(tool.permission(), Permission::Notify);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_set_reminder() {
-        let db = setup_db();
+    async fn test_set_reminder() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = RemindersTool::new(db);
 
         let args = serde_json::json!({
@@ -241,11 +222,12 @@ mod tests {
         assert_eq!(result.data["text"], "Comprar leche");
         assert_eq!(result.data["status"], "pending");
         assert!(result.data["id"].is_string());
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_set_reminder_missing_fields() {
-        let db = setup_db();
+    async fn test_set_reminder_missing_fields() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = RemindersTool::new(db);
 
         let args = serde_json::json!({
@@ -255,11 +237,12 @@ mod tests {
 
         let err = tool.execute(args).await.unwrap_err();
         assert!(matches!(err, ToolError::InvalidArguments(_)));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_list_reminders() {
-        let db = setup_db();
+    async fn test_list_reminders() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = RemindersTool::new(db);
 
         // Create two reminders first
@@ -292,11 +275,12 @@ mod tests {
         assert!(result.success);
         let reminders: Vec<Reminder> = serde_json::from_value(result.data).unwrap();
         assert_eq!(reminders.len(), 2);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_list_reminders_by_status() {
-        let db = setup_db();
+    async fn test_list_reminders_by_status() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = RemindersTool::new(db);
 
         let r1 = tool
@@ -354,11 +338,12 @@ mod tests {
         let dismissed_list: Vec<Reminder> = serde_json::from_value(dismissed.data).unwrap();
         assert_eq!(dismissed_list.len(), 1);
         assert_eq!(dismissed_list[0].id, id2);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_dismiss_reminder() {
-        let db = setup_db();
+    async fn test_dismiss_reminder() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = RemindersTool::new(db);
 
         let created = tool
@@ -394,11 +379,12 @@ mod tests {
         let list: Vec<Reminder> = serde_json::from_value(pending.data).unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].id, id);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_dismiss_reminder_missing_id() {
-        let db = setup_db();
+    async fn test_dismiss_reminder_missing_id() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = RemindersTool::new(db);
 
         let err = tool
@@ -408,11 +394,12 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ToolError::InvalidArguments(_)));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_snooze_reminder() {
-        let db = setup_db();
+    async fn test_snooze_reminder() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = RemindersTool::new(db);
 
         let created = tool
@@ -438,11 +425,12 @@ mod tests {
         assert_eq!(result.data["id"], id);
         assert_eq!(result.data["snoozed_minutes"], 15);
         assert!(result.data["new_datetime"].is_string());
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_snooze_reminder_default_minutes() {
-        let db = setup_db();
+    async fn test_snooze_reminder_default_minutes() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = RemindersTool::new(db);
 
         let created = tool
@@ -465,11 +453,12 @@ mod tests {
             .unwrap();
         assert!(result.success);
         assert_eq!(result.data["snoozed_minutes"], 10);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_snooze_reminder_missing_id() {
-        let db = setup_db();
+    async fn test_snooze_reminder_missing_id() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = RemindersTool::new(db);
 
         let err = tool
@@ -480,11 +469,12 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ToolError::InvalidArguments(_)));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_unknown_operation() {
-        let db = setup_db();
+    async fn test_unknown_operation() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = RemindersTool::new(db);
 
         let err = tool
@@ -494,16 +484,18 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ToolError::InvalidArguments(_)));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_parameters_returns_valid_json_schema() {
-        let db = setup_db();
+    async fn test_parameters_returns_valid_json_schema() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = RemindersTool::new(db);
         let params = tool.parameters();
         assert_eq!(params["type"], "object");
         assert!(params.get("properties").is_some());
         assert!(params.get("required").is_some());
         assert_eq!(params["required"][0], "operation");
+        Ok(())
     }
 }

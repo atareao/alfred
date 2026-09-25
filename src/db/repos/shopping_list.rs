@@ -1,7 +1,8 @@
-use rusqlite::{params, Connection, Result as SqlResult};
-use serde::{Deserialize, Serialize};
+use chrono::Utc;
+use sqlx::{Row, SqlitePool};
+use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ShoppingItem {
     pub id: String,
     pub profile_id: String,
@@ -15,62 +16,71 @@ pub struct ShoppingItem {
 pub struct ShoppingListRepo;
 
 impl ShoppingListRepo {
-    fn row_to_item(row: &rusqlite::Row) -> SqlResult<ShoppingItem> {
-        Ok(ShoppingItem {
-            id: row.get(0)?,
-            profile_id: row.get(1)?,
-            item: row.get(2)?,
-            quantity: row.get(3)?,
-            category: row.get(4)?,
-            checked: row.get(5)?,
-            created_at: row.get(6)?,
-        })
-    }
-
-    pub fn list(
-        conn: &Connection,
+    pub async fn list(
+        pool: &SqlitePool,
         profile_id: &str,
         category: Option<&str>,
-    ) -> SqlResult<Vec<ShoppingItem>> {
+    ) -> Result<Vec<ShoppingItem>, sqlx::Error> {
         let mut sql = String::from(
             "SELECT id, profile_id, item, quantity, category, checked, created_at
              FROM shopping_list WHERE profile_id = ?1",
         );
-        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> =
-            vec![Box::new(profile_id.to_string())];
 
-        if let Some(cat) = category {
-            param_values.push(Box::new(cat.to_string()));
-            sql.push_str(&format!(" AND category = ?{}", param_values.len()));
+        if category.is_some() {
+            sql.push_str(" AND category = ?2");
         }
 
         sql.push_str(" ORDER BY category, item");
 
-        let mut stmt = conn.prepare(&sql)?;
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-            param_values.iter().map(|p| p.as_ref()).collect();
-        let rows = stmt.query_map(param_refs.as_slice(), Self::row_to_item)?;
-        let mut items = Vec::new();
-        for row in rows {
-            items.push(row?);
-        }
+        let rows = if let Some(cat) = category {
+            sqlx::query(&sql)
+                .bind(profile_id)
+                .bind(cat)
+                .fetch_all(pool)
+                .await?
+        } else {
+            sqlx::query(&sql).bind(profile_id).fetch_all(pool).await?
+        };
+
+        let items: Vec<ShoppingItem> = rows
+            .iter()
+            .map(|row| ShoppingItem {
+                id: row.get(0),
+                profile_id: row.get(1),
+                item: row.get(2),
+                quantity: row.get(3),
+                category: row.get(4),
+                checked: row.get::<bool, _>(5),
+                created_at: row.get(6),
+            })
+            .collect();
+
         Ok(items)
     }
 
-    pub fn add(
-        conn: &Connection,
+    pub async fn add(
+        pool: &SqlitePool,
         profile_id: &str,
         item: &str,
         quantity: Option<&str>,
         category: Option<&str>,
-    ) -> SqlResult<ShoppingItem> {
-        let id = uuid::Uuid::new_v4().to_string();
-        let now = chrono::Utc::now().to_rfc3339();
-        conn.execute(
+    ) -> Result<ShoppingItem, sqlx::Error> {
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+
+        sqlx::query(
             "INSERT INTO shopping_list (id, profile_id, item, quantity, category, checked, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6)",
-            params![id, profile_id, item, quantity, category, now],
-        )?;
+        )
+        .bind(&id)
+        .bind(profile_id)
+        .bind(item)
+        .bind(quantity)
+        .bind(category)
+        .bind(&now)
+        .execute(pool)
+        .await?;
+
         Ok(ShoppingItem {
             id,
             profile_id: profile_id.to_string(),
@@ -84,139 +94,190 @@ impl ShoppingListRepo {
 
     /// Marks an item as checked (case-insensitive matching on item name).
     /// Returns true if a row was updated.
-    pub fn check_off(conn: &Connection, profile_id: &str, item: &str) -> SqlResult<bool> {
-        let affected = conn.execute(
+    pub async fn check_off(
+        pool: &SqlitePool,
+        profile_id: &str,
+        item: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query(
             "UPDATE shopping_list SET checked = 1
              WHERE profile_id = ?1 AND LOWER(item) = LOWER(?2)",
-            params![profile_id, item],
-        )?;
-        Ok(affected > 0)
+        )
+        .bind(profile_id)
+        .bind(item)
+        .execute(pool)
+        .await?;
+
+        Ok(result.rows_affected() > 0)
     }
 
     /// Deletes all checked items for the given profile.
     /// Returns the number of rows deleted.
-    pub fn delete_checked(conn: &Connection, profile_id: &str) -> SqlResult<usize> {
-        let affected = conn.execute(
-            "DELETE FROM shopping_list WHERE checked = 1 AND profile_id = ?1",
-            params![profile_id],
-        )?;
-        Ok(affected)
+    pub async fn delete_checked(pool: &SqlitePool, profile_id: &str) -> Result<usize, sqlx::Error> {
+        let result = sqlx::query("DELETE FROM shopping_list WHERE checked = 1 AND profile_id = ?1")
+            .bind(profile_id)
+            .execute(pool)
+            .await?;
+
+        Ok(result.rows_affected() as usize)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::schema::run_migrations;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
-    fn setup() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
-        conn.execute(
-            "INSERT INTO profiles (id, name, preferences) VALUES ('profile-1', 'Test', '{}')",
-            [],
-        )
-        .unwrap();
-        conn
+    async fn setup() -> Result<SqlitePool, sqlx::Error> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(":memory:")
+                    .create_if_missing(true),
+            )
+            .await?;
+
+        sqlx::migrate::Migrator::new(std::path::Path::new("migrations"))
+            .await
+            .unwrap()
+            .run(&pool)
+            .await
+            .unwrap();
+
+        // Insert a profile row so FK constraints are satisfied
+        sqlx::query("INSERT INTO profiles (id, name, preferences) VALUES (?1, 'Test', '{}')")
+            .bind("profile-1")
+            .execute(&pool)
+            .await?;
+
+        Ok(pool)
     }
 
-    #[test]
-    fn test_add_and_list() {
-        let conn = setup();
+    #[tokio::test]
+    async fn test_add_and_list() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
+
         ShoppingListRepo::add(
-            &conn,
+            &pool,
             "profile-1",
             "Leche",
             Some("1 litro"),
             Some("Lácteos"),
         )
-        .unwrap();
-        ShoppingListRepo::add(&conn, "profile-1", "Pan", None, Some("Panadería")).unwrap();
+        .await?;
+        ShoppingListRepo::add(&pool, "profile-1", "Pan", None, Some("Panadería")).await?;
 
-        let items = ShoppingListRepo::list(&conn, "profile-1", None).unwrap();
+        let items = ShoppingListRepo::list(&pool, "profile-1", None).await?;
         assert_eq!(items.len(), 2);
+
+        Ok(())
     }
 
-    #[test]
-    fn test_list_filter_by_category() {
-        let conn = setup();
-        ShoppingListRepo::add(&conn, "profile-1", "Leche", None, Some("Lácteos")).unwrap();
-        ShoppingListRepo::add(&conn, "profile-1", "Manzanas", None, Some("Frutas")).unwrap();
+    #[tokio::test]
+    async fn test_list_filter_by_category() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
 
-        let lacteos = ShoppingListRepo::list(&conn, "profile-1", Some("Lácteos")).unwrap();
+        ShoppingListRepo::add(&pool, "profile-1", "Leche", None, Some("Lácteos")).await?;
+        ShoppingListRepo::add(&pool, "profile-1", "Manzanas", None, Some("Frutas")).await?;
+
+        let lacteos = ShoppingListRepo::list(&pool, "profile-1", Some("Lácteos")).await?;
         assert_eq!(lacteos.len(), 1);
         assert_eq!(lacteos[0].item, "Leche");
+
+        Ok(())
     }
 
-    #[test]
-    fn test_list_ordering() {
-        let conn = setup();
-        ShoppingListRepo::add(&conn, "profile-1", "Zanahoria", None, Some("Verduras")).unwrap();
-        ShoppingListRepo::add(&conn, "profile-1", "Acelga", None, Some("Verduras")).unwrap();
-        ShoppingListRepo::add(&conn, "profile-1", "Leche", None, Some("Lácteos")).unwrap();
+    #[tokio::test]
+    async fn test_list_ordering() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
 
-        let items = ShoppingListRepo::list(&conn, "profile-1", None).unwrap();
+        ShoppingListRepo::add(&pool, "profile-1", "Zanahoria", None, Some("Verduras")).await?;
+        ShoppingListRepo::add(&pool, "profile-1", "Acelga", None, Some("Verduras")).await?;
+        ShoppingListRepo::add(&pool, "profile-1", "Leche", None, Some("Lácteos")).await?;
+
+        let items = ShoppingListRepo::list(&pool, "profile-1", None).await?;
         // Ordered by category, item: Lácteos/Leche, Verduras/Acelga, Verduras/Zanahoria
         assert_eq!(items[0].item, "Leche");
         assert_eq!(items[1].item, "Acelga");
         assert_eq!(items[2].item, "Zanahoria");
+
+        Ok(())
     }
 
-    #[test]
-    fn test_check_off() {
-        let conn = setup();
-        ShoppingListRepo::add(&conn, "profile-1", "Leche", None, None).unwrap();
+    #[tokio::test]
+    async fn test_check_off() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
 
-        assert!(ShoppingListRepo::check_off(&conn, "profile-1", "Leche").unwrap());
+        ShoppingListRepo::add(&pool, "profile-1", "Leche", None, None).await?;
 
-        let items = ShoppingListRepo::list(&conn, "profile-1", None).unwrap();
+        assert!(ShoppingListRepo::check_off(&pool, "profile-1", "Leche").await?);
+
+        let items = ShoppingListRepo::list(&pool, "profile-1", None).await?;
         assert!(items[0].checked);
+
+        Ok(())
     }
 
-    #[test]
-    fn test_check_off_case_insensitive() {
-        let conn = setup();
-        ShoppingListRepo::add(&conn, "profile-1", "Leche", None, None).unwrap();
+    #[tokio::test]
+    async fn test_check_off_case_insensitive() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
 
-        assert!(ShoppingListRepo::check_off(&conn, "profile-1", "leche").unwrap());
+        ShoppingListRepo::add(&pool, "profile-1", "Leche", None, None).await?;
 
-        let items = ShoppingListRepo::list(&conn, "profile-1", None).unwrap();
+        assert!(ShoppingListRepo::check_off(&pool, "profile-1", "leche").await?);
+
+        let items = ShoppingListRepo::list(&pool, "profile-1", None).await?;
         assert!(items[0].checked);
+
+        Ok(())
     }
 
-    #[test]
-    fn test_check_off_not_found() {
-        let conn = setup();
-        assert!(!ShoppingListRepo::check_off(&conn, "profile-1", "Inexistente").unwrap());
+    #[tokio::test]
+    async fn test_check_off_not_found() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
+
+        assert!(!ShoppingListRepo::check_off(&pool, "profile-1", "Inexistente").await?);
+
+        Ok(())
     }
 
-    #[test]
-    fn test_delete_checked() {
-        let conn = setup();
-        ShoppingListRepo::add(&conn, "profile-1", "Leche", None, None).unwrap();
-        ShoppingListRepo::add(&conn, "profile-1", "Pan", None, None).unwrap();
-        ShoppingListRepo::check_off(&conn, "profile-1", "Leche").unwrap();
+    #[tokio::test]
+    async fn test_delete_checked() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
 
-        let deleted = ShoppingListRepo::delete_checked(&conn, "profile-1").unwrap();
+        ShoppingListRepo::add(&pool, "profile-1", "Leche", None, None).await?;
+        ShoppingListRepo::add(&pool, "profile-1", "Pan", None, None).await?;
+        ShoppingListRepo::check_off(&pool, "profile-1", "Leche").await?;
+
+        let deleted = ShoppingListRepo::delete_checked(&pool, "profile-1").await?;
         assert_eq!(deleted, 1);
 
-        let items = ShoppingListRepo::list(&conn, "profile-1", None).unwrap();
+        let items = ShoppingListRepo::list(&pool, "profile-1", None).await?;
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].item, "Pan");
+
+        Ok(())
     }
 
-    #[test]
-    fn test_delete_checked_none() {
-        let conn = setup();
-        ShoppingListRepo::add(&conn, "profile-1", "Leche", None, None).unwrap();
-        let deleted = ShoppingListRepo::delete_checked(&conn, "profile-1").unwrap();
+    #[tokio::test]
+    async fn test_delete_checked_none() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
+
+        ShoppingListRepo::add(&pool, "profile-1", "Leche", None, None).await?;
+        let deleted = ShoppingListRepo::delete_checked(&pool, "profile-1").await?;
         assert_eq!(deleted, 0);
+
+        Ok(())
     }
 
-    #[test]
-    fn test_list_empty() {
-        let conn = setup();
-        let items = ShoppingListRepo::list(&conn, "profile-1", None).unwrap();
+    #[tokio::test]
+    async fn test_list_empty() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
+
+        let items = ShoppingListRepo::list(&pool, "profile-1", None).await?;
         assert!(items.is_empty());
+
+        Ok(())
     }
 }

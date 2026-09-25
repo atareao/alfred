@@ -1,31 +1,30 @@
 use crate::db::repos::events::EventsRepo;
-use rusqlite::Connection;
-use std::sync::{Arc, Mutex};
+use sqlx::SqlitePool;
 
 /// Worker that analyzes upcoming events with a location and generates travel
 /// preparation suggestions (weather, restaurants, itinerary) N days before
 /// the trip.
 #[allow(dead_code)]
 pub struct TravelPrepWorker {
-    db: Arc<Mutex<Connection>>,
+    db: SqlitePool,
     days_before: u32, // default: 3
 }
 
 impl TravelPrepWorker {
-    pub fn new(db: Arc<Mutex<Connection>>, days_before: u32) -> Self {
+    pub fn new(db: SqlitePool, days_before: u32) -> Self {
         Self { db, days_before }
     }
 
     /// Find upcoming trips (events with location) within the next 30 days.
-    pub fn find_upcoming_trips(&self, profile_id: &str) -> Result<Vec<String>, String> {
-        let conn = self.db.lock().map_err(|e| e.to_string())?;
+    pub async fn find_upcoming_trips(&self, profile_id: &str) -> Result<Vec<String>, String> {
         let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
 
         // Look ahead 30 days for events with location
         let end = (chrono::Utc::now() + chrono::Duration::days(30))
             .format("%Y-%m-%d")
             .to_string();
-        let events = EventsRepo::list_by_date_range(&conn, profile_id, &today, &end)
+        let events = EventsRepo::list_by_date_range(&self.db, profile_id, &today, &end)
+            .await
             .map_err(|e| e.to_string())?;
 
         let trips: Vec<String> = events
@@ -64,70 +63,77 @@ mod tests {
     use super::*;
     use crate::db::repos::events::Event;
     use crate::db::schema::run_migrations;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use sqlx::SqlitePool;
 
-    fn setup_db() -> Arc<Mutex<Connection>> {
-        let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
-        conn.execute(
+    async fn setup_db() -> Result<SqlitePool, sqlx::Error> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(":memory:")
+                    .create_if_missing(true),
+            )
+            .await?;
+        run_migrations(&pool).await.unwrap();
+        sqlx::query(
             "INSERT INTO profiles (id, name, preferences) VALUES ('profile-1', 'Test User', '{}')",
-            [],
         )
-        .unwrap();
-        Arc::new(Mutex::new(conn))
+        .execute(&pool)
+        .await?;
+        Ok(pool)
     }
 
-    #[test]
-    fn test_no_trips() {
-        let db = setup_db();
+    #[tokio::test]
+    async fn test_no_trips() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let worker = TravelPrepWorker::new(db, 3);
-        let trips = worker.find_upcoming_trips("profile-1").unwrap();
+        let trips = worker.find_upcoming_trips("profile-1").await?;
         assert!(
             trips.is_empty(),
             "Expected no trips when there are no events with location"
         );
+        Ok(())
     }
 
-    #[test]
-    fn test_find_trips() {
-        let db = setup_db();
+    #[tokio::test]
+    async fn test_find_trips() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let now = chrono::Utc::now();
         let today = now.format("%Y-%m-%d").to_string();
 
         // Insert an event WITH location (should be picked up)
-        {
-            let conn = db.lock().unwrap();
-            let event = Event {
-                id: "evt-trip-1".into(),
-                profile_id: "profile-1".into(),
-                title: "Viaje a Paris".into(),
-                description: None,
-                start_time: format!("{}T10:00:00Z", today),
-                end_time: format!("{}T11:00:00Z", today),
-                location: Some("Paris, Francia".into()),
-                scope: "shared".into(),
-                created_at: now.to_rfc3339(),
-                updated_at: now.to_rfc3339(),
-            };
-            EventsRepo::create(&conn, &event).unwrap();
+        let event = Event {
+            id: "evt-trip-1".into(),
+            profile_id: "profile-1".into(),
+            title: "Viaje a Paris".into(),
+            description: None,
+            start_time: format!("{}T10:00:00Z", today),
+            end_time: format!("{}T11:00:00Z", today),
+            location: Some("Paris, Francia".into()),
+            scope: "shared".into(),
+            created_at: now.to_rfc3339(),
+            updated_at: now.to_rfc3339(),
+        };
+        EventsRepo::create(&db, &event).await?;
 
-            // Insert an event WITHOUT location (should be ignored)
-            let event_no_loc = Event {
-                id: "evt-no-trip-1".into(),
-                profile_id: "profile-1".into(),
-                title: "Reunion local".into(),
-                description: None,
-                start_time: format!("{}T15:00:00Z", today),
-                end_time: format!("{}T16:00:00Z", today),
-                location: None,
-                scope: "shared".into(),
-                created_at: now.to_rfc3339(),
-                updated_at: now.to_rfc3339(),
-            };
-            EventsRepo::create(&conn, &event_no_loc).unwrap();
-        }
+        // Insert an event WITHOUT location (should be ignored)
+        let event_no_loc = Event {
+            id: "evt-no-trip-1".into(),
+            profile_id: "profile-1".into(),
+            title: "Reunion local".into(),
+            description: None,
+            start_time: format!("{}T15:00:00Z", today),
+            end_time: format!("{}T16:00:00Z", today),
+            location: None,
+            scope: "shared".into(),
+            created_at: now.to_rfc3339(),
+            updated_at: now.to_rfc3339(),
+        };
+        EventsRepo::create(&db, &event_no_loc).await?;
 
         let worker = TravelPrepWorker::new(db, 3);
-        let trips = worker.find_upcoming_trips("profile-1").unwrap();
+        let trips = worker.find_upcoming_trips("profile-1").await?;
 
         assert_eq!(trips.len(), 1, "Should find exactly 1 trip (with location)");
         assert!(
@@ -138,11 +144,12 @@ mod tests {
             trips[0].contains("Paris"),
             "Trip description should contain the location"
         );
+        Ok(())
     }
 
-    #[test]
-    fn test_prepare_for_trip_returns_markdown() {
-        let db = setup_db();
+    #[tokio::test]
+    async fn test_prepare_for_trip_returns_markdown() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let worker = TravelPrepWorker::new(db, 3);
 
         let result = worker.prepare_for_trip("Viaje a Paris", "Paris, Francia");
@@ -170,5 +177,6 @@ mod tests {
             markdown.contains("OPENWEATHER_API_KEY"),
             "Should mention the API key requirement"
         );
+        Ok(())
     }
 }

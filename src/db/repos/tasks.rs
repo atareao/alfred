@@ -1,5 +1,5 @@
-use rusqlite::{params, Connection, Result as SqlResult};
 use serde::{Deserialize, Serialize};
+use sqlx::{Row, SqlitePool};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
@@ -18,115 +18,132 @@ pub struct Task {
 pub struct TasksRepo;
 
 impl TasksRepo {
-    pub fn create(conn: &Connection, task: &Task) -> SqlResult<()> {
-        conn.execute(
+    pub async fn create(pool: &SqlitePool, task: &Task) -> Result<(), sqlx::Error> {
+        sqlx::query(
             "INSERT INTO tasks (id, profile_id, content, status, priority, project, due_date, scope, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            params![
-                task.id, task.profile_id, task.content, task.status,
-                task.priority, task.project, task.due_date, task.scope,
-                task.created_at, task.updated_at,
-            ],
-        )?;
+        )
+        .bind(&task.id)
+        .bind(&task.profile_id)
+        .bind(&task.content)
+        .bind(&task.status)
+        .bind(&task.priority)
+        .bind(&task.project)
+        .bind(&task.due_date)
+        .bind(&task.scope)
+        .bind(&task.created_at)
+        .bind(&task.updated_at)
+        .execute(pool)
+        .await?;
         Ok(())
     }
 
-    pub fn find_by_id(conn: &Connection, id: &str) -> SqlResult<Option<Task>> {
-        let mut stmt = conn.prepare(
+    pub async fn find_by_id(pool: &SqlitePool, id: &str) -> Result<Option<Task>, sqlx::Error> {
+        let row = sqlx::query(
             "SELECT id, profile_id, content, status, priority, project, due_date, scope, created_at, updated_at
-             FROM tasks WHERE id = ?1"
-        )?;
-        let mut rows = stmt.query_map(params![id], |row| {
-            Ok(Task {
-                id: row.get(0)?,
-                profile_id: row.get(1)?,
-                content: row.get(2)?,
-                status: row.get(3)?,
-                priority: row.get(4)?,
-                project: row.get(5)?,
-                due_date: row.get(6)?,
-                scope: row.get(7)?,
-                created_at: row.get(8)?,
-                updated_at: row.get(9)?,
-            })
-        })?;
-        match rows.next() {
-            Some(Ok(task)) => Ok(Some(task)),
-            _ => Ok(None),
+             FROM tasks WHERE id = ?1",
+        )
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+
+        match row {
+            Some(r) => Ok(Some(Task {
+                id: r.get("id"),
+                profile_id: r.get("profile_id"),
+                content: r.get("content"),
+                status: r.get("status"),
+                priority: r.get("priority"),
+                project: r.get("project"),
+                due_date: r.get("due_date"),
+                scope: r.get("scope"),
+                created_at: r.get("created_at"),
+                updated_at: r.get("updated_at"),
+            })),
+            None => Ok(None),
         }
     }
 
     /// List tasks with optional filters. All filter parameters are optional.
     #[allow(clippy::too_many_arguments)]
-    pub fn list(
-        conn: &Connection,
+    pub async fn list(
+        pool: &SqlitePool,
         profile_id: &str,
         status: Option<&str>,
         priority: Option<&str>,
         project: Option<&str>,
         scope: Option<&str>,
-    ) -> SqlResult<Vec<Task>> {
+    ) -> Result<Vec<Task>, sqlx::Error> {
         let mut sql = String::from(
             "SELECT id, profile_id, content, status, priority, project, due_date, scope, created_at, updated_at
-             FROM tasks WHERE profile_id = ?1"
+             FROM tasks WHERE profile_id = ?1",
         );
-        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> =
-            vec![Box::new(profile_id.to_string())];
+        let mut param_idx = 2u8;
 
-        if let Some(s) = status {
-            param_values.push(Box::new(s.to_string()));
-            sql.push_str(&format!(" AND status = ?{}", param_values.len()));
+        if status.is_some() {
+            sql.push_str(&format!(" AND status = ?{param_idx}"));
+            param_idx += 1;
         }
-        if let Some(p) = priority {
-            param_values.push(Box::new(p.to_string()));
-            sql.push_str(&format!(" AND priority = ?{}", param_values.len()));
+        if priority.is_some() {
+            sql.push_str(&format!(" AND priority = ?{param_idx}"));
+            param_idx += 1;
         }
-        if let Some(p) = project {
-            param_values.push(Box::new(p.to_string()));
-            sql.push_str(&format!(" AND project = ?{}", param_values.len()));
+        if project.is_some() {
+            sql.push_str(&format!(" AND project = ?{param_idx}"));
+            param_idx += 1;
         }
-        if let Some(s) = scope {
-            param_values.push(Box::new(s.to_string()));
-            sql.push_str(&format!(" AND scope = ?{}", param_values.len()));
+        if scope.is_some() {
+            sql.push_str(&format!(" AND scope = ?{param_idx}"));
         }
 
         sql.push_str(" ORDER BY created_at DESC");
 
-        let mut stmt = conn.prepare(&sql)?;
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-            param_values.iter().map(|p| p.as_ref()).collect();
-        let rows = stmt.query_map(param_refs.as_slice(), |row| {
-            Ok(Task {
-                id: row.get(0)?,
-                profile_id: row.get(1)?,
-                content: row.get(2)?,
-                status: row.get(3)?,
-                priority: row.get(4)?,
-                project: row.get(5)?,
-                due_date: row.get(6)?,
-                scope: row.get(7)?,
-                created_at: row.get(8)?,
-                updated_at: row.get(9)?,
-            })
-        })?;
-        let mut tasks = Vec::new();
-        for row in rows {
-            tasks.push(row?);
+        let mut query = sqlx::query(&sql).bind(profile_id);
+        if let Some(s) = status {
+            query = query.bind(s);
         }
+        if let Some(p) = priority {
+            query = query.bind(p);
+        }
+        if let Some(p) = project {
+            query = query.bind(p);
+        }
+        if let Some(s) = scope {
+            query = query.bind(s);
+        }
+
+        let rows = query.fetch_all(pool).await?;
+
+        let tasks: Vec<Task> = rows
+            .iter()
+            .map(|r| Task {
+                id: r.get("id"),
+                profile_id: r.get("profile_id"),
+                content: r.get("content"),
+                status: r.get("status"),
+                priority: r.get("priority"),
+                project: r.get("project"),
+                due_date: r.get("due_date"),
+                scope: r.get("scope"),
+                created_at: r.get("created_at"),
+                updated_at: r.get("updated_at"),
+            })
+            .collect();
+
         Ok(tasks)
     }
 
-    pub fn update(
-        conn: &Connection,
+    pub async fn update(
+        pool: &SqlitePool,
         id: &str,
         content: Option<&str>,
         priority: Option<&str>,
         project: Option<&str>,
         due_date: Option<&str>,
         scope: Option<&str>,
-    ) -> SqlResult<()> {
+    ) -> Result<(), sqlx::Error> {
         let now = chrono::Utc::now().to_rfc3339();
-        conn.execute(
+        sqlx::query(
             "UPDATE tasks SET
                 content = COALESCE(?1, content),
                 priority = COALESCE(?2, priority),
@@ -135,31 +152,44 @@ impl TasksRepo {
                 scope = COALESCE(?5, scope),
                 updated_at = ?6
              WHERE id = ?7",
-            params![content, priority, project, due_date, scope, now, id],
-        )?;
+        )
+        .bind(content)
+        .bind(priority)
+        .bind(project)
+        .bind(due_date)
+        .bind(scope)
+        .bind(&now)
+        .bind(id)
+        .execute(pool)
+        .await?;
         Ok(())
     }
 
-    pub fn complete(conn: &Connection, id: &str) -> SqlResult<()> {
+    pub async fn complete(pool: &SqlitePool, id: &str) -> Result<(), sqlx::Error> {
         let now = chrono::Utc::now().to_rfc3339();
-        conn.execute(
-            "UPDATE tasks SET status = 'completed', updated_at = ?1 WHERE id = ?2",
-            params![now, id],
-        )?;
+        sqlx::query("UPDATE tasks SET status = 'completed', updated_at = ?1 WHERE id = ?2")
+            .bind(&now)
+            .bind(id)
+            .execute(pool)
+            .await?;
         Ok(())
     }
 
-    pub fn cancel(conn: &Connection, id: &str) -> SqlResult<()> {
+    pub async fn cancel(pool: &SqlitePool, id: &str) -> Result<(), sqlx::Error> {
         let now = chrono::Utc::now().to_rfc3339();
-        conn.execute(
-            "UPDATE tasks SET status = 'cancelled', updated_at = ?1 WHERE id = ?2",
-            params![now, id],
-        )?;
+        sqlx::query("UPDATE tasks SET status = 'cancelled', updated_at = ?1 WHERE id = ?2")
+            .bind(&now)
+            .bind(id)
+            .execute(pool)
+            .await?;
         Ok(())
     }
 
-    pub fn delete(conn: &Connection, id: &str) -> SqlResult<()> {
-        conn.execute("DELETE FROM tasks WHERE id = ?1", params![id])?;
+    pub async fn delete(pool: &SqlitePool, id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM tasks WHERE id = ?1")
+            .bind(id)
+            .execute(pool)
+            .await?;
         Ok(())
     }
 }
@@ -167,17 +197,51 @@ impl TasksRepo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::schema::run_migrations;
+    use sqlx::sqlite::SqlitePoolOptions;
 
-    fn setup() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
-        conn.execute(
-            "INSERT INTO profiles (id, name, preferences) VALUES ('profile-1', 'Test', '{}')",
-            [],
+    async fn setup() -> Result<SqlitePool, sqlx::Error> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await?;
+
+        // Create profiles table
+        sqlx::query(
+            "CREATE TABLE profiles (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                preferences TEXT NOT NULL DEFAULT '{}'
+            )",
         )
-        .unwrap();
-        conn
+        .execute(&pool)
+        .await?;
+
+        // Create tasks table
+        sqlx::query(
+            "CREATE TABLE tasks (
+                id TEXT PRIMARY KEY,
+                profile_id TEXT NOT NULL REFERENCES profiles(id),
+                content TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                priority TEXT NOT NULL DEFAULT 'medium',
+                project TEXT,
+                due_date TEXT,
+                scope TEXT NOT NULL DEFAULT 'shared',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await?;
+
+        // Insert test profile
+        sqlx::query(
+            "INSERT INTO profiles (id, name, preferences) VALUES ('profile-1', 'Test', '{}')",
+        )
+        .execute(&pool)
+        .await?;
+
+        Ok(pool)
     }
 
     fn sample_task(id: &str, project: Option<&str>, status: &str, priority: &str) -> Task {
@@ -195,58 +259,66 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_create_task() {
-        let conn = setup();
+    #[tokio::test]
+    async fn test_create_task() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
         let task = sample_task("task-1", Some("Proyecto X"), "pending", "high");
-        TasksRepo::create(&conn, &task).unwrap();
-        let found = TasksRepo::find_by_id(&conn, "task-1").unwrap().unwrap();
+        TasksRepo::create(&pool, &task).await.unwrap();
+        let found = TasksRepo::find_by_id(&pool, "task-1").await?.unwrap();
         assert_eq!(found.content, "Task task-1");
         assert_eq!(found.priority, "high");
+
+        Ok(())
     }
 
-    #[test]
-    fn test_list_by_project() {
-        let conn = setup();
-        TasksRepo::create(&conn, &sample_task("t1", Some("Alpha"), "pending", "low")).unwrap();
-        TasksRepo::create(&conn, &sample_task("t2", Some("Beta"), "pending", "high")).unwrap();
+    #[tokio::test]
+    async fn test_list_by_project() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
+        TasksRepo::create(&pool, &sample_task("t1", Some("Alpha"), "pending", "low")).await?;
+        TasksRepo::create(&pool, &sample_task("t2", Some("Beta"), "pending", "high")).await?;
         TasksRepo::create(
-            &conn,
+            &pool,
             &sample_task("t3", Some("Alpha"), "completed", "medium"),
         )
-        .unwrap();
+        .await?;
 
-        let alpha = TasksRepo::list(&conn, "profile-1", None, None, Some("Alpha"), None).unwrap();
+        let alpha = TasksRepo::list(&pool, "profile-1", None, None, Some("Alpha"), None).await?;
         assert_eq!(alpha.len(), 2);
 
-        let beta = TasksRepo::list(&conn, "profile-1", None, None, Some("Beta"), None).unwrap();
+        let beta = TasksRepo::list(&pool, "profile-1", None, None, Some("Beta"), None).await?;
         assert_eq!(beta.len(), 1);
+
+        Ok(())
     }
 
-    #[test]
-    fn test_complete_task() {
-        let conn = setup();
-        TasksRepo::create(&conn, &sample_task("t4", None, "pending", "medium")).unwrap();
-        TasksRepo::complete(&conn, "t4").unwrap();
-        let found = TasksRepo::find_by_id(&conn, "t4").unwrap().unwrap();
+    #[tokio::test]
+    async fn test_complete_task() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
+        TasksRepo::create(&pool, &sample_task("t4", None, "pending", "medium")).await?;
+        TasksRepo::complete(&pool, "t4").await.unwrap();
+        let found = TasksRepo::find_by_id(&pool, "t4").await.unwrap().unwrap();
         assert_eq!(found.status, "completed");
+
+        Ok(())
     }
 
-    #[test]
-    fn test_cancel_task() {
-        let conn = setup();
-        TasksRepo::create(&conn, &sample_task("t5", None, "pending", "medium")).unwrap();
-        TasksRepo::cancel(&conn, "t5").unwrap();
-        let found = TasksRepo::find_by_id(&conn, "t5").unwrap().unwrap();
+    #[tokio::test]
+    async fn test_cancel_task() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
+        TasksRepo::create(&pool, &sample_task("t5", None, "pending", "medium")).await?;
+        TasksRepo::cancel(&pool, "t5").await.unwrap();
+        let found = TasksRepo::find_by_id(&pool, "t5").await.unwrap().unwrap();
         assert_eq!(found.status, "cancelled");
+
+        Ok(())
     }
 
-    #[test]
-    fn test_update_task() {
-        let conn = setup();
-        TasksRepo::create(&conn, &sample_task("t6", None, "pending", "low")).unwrap();
+    #[tokio::test]
+    async fn test_update_task() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
+        TasksRepo::create(&pool, &sample_task("t6", None, "pending", "low")).await?;
         TasksRepo::update(
-            &conn,
+            &pool,
             "t6",
             Some("Nuevo contenido"),
             Some("high"),
@@ -254,39 +326,45 @@ mod tests {
             None,
             None,
         )
-        .unwrap();
-        let found = TasksRepo::find_by_id(&conn, "t6").unwrap().unwrap();
+        .await?;
+        let found = TasksRepo::find_by_id(&pool, "t6").await.unwrap().unwrap();
         assert_eq!(found.content, "Nuevo contenido");
         assert_eq!(found.priority, "high");
         assert_eq!(found.project.unwrap(), "Proyecto Z");
+
+        Ok(())
     }
 
-    #[test]
-    fn test_delete_task() {
-        let conn = setup();
-        TasksRepo::create(&conn, &sample_task("t7", None, "pending", "medium")).unwrap();
-        TasksRepo::delete(&conn, "t7").unwrap();
-        let found = TasksRepo::find_by_id(&conn, "t7").unwrap();
+    #[tokio::test]
+    async fn test_delete_task() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
+        TasksRepo::create(&pool, &sample_task("t7", None, "pending", "medium")).await?;
+        TasksRepo::delete(&pool, "t7").await.unwrap();
+        let found = TasksRepo::find_by_id(&pool, "t7").await.unwrap();
         assert!(found.is_none());
+
+        Ok(())
     }
 
-    #[test]
-    fn test_list_by_status_and_priority() {
-        let conn = setup();
-        TasksRepo::create(&conn, &sample_task("t8", None, "pending", "high")).unwrap();
-        TasksRepo::create(&conn, &sample_task("t9", None, "completed", "low")).unwrap();
-        TasksRepo::create(&conn, &sample_task("t10", None, "pending", "low")).unwrap();
+    #[tokio::test]
+    async fn test_list_by_status_and_priority() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
+        TasksRepo::create(&pool, &sample_task("t8", None, "pending", "high")).await?;
+        TasksRepo::create(&pool, &sample_task("t9", None, "completed", "low")).await?;
+        TasksRepo::create(&pool, &sample_task("t10", None, "pending", "low")).await?;
 
         let pending_high = TasksRepo::list(
-            &conn,
+            &pool,
             "profile-1",
             Some("pending"),
             Some("high"),
             None,
             None,
         )
-        .unwrap();
+        .await?;
         assert_eq!(pending_high.len(), 1);
         assert_eq!(pending_high[0].id, "t8");
+
+        Ok(())
     }
 }

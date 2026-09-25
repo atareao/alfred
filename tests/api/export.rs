@@ -5,7 +5,7 @@ use tower::ServiceExt;
 
 #[tokio::test]
 async fn test_export_returns_json() {
-    let app = alfred::app();
+    let app = alfred::app().await;
     let response = app
         .oneshot(
             Request::builder()
@@ -24,7 +24,6 @@ async fn test_export_returns_json() {
     let data: Value = serde_json::from_slice(&body).unwrap();
     // All core tables should be present in the export
     assert!(data.get("profiles").is_some(), "missing profiles");
-    assert!(data.get("conversations").is_some(), "missing conversations");
     assert!(data.get("messages").is_some(), "missing messages");
     assert!(data.get("events").is_some(), "missing events");
     assert!(data.get("tasks").is_some(), "missing tasks");
@@ -41,7 +40,7 @@ async fn test_export_returns_json() {
 
 #[tokio::test]
 async fn test_export_contains_seeded_data() {
-    let app = alfred::app();
+    let app = alfred::app().await;
     let response = app
         .oneshot(
             Request::builder()

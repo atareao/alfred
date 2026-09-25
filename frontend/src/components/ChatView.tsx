@@ -1,46 +1,54 @@
-import React from 'react';
-import { Typography } from 'antd';
+import React, { useRef, useEffect } from 'react';
 import type { Message } from '../types';
 import { MessageBubble } from './MessageBubble';
-import { MessageInput } from './MessageInput';
-
-const { Title } = Typography;
+import { MessageInput, type MessageInputHandle } from './MessageInput';
 
 interface ChatViewProps {
   messages: Message[];
   loading: boolean;
-  hasMore: boolean;
-  onLoadMore: () => void;
   onSendMessage: (content: string) => void;
-  title: string;
   streaming?: boolean;
   streamingContent?: string;
   activeTools?: string[];
+  settings?: Record<string, string> | null;
 }
 
 export const ChatView: React.FC<ChatViewProps> = (props) => {
-  const { messages, loading, onSendMessage, title, streaming, streamingContent, activeTools } = props;
+  const { messages, loading, onSendMessage, streaming, streamingContent, activeTools, settings } = props;
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<MessageInputHandle>(null);
+
+  const fontSize = settings?.font_size ? parseInt(settings.font_size, 10) : 16;
 
   const allMessages = streaming && streamingContent
     ? [...messages, {
         id: 'streaming',
-        conversation_id: '',
         role: 'assistant' as const,
         content: streamingContent,
         created_at: new Date().toISOString(),
       }]
     : messages;
 
+  // Auto-scroll to bottom when messages or streaming content changes
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [allMessages, streamingContent]);
+
+  // Focus input when streaming ends
+  useEffect(() => {
+    if (!streaming) {
+      inputRef.current?.focus();
+    }
+  }, [streaming]);
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <div style={{ padding: '16px 24px', borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
-        <Title level={4} style={{ margin: 0 }}>{title}</Title>
-      </div>
-      <div style={{ flex: 1, overflow: 'auto', padding: 24 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 64px)', fontSize }}>
+      <div style={{ flex: 1, overflow: 'auto', padding: '16px 0', scrollBehavior: 'smooth' }}>
         {loading && <div>Cargando...</div>}
         {allMessages.map(msg => (
           <MessageBubble key={msg.id} message={msg} />
         ))}
+        <div ref={bottomRef} />
         {allMessages.length === 0 && !loading && (
           <div style={{ textAlign: 'center', marginTop: '40vh', color: 'rgba(255,255,255,0.45)' }}>
             Inicia una conversación con Alfred
@@ -76,7 +84,7 @@ export const ChatView: React.FC<ChatViewProps> = (props) => {
         </div>
       )}
       <div style={{ padding: 16, borderTop: '1px solid rgba(255,255,255,0.1)' }}>
-        <MessageInput onSend={onSendMessage} disabled={loading || !!streaming} />
+        <MessageInput ref={inputRef} onSend={onSendMessage} disabled={loading || !!streaming} />
       </div>
     </div>
   );

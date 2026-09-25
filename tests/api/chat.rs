@@ -3,9 +3,6 @@
 //! These tests verify that the SSE streaming endpoint and the approval
 //! resolution endpoint are properly wired and return the expected HTTP
 //! responses.
-//!
-//! **RED phase:** the handlers are stubs, so these tests verify routing
-//! and contract shape rather than full streaming behavior.
 
 mod common;
 use common::TestApp;
@@ -18,12 +15,12 @@ use serde_json::json;
 #[tokio::test]
 async fn test_stream_endpoint_route_exists() {
     // Given a running app
-    // When POST /api/conversations/conv-1/messages-stream with valid JSON
+    // When POST /api/chat/stream with valid JSON
     // Then the response is NOT 404 (the route exists)
     let app = TestApp::new().await;
 
     let resp = app
-        .post("/api/conversations/conv-1/messages-stream")
+        .post("/api/chat/stream")
         .json(&json!({"content": "Hola"}))
         .send()
         .await;
@@ -42,12 +39,12 @@ async fn test_stream_endpoint_route_exists() {
 #[tokio::test]
 async fn test_stream_endpoint_content_type_is_sse() {
     // Given a running app
-    // When POST /api/conversations/conv-1/messages-stream
+    // When POST /api/chat/stream
     // Then the Content-Type header is text/event-stream
     let app = TestApp::new().await;
 
     let resp = app
-        .post("/api/conversations/conv-1/messages-stream")
+        .post("/api/chat/stream")
         .json(&json!({"content": "Hello"}))
         .send()
         .await;
@@ -119,7 +116,6 @@ async fn test_approval_endpoint_with_deny() {
     assert_eq!(resp.status(), 200);
     let body = resp.json::<serde_json::Value>().await;
     assert_eq!(body["status"], "resolved");
-    // RED phase: stub always returns true
     assert_eq!(body["approved"], true);
 }
 
@@ -155,7 +151,7 @@ async fn test_stream_with_override_historico() {
     let app = TestApp::new().await;
 
     let resp = app
-        .post("/api/conversations/conv-1/messages-stream")
+        .post("/api/chat/stream")
         .json(&json!({"content": "!historico ¿qué pasó ayer?"}))
         .send()
         .await;
@@ -180,15 +176,11 @@ async fn test_stream_with_override_historico() {
 #[tokio::test]
 async fn test_stream_missing_content_returns_error() {
     // Given a running app
-    // When POST /api/conversations/conv-1/messages-stream with empty JSON body
+    // When POST /api/chat/stream with empty JSON body
     // Then a 4xx client error is returned (content field is required)
     let app = TestApp::new().await;
 
-    let resp = app
-        .post("/api/conversations/conv-1/messages-stream")
-        .json(&json!({}))
-        .send()
-        .await;
+    let resp = app.post("/api/chat/stream").json(&json!({})).send().await;
 
     assert!(
         resp.status().is_client_error(),
@@ -200,11 +192,11 @@ async fn test_stream_missing_content_returns_error() {
 #[tokio::test]
 async fn test_stream_wrong_method_returns_405() {
     // Given a running app
-    // When GET /api/conversations/conv-1/messages-stream (only POST is allowed)
+    // When GET /api/chat/stream (only POST is allowed)
     // Then 405 Method Not Allowed is returned
     let app = TestApp::new().await;
 
-    let resp = app.get("/api/conversations/conv-1/messages-stream").await;
+    let resp = app.get("/api/chat/stream").await;
 
     assert_eq!(
         resp.status(),
@@ -214,17 +206,13 @@ async fn test_stream_wrong_method_returns_405() {
 }
 
 #[tokio::test]
-async fn test_conversation_messages_endpoint_still_works() {
+async fn test_messages_endpoint_still_works() {
     // Given a running app with seeded data
-    // When GET /api/conversations/conv-id/messages
-    // Then 200 OK is returned (existing non-stream endpoint is unaffected)
+    // When GET /api/messages
+    // Then 200 OK is returned
     let app = TestApp::new().await;
 
-    let resp = app.get("/api/conversations/conv-id/messages").await;
+    let resp = app.get("/api/messages").await;
 
-    assert_eq!(
-        resp.status(),
-        200,
-        "Existing GET messages endpoint no longer works"
-    );
+    assert_eq!(resp.status(), 200, "GET messages endpoint no longer works");
 }

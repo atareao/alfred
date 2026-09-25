@@ -1,7 +1,6 @@
 use crate::db::repos::events::{Event, EventsRepo};
 use chrono::NaiveDateTime;
-use rusqlite::Connection;
-use std::sync::{Arc, Mutex};
+use sqlx::SqlitePool;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConflictSeverity {
@@ -18,12 +17,12 @@ pub struct ConflictAlert {
 }
 
 pub struct ConflictDetector {
-    db: Arc<Mutex<Connection>>,
+    db: SqlitePool,
     min_gap_minutes: i64, // default: 30
 }
 
 impl ConflictDetector {
-    pub fn new(db: Arc<Mutex<Connection>>) -> Self {
+    pub fn new(db: SqlitePool) -> Self {
         Self {
             db,
             min_gap_minutes: 30,
@@ -32,11 +31,15 @@ impl ConflictDetector {
 
     /// Check for conflicts on a specific date.
     /// Returns a list of ConflictAlerts.
-    pub fn check_date(&self, profile_id: &str, date: &str) -> Result<Vec<ConflictAlert>, String> {
-        let conn = self.db.lock().map_err(|e| e.to_string())?;
+    pub async fn check_date(
+        &self,
+        profile_id: &str,
+        date: &str,
+    ) -> Result<Vec<ConflictAlert>, String> {
         let next_day = format_tomorrow(date);
 
-        let events = EventsRepo::list_by_date_range(&conn, profile_id, date, &next_day)
+        let events = EventsRepo::list_by_date_range(&self.db, profile_id, date, &next_day)
+            .await
             .map_err(|e| e.to_string())?;
 
         let mut alerts = vec![];
@@ -91,17 +94,26 @@ fn format_tomorrow(date: &str) -> String {
 mod tests {
     use super::*;
     use crate::db::schema::run_migrations;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use sqlx::SqlitePool;
 
-    fn setup_db() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
-        conn.execute(
+    async fn setup_db() -> Result<SqlitePool, sqlx::Error> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(":memory:")
+                    .create_if_missing(true),
+            )
+            .await?;
+        run_migrations(&pool).await.unwrap();
+        sqlx::query(
             "INSERT INTO profiles (id, name, preferences, created_at, updated_at)
              VALUES ('profile-1', 'Test', '{}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
-            [],
         )
-        .unwrap();
-        conn
+        .execute(&pool)
+        .await?;
+        Ok(pool)
     }
 
     fn make_event(id: &str, start: &str, end: &str) -> Event {
@@ -119,59 +131,59 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_no_conflicts_empty() {
-        let conn = setup_db();
-        let db = Arc::new(Mutex::new(conn));
-        let detector = ConflictDetector::new(db);
-        let alerts = detector.check_date("profile-1", "2026-09-24").unwrap();
+    #[tokio::test]
+    async fn test_no_conflicts_empty() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_db().await?;
+        let detector = ConflictDetector::new(pool);
+        let alerts = detector.check_date("profile-1", "2026-09-24").await?;
         assert!(alerts.is_empty());
+        Ok(())
     }
 
-    #[test]
-    fn test_no_conflicts_well_spaced() {
-        let conn = setup_db();
+    #[tokio::test]
+    async fn test_no_conflicts_well_spaced() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_db().await?;
         // Two events with 1h gap — no alert expected
         let e1 = make_event("evt-1", "2026-09-24T09:00:00", "2026-09-24T10:00:00");
         let e2 = make_event("evt-2", "2026-09-24T11:00:00", "2026-09-24T12:00:00");
-        EventsRepo::create(&conn, &e1).unwrap();
-        EventsRepo::create(&conn, &e2).unwrap();
-        let db = Arc::new(Mutex::new(conn));
-        let detector = ConflictDetector::new(db);
-        let alerts = detector.check_date("profile-1", "2026-09-24").unwrap();
+        EventsRepo::create(&pool, &e1).await?;
+        EventsRepo::create(&pool, &e2).await?;
+        let detector = ConflictDetector::new(pool);
+        let alerts = detector.check_date("profile-1", "2026-09-24").await?;
         assert!(alerts.is_empty());
+        Ok(())
     }
 
-    #[test]
-    fn test_warning_tight_gap() {
-        let conn = setup_db();
+    #[tokio::test]
+    async fn test_warning_tight_gap() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_db().await?;
         // Two events with 10min gap (< 30) — should return Warning
         let e1 = make_event("evt-1", "2026-09-24T09:00:00", "2026-09-24T10:00:00");
         let e2 = make_event("evt-2", "2026-09-24T10:10:00", "2026-09-24T11:00:00");
-        EventsRepo::create(&conn, &e1).unwrap();
-        EventsRepo::create(&conn, &e2).unwrap();
-        let db = Arc::new(Mutex::new(conn));
-        let detector = ConflictDetector::new(db);
-        let alerts = detector.check_date("profile-1", "2026-09-24").unwrap();
+        EventsRepo::create(&pool, &e1).await?;
+        EventsRepo::create(&pool, &e2).await?;
+        let detector = ConflictDetector::new(pool);
+        let alerts = detector.check_date("profile-1", "2026-09-24").await?;
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].severity, ConflictSeverity::Warning);
         assert_eq!(alerts[0].gap_minutes, 10);
+        Ok(())
     }
 
-    #[test]
-    fn test_critical_overlap() {
-        let conn = setup_db();
+    #[tokio::test]
+    async fn test_critical_overlap() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_db().await?;
         // Two overlapping events — should return Critical
         let e1 = make_event("evt-1", "2026-09-24T09:00:00", "2026-09-24T10:30:00");
         let e2 = make_event("evt-2", "2026-09-24T10:00:00", "2026-09-24T11:00:00");
-        EventsRepo::create(&conn, &e1).unwrap();
-        EventsRepo::create(&conn, &e2).unwrap();
-        let db = Arc::new(Mutex::new(conn));
-        let detector = ConflictDetector::new(db);
-        let alerts = detector.check_date("profile-1", "2026-09-24").unwrap();
+        EventsRepo::create(&pool, &e1).await?;
+        EventsRepo::create(&pool, &e2).await?;
+        let detector = ConflictDetector::new(pool);
+        let alerts = detector.check_date("profile-1", "2026-09-24").await?;
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].severity, ConflictSeverity::Critical);
         assert!(alerts[0].gap_minutes < 0); // negative = overlap
+        Ok(())
     }
 
     #[test]

@@ -15,7 +15,6 @@ export function useSSE() {
   const abortRef = useRef<AbortController | null>(null);
 
   const connect = useCallback(async (
-    conversationId: string,
     content: string,
     options: UseSSEOptions = {},
     browserContext?: BrowserContext,
@@ -26,7 +25,7 @@ export function useSSE() {
     abortRef.current = new AbortController();
 
     setConnected(true);
-    console.log('[useSSE] Connecting to:', `${BASE_URL}/conversations/${conversationId}/messages-stream`, 'body content length:', content.length);
+    console.log('[useSSE] Connecting to:', `${BASE_URL}/chat/stream`, 'body content length:', content.length);
 
     try {
       const body: Record<string, unknown> = { content };
@@ -35,7 +34,7 @@ export function useSSE() {
       }
 
       const response = await fetch(
-        `${BASE_URL}/conversations/${conversationId}/messages-stream`,
+        `${BASE_URL}/chat/stream`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

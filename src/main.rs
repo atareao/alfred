@@ -3,7 +3,7 @@ use alfred::{app_with_state, AppState};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load configuration from environment variables
     let config = Config::from_env();
 
@@ -17,22 +17,20 @@ async fn main() {
     tracing::info!(model = %config.openrouter_model, "Configuration loaded");
 
     // Build full application state (database, orchestrator, tools, guardrails, auth)
-    let state = AppState::new_with_orchestrator(&config.database_url)
-        .await
-        .expect("Failed to build application state");
+    let state = AppState::new_with_orchestrator(&config.database_url).await?;
 
     // Build the application router
     let router = app_with_state(state);
 
     // Bind and serve on configured host:port
     let addr = format!("{}:{}", config.host, config.port);
-    let listener = tokio::net::TcpListener::bind(&addr)
-        .await
-        .expect("Failed to bind to address");
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
 
     tracing::info!("Alfred server listening on {addr}");
 
-    axum::serve(listener, router).await.expect("Server error");
+    axum::serve(listener, router).await?;
+
+    Ok(())
 }
 
 #[cfg(test)]

@@ -13,11 +13,11 @@ pub mod telemetry;
 pub mod tools;
 pub mod workers;
 
-use axum::routing::{delete, get, post, put};
+use axum::routing::{delete, get, put};
 use axum::{extract::State, Json, Router};
-use rusqlite::Connection;
 use serde_json::Value;
-use std::sync::{Arc, Mutex};
+use sqlx::SqlitePool;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
@@ -27,11 +27,10 @@ use crate::orchestrator::context_builder::ContextBuilder;
 use crate::orchestrator::guardrails::Guardrails;
 use crate::tools::registry::ToolRegistry;
 
-/// Shared application state wrapped in Arc + Mutex for single-connection SQLite.
-/// In Phase 2 this may be replaced by a proper connection pool.
+/// Shared application state with an async SQLite connection pool.
 #[derive(Clone)]
 pub struct AppState {
-    pub db: Arc<Mutex<Connection>>,
+    pub db: SqlitePool,
     pub orchestrator: Option<Arc<Orchestrator>>,
     pub guardrails: Option<Arc<Guardrails>>,
     pub tool_registry: Option<Arc<ToolRegistry>>,
@@ -43,16 +42,23 @@ impl AppState {
     /// Create a new AppState with an in-memory SQLite database and no seed data.
     /// Used by integration tests that need a clean state.
     pub async fn new_in_memory_empty() -> Self {
-        let conn =
-            Connection::open_in_memory().expect("Failed to create in-memory database for tests");
-        db::schema::run_migrations(&conn).expect("Failed to run migrations on in-memory database");
-        // Initialize FTS triggers and vector search
-        let _ = db::vector::register_vector_ext(&conn);
-        db::fts::create_fts_triggers(&conn).expect("Failed to create FTS triggers");
-        // Seed default tools
-        let _ = db::repos::tools::ToolsRepo::seed_defaults(&conn);
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(":memory:")
+                    .create_if_missing(true),
+            )
+            .await
+            .expect("Failed to create in-memory database");
+        db::schema::run_migrations(&pool)
+            .await
+            .expect("Failed to run migrations on in-memory database");
+        let _ = db::fts::create_fts_triggers(&pool).await;
+        let _ = db::repos::tools::ToolsRepo::seed_defaults(&pool).await;
         Self {
-            db: Arc::new(Mutex::new(conn)),
+            db: pool,
             orchestrator: None,
             guardrails: None,
             tool_registry: None,
@@ -64,18 +70,25 @@ impl AppState {
     /// Create a new AppState with an in-memory SQLite database.
     /// Used by integration tests.
     pub async fn new_in_memory() -> Self {
-        let conn =
-            Connection::open_in_memory().expect("Failed to create in-memory database for tests");
-        db::schema::run_migrations(&conn).expect("Failed to run migrations on in-memory database");
-        // Initialize FTS triggers and vector search
-        let _ = db::vector::register_vector_ext(&conn);
-        db::fts::create_fts_triggers(&conn).expect("Failed to create FTS triggers");
-        // Seed default tools
-        let _ = db::repos::tools::ToolsRepo::seed_defaults(&conn);
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(":memory:")
+                    .create_if_missing(true),
+            )
+            .await
+            .expect("Failed to create in-memory database");
+        db::schema::run_migrations(&pool)
+            .await
+            .expect("Failed to run migrations on in-memory database");
+        let _ = db::fts::create_fts_triggers(&pool).await;
+        let _ = db::repos::tools::ToolsRepo::seed_defaults(&pool).await;
         // Seed test data with known IDs expected by integration tests
-        let _ = Self::seed_test_data(&conn);
+        let _ = Self::seed_test_data(&pool).await;
         Self {
-            db: Arc::new(Mutex::new(conn)),
+            db: pool,
             orchestrator: None,
             guardrails: None,
             tool_registry: None,
@@ -89,20 +102,28 @@ impl AppState {
     ///
     /// This is the production entry point used by `main.rs`.
     pub async fn new_with_orchestrator(db_path: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        // 1. Open database connection
-        let conn = db::init_db(db_path)?;
-        let db = Arc::new(Mutex::new(conn));
+        // 1. Open database connection pool
+        let pool = db::init_db(db_path).await?;
 
         // 2. Create tool registry
         let mut tool_registry = ToolRegistry::new();
-        // Register built-in tools (F5c)
+        // Register built-in tools
         tool_registry.register(Box::new(crate::tools::weather::WeatherTool::new(
-            db.clone(),
+            pool.clone(),
             std::env::var("OPENWEATHER_API_KEY").unwrap_or_default(),
         )));
-        tool_registry.register(Box::new(crate::tools::geo::GeoTool::new(db.clone())));
-        tool_registry.register(Box::new(crate::tools::meals::MealsTool::new(db.clone())));
-        tool_registry.register(Box::new(crate::tools::habits::HabitsTool::new(db.clone())));
+        tool_registry.register(Box::new(crate::tools::geo::GeocodeTool::new()));
+        tool_registry.register(Box::new(crate::tools::geo::ReverseGeocodeTool::new()));
+        tool_registry.register(Box::new(
+            crate::tools::google_places::SearchPlacesTool::new(pool.clone()),
+        ));
+        tool_registry.register(Box::new(crate::tools::web_search::WebSearchTool::new(
+            pool.clone(),
+        )));
+        tool_registry.register(Box::new(crate::tools::meals::MealsTool::new(pool.clone())));
+        tool_registry.register(Box::new(crate::tools::habits::HabitsTool::new(
+            pool.clone(),
+        )));
         let tool_registry = Arc::new(tool_registry);
 
         // 3. Create guardrails
@@ -142,7 +163,7 @@ impl AppState {
             guardrails.clone(),
             context_builder,
             config,
-            db.clone(),
+            pool.clone(),
             None,
         ));
 
@@ -161,7 +182,7 @@ impl AppState {
         };
 
         Ok(Self {
-            db,
+            db: pool,
             orchestrator: Some(orchestrator),
             guardrails: Some(guardrails),
             tool_registry: Some(tool_registry),
@@ -172,38 +193,49 @@ impl AppState {
 
     /// Insert records with well-known IDs so integration tests that reference
     /// hard-coded IDs (e.g. `some-id`, `conv-id`, `profile-id`) can pass.
-    fn seed_test_data(conn: &Connection) -> Result<(), rusqlite::Error> {
+    async fn seed_test_data(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         let now = chrono::Utc::now().to_rfc3339();
 
         // Profile used by memory tests (id = "profile-id")
-        conn.execute(
+        sqlx::query(
             "INSERT OR IGNORE INTO profiles (id, name, avatar_url, preferences, created_at, updated_at)
-             VALUES ('profile-id', 'Test User', NULL, '{}', ?1, ?1)",
-            rusqlite::params![now],
-        )?;
-
-        // Conversations used by conversation & message tests
-        for id in &["some-id", "conv-id"] {
-            conn.execute(
-                "INSERT OR IGNORE INTO conversations (id, title, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?3)",
-                rusqlite::params![id, "Test Conversation", now],
-            )?;
-        }
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )
+        .bind("profile-id")
+        .bind("Test User")
+        .bind(Option::<String>::None)
+        .bind("{}")
+        .bind(&now)
+        .bind(&now)
+        .execute(pool)
+        .await?;
 
         // Message used by get_message tests
-        conn.execute(
-            "INSERT OR IGNORE INTO messages (id, conversation_id, role, content, tokens_count, created_at)
-             VALUES ('msg-id', 'conv-id', 'user', 'Hello from seeded data', 0, ?1)",
-            rusqlite::params![now],
-        )?;
+        sqlx::query(
+            "INSERT OR IGNORE INTO messages (id, role, content, tokens_count, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        )
+        .bind("msg-id")
+        .bind("user")
+        .bind("Hello from seeded data")
+        .bind(0i64)
+        .bind(&now)
+        .execute(pool)
+        .await?;
 
         // Memory used by delete_memory tests
-        conn.execute(
+        sqlx::query(
             "INSERT OR IGNORE INTO memories (id, profile_id, content, category, source, created_at)
-             VALUES ('memory-id', 'profile-id', 'Seeded memory', 'general', 'manual', ?1)",
-            rusqlite::params![now],
-        )?;
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )
+        .bind("memory-id")
+        .bind("profile-id")
+        .bind("Seeded memory")
+        .bind("general")
+        .bind("manual")
+        .bind(&now)
+        .execute(pool)
+        .await?;
 
         Ok(())
     }
@@ -214,7 +246,7 @@ impl AppState {
 /// Returns a JSON payload indicating server status, version, and whether the
 /// database connection is healthy.
 async fn health_handler(State(state): State<AppState>) -> Json<Value> {
-    let db_status = match state.db.lock() {
+    let db_status = match sqlx::query("SELECT 1").execute(&state.db).await {
         Ok(_) => "connected",
         Err(_) => "disconnected",
     };
@@ -242,31 +274,14 @@ pub fn app_with_state(state: AppState) -> Router {
         .route("/api/health", get(health_handler))
         // Export
         .route("/api/export", get(routes::export::export_data))
-        // Conversations
-        .route(
-            "/api/conversations",
-            get(routes::conversations::list_conversations)
-                .post(routes::conversations::create_conversation),
-        )
-        .route(
-            "/api/conversations/main",
-            get(routes::conversations::get_main_conversation),
-        )
-        .route(
-            "/api/conversations/:id",
-            get(routes::conversations::get_conversation)
-                .put(routes::conversations::update_conversation)
-                .delete(routes::conversations::delete_conversation),
-        )
         // Messages
         .route(
-            "/api/conversations/:id/messages",
+            "/api/messages",
             get(routes::messages::list_messages).post(routes::messages::create_message),
         )
-        .route(
-            "/api/conversations/:id/messages/:msg_id",
-            get(routes::messages::get_message),
-        )
+        .route("/api/messages/:msg_id", get(routes::messages::get_message))
+        // Chat
+        .route("/api/chat/init", get(routes::chat::chat_init))
         // Profile
         .route(
             "/api/profile",
@@ -289,14 +304,7 @@ pub fn app_with_state(state: AppState) -> Router {
         // Search
         .route("/api/search", get(handlers::search::search))
         // Streaming + approval
-        .route(
-            "/api/conversations/:id/messages-stream",
-            post(routes::stream::stream_message),
-        )
-        .route(
-            "/api/approval/:request_id",
-            post(routes::stream::resolve_approval),
-        )
+        .merge(routes::stream::routes())
         .fallback_service(ServeDir::new("static").fallback(ServeFile::new("static/index.html")))
         .layer(cors)
         .with_state(state)
@@ -307,16 +315,25 @@ pub fn app_with_state(state: AppState) -> Router {
 ///
 /// Used by integration tests (e.g. `tests/api/health.rs`) that call
 /// `alfred::app()` without wiring their own state.
-pub fn app() -> Router {
-    let conn = Connection::open_in_memory().expect("Failed to create in-memory database for tests");
-    db::schema::run_migrations(&conn).expect("Failed to run migrations on in-memory database");
-    // Initialize FTS triggers and vector search
-    let _ = db::vector::register_vector_ext(&conn);
-    db::fts::create_fts_triggers(&conn).expect("Failed to create FTS triggers");
-    let _ = db::repos::tools::ToolsRepo::seed_defaults(&conn);
-    let _ = AppState::seed_test_data(&conn);
+pub async fn app() -> Router {
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(":memory:")
+                .create_if_missing(true),
+        )
+        .await
+        .expect("Failed to create in-memory database for tests");
+    db::schema::run_migrations(&pool)
+        .await
+        .expect("Failed to run migrations on in-memory database");
+    let _ = db::fts::create_fts_triggers(&pool).await;
+    let _ = db::repos::tools::ToolsRepo::seed_defaults(&pool).await;
+    let _ = AppState::seed_test_data(&pool).await;
     let state = AppState {
-        db: Arc::new(Mutex::new(conn)),
+        db: pool,
         orchestrator: None,
         guardrails: None,
         tool_registry: None,

@@ -1,29 +1,22 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use serde_json::Value;
-use std::sync::{Arc, Mutex};
-
-use rusqlite::Connection;
+use sqlx::SqlitePool;
 
 use crate::db::repos::contacts::{Contact, ContactsRepo};
 use crate::tools::permission::Permission;
 use crate::tools::r#trait::{Tool, ToolError, ToolResult};
 
 pub struct ContactsTool {
-    db: Arc<Mutex<Connection>>,
+    db: SqlitePool,
 }
 
 impl ContactsTool {
-    pub fn new(db: Arc<Mutex<Connection>>) -> Self {
+    pub fn new(db: SqlitePool) -> Self {
         Self { db }
     }
 
     async fn add_contact(&self, args: Value) -> Result<ToolResult, ToolError> {
-        let conn = self
-            .db
-            .lock()
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
-
         let profile_id = args
             .get("profile_id")
             .and_then(|v| v.as_str())
@@ -63,8 +56,7 @@ impl ContactsTool {
             updated_at: now,
         };
 
-        ContactsRepo::create(&conn, &contact)
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
+        ContactsRepo::create(&self.db, &contact).await?;
 
         Ok(ToolResult {
             success: true,
@@ -74,11 +66,6 @@ impl ContactsTool {
     }
 
     async fn search_contacts(&self, args: Value) -> Result<ToolResult, ToolError> {
-        let conn = self
-            .db
-            .lock()
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
-
         let profile_id = args
             .get("profile_id")
             .and_then(|v| v.as_str())
@@ -89,8 +76,7 @@ impl ContactsTool {
             return Err(ToolError::InvalidArguments("query is required".into()));
         }
 
-        let contacts = ContactsRepo::search(&conn, profile_id, query)
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
+        let contacts = ContactsRepo::search(&self.db, profile_id, query).await?;
 
         Ok(ToolResult {
             success: true,
@@ -120,17 +106,11 @@ impl ContactsTool {
             ));
         }
 
-        let conn = self
-            .db
-            .lock()
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
-
-        ContactsRepo::update(&conn, &id, name, phone, email, notes)
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
+        ContactsRepo::update(&self.db, &id, name, phone, email, notes).await?;
 
         // Fetch the updated contact to return
-        let updated = ContactsRepo::find_by_id(&conn, &id)
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?
+        let updated = ContactsRepo::find_by_id(&self.db, &id)
+            .await?
             .ok_or_else(|| ToolError::NotFound(format!("Contact {} not found", id)))?;
 
         Ok(ToolResult {
@@ -194,36 +174,42 @@ impl Tool for ContactsTool {
 mod tests {
     use super::*;
     use crate::db::schema::run_migrations;
+    use sqlx::sqlite::SqlitePoolOptions;
 
-    fn setup_db() -> Arc<Mutex<Connection>> {
-        let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
-        conn.execute(
+    async fn setup_db() -> Result<SqlitePool, sqlx::Error> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await?;
+        run_migrations(&pool).await.unwrap();
+        sqlx::query(
             "INSERT INTO profiles (id, name, preferences) VALUES ('profile-1', 'Test', '{}')",
-            [],
         )
-        .unwrap();
-        Arc::new(Mutex::new(conn))
+        .execute(&pool)
+        .await?;
+        Ok(pool)
     }
 
     #[tokio::test]
-    async fn test_contacts_name_and_description() {
-        let db = setup_db();
+    async fn test_contacts_name_and_description() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = ContactsTool::new(db);
         assert_eq!(tool.name(), "contacts");
         assert!(tool.description().contains("contactos"));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_contacts_permission() {
-        let db = setup_db();
+    async fn test_contacts_permission() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = ContactsTool::new(db);
         assert_eq!(tool.permission(), Permission::NoConfirm);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_add_contact() {
-        let db = setup_db();
+    async fn test_add_contact() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = ContactsTool::new(db);
 
         let args = serde_json::json!({
@@ -240,11 +226,12 @@ mod tests {
         assert_eq!(result.data["phone"], "+34 600 000 000");
         assert_eq!(result.data["email"], "juan@example.com");
         assert!(result.data["id"].is_string());
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_add_contact_minimal() {
-        let db = setup_db();
+    async fn test_add_contact_minimal() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = ContactsTool::new(db);
 
         let args = serde_json::json!({
@@ -256,11 +243,12 @@ mod tests {
         let result = tool.execute(args).await.unwrap();
         assert!(result.success);
         assert_eq!(result.data["name"], "Solo Nombre");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_add_contact_missing_name() {
-        let db = setup_db();
+    async fn test_add_contact_missing_name() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = ContactsTool::new(db);
 
         let err = tool
@@ -271,11 +259,12 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ToolError::InvalidArguments(_)));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_search_contacts_by_name() {
-        let db = setup_db();
+    async fn test_search_contacts_by_name() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = ContactsTool::new(db);
 
         tool.execute(serde_json::json!({
@@ -315,11 +304,12 @@ mod tests {
         let contacts: Vec<Contact> = serde_json::from_value(result.data).unwrap();
         assert_eq!(contacts.len(), 1);
         assert_eq!(contacts[0].name, "María García");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_search_contacts_by_phone() {
-        let db = setup_db();
+    async fn test_search_contacts_by_phone() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = ContactsTool::new(db);
 
         tool.execute(serde_json::json!({
@@ -344,11 +334,12 @@ mod tests {
         let contacts: Vec<Contact> = serde_json::from_value(result.data).unwrap();
         assert_eq!(contacts.len(), 1);
         assert_eq!(contacts[0].name, "Pedro");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_search_contacts_by_email() {
-        let db = setup_db();
+    async fn test_search_contacts_by_email() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = ContactsTool::new(db);
 
         tool.execute(serde_json::json!({
@@ -373,11 +364,12 @@ mod tests {
         let contacts: Vec<Contact> = serde_json::from_value(result.data).unwrap();
         assert_eq!(contacts.len(), 1);
         assert_eq!(contacts[0].name, "Luis");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_search_contacts_no_results() {
-        let db = setup_db();
+    async fn test_search_contacts_no_results() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = ContactsTool::new(db);
 
         tool.execute(serde_json::json!({
@@ -400,11 +392,12 @@ mod tests {
         assert!(result.success);
         let contacts: Vec<Contact> = serde_json::from_value(result.data).unwrap();
         assert!(contacts.is_empty());
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_search_contacts_empty_query() {
-        let db = setup_db();
+    async fn test_search_contacts_empty_query() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = ContactsTool::new(db);
 
         let err = tool
@@ -416,11 +409,12 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ToolError::InvalidArguments(_)));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_update_contact() {
-        let db = setup_db();
+    async fn test_update_contact() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = ContactsTool::new(db);
 
         let created = tool
@@ -448,11 +442,12 @@ mod tests {
         assert_eq!(result.data["name"], "Nombre Nuevo");
         assert_eq!(result.data["phone"], "+34 600 000 001");
         assert_eq!(result.data["notes"], "Nota importante");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_update_contact_partial() {
-        let db = setup_db();
+    async fn test_update_contact_partial() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = ContactsTool::new(db);
 
         let created = tool
@@ -479,11 +474,12 @@ mod tests {
         assert!(result.success);
         assert_eq!(result.data["phone"], "+34 600 000 002");
         assert_eq!(result.data["email"], "ana@example.com"); // unchanged
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_update_contact_missing_id() {
-        let db = setup_db();
+    async fn test_update_contact_missing_id() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = ContactsTool::new(db);
 
         let err = tool
@@ -494,11 +490,12 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ToolError::InvalidArguments(_)));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_update_contact_no_fields() {
-        let db = setup_db();
+    async fn test_update_contact_no_fields() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = ContactsTool::new(db);
 
         let err = tool
@@ -509,11 +506,12 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ToolError::InvalidArguments(_)));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_update_contact_not_found() {
-        let db = setup_db();
+    async fn test_update_contact_not_found() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = ContactsTool::new(db);
 
         let err = tool
@@ -525,11 +523,12 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ToolError::NotFound(_)));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_unknown_operation() {
-        let db = setup_db();
+    async fn test_unknown_operation() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = ContactsTool::new(db);
 
         let err = tool
@@ -539,15 +538,17 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ToolError::InvalidArguments(_)));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_parameters_returns_valid_json_schema() {
-        let db = setup_db();
+    async fn test_parameters_returns_valid_json_schema() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = ContactsTool::new(db);
         let params = tool.parameters();
         assert_eq!(params["type"], "object");
         assert!(params.get("properties").is_some());
         assert!(params.get("required").is_some());
+        Ok(())
     }
 }

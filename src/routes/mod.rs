@@ -1,4 +1,4 @@
-pub mod conversations;
+pub mod chat;
 pub mod export;
 pub mod memories;
 pub mod messages;

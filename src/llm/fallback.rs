@@ -73,7 +73,7 @@ mod tests {
     use crate::llm::openrouter::{OpenRouterConfig, OpenRouterProvider};
 
     #[tokio::test]
-    async fn test_fallback_creation() {
+    async fn test_fallback_creation() -> Result<(), Box<dyn std::error::Error>> {
         let config1 = OllamaConfig {
             base_url: "http://localhost:19999".into(),
             model: "test".into(),
@@ -102,10 +102,11 @@ mod tests {
             .await;
         // Both providers should fail (no server running)
         assert!(result.is_err());
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_fallback_all_fail_returns_last_error() {
+    async fn test_fallback_all_fail_returns_last_error() -> Result<(), Box<dyn std::error::Error>> {
         let config = OllamaConfig {
             base_url: "http://localhost:19998".into(),
             model: "test".into(),
@@ -116,5 +117,6 @@ mod tests {
         let fallback = FallbackProvider::new(vec![provider]);
         let result = fallback.embed("test").await;
         assert!(result.is_err());
+        Ok(())
     }
 }

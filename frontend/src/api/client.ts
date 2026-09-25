@@ -1,4 +1,4 @@
-import type { Conversation, CreateMessage, Message, PaginatedResponse, Profile, UpdateProfile } from '../types';
+import type { ChatInitResponse, CreateMessage, Message, PaginatedResponse, Profile, UpdateProfile } from '../types';
 
 export const BASE_URL = '/api';
 
@@ -16,22 +16,16 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  getMainConversation: () =>
-    request<Conversation>('/conversations/main'),
+  chatInit: () =>
+    request<ChatInitResponse>('/chat/init'),
 
-  createEphemeralConversation: (title: string) =>
-    request<Conversation>('/conversations', {
-      method: 'POST',
-      body: JSON.stringify({ title }),
-    }),
-
-  listMessages: (convId: string, limit = 50, cursor?: string) =>
+  listMessages: (limit = 50, cursor?: string) =>
     request<PaginatedResponse<Message>>(
-      `/conversations/${convId}/messages?limit=${limit}${cursor ? `&cursor=${cursor}` : ''}`
+      `/messages?limit=${limit}${cursor ? `&cursor=${cursor}` : ''}`
     ),
 
-  createMessage: (convId: string, data: CreateMessage) =>
-    request<Message>(`/conversations/${convId}/messages`, {
+  createMessage: (data: CreateMessage) =>
+    request<Message>('/messages', {
       method: 'POST',
       body: JSON.stringify(data),
     }),
@@ -47,9 +41,6 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(data),
     }),
-
-  deleteConversation: (id: string) =>
-    request<void>(`/conversations/${id}`, { method: 'DELETE' }),
 
   approveAction: (requestId: string, approved: boolean) =>
     request<void>(`/approval/${requestId}`, {

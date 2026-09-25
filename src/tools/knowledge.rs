@@ -1,29 +1,22 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use serde_json::Value;
-use std::sync::{Arc, Mutex};
-
-use rusqlite::Connection;
+use sqlx::SqlitePool;
 
 use crate::db::repos::notes::{Note, NotesRepo};
 use crate::tools::permission::Permission;
 use crate::tools::r#trait::{Tool, ToolError, ToolResult};
 
 pub struct NotesTool {
-    db: Arc<Mutex<Connection>>,
+    db: SqlitePool,
 }
 
 impl NotesTool {
-    pub fn new(db: Arc<Mutex<Connection>>) -> Self {
+    pub fn new(db: SqlitePool) -> Self {
         Self { db }
     }
 
     async fn create_note(&self, args: Value) -> Result<ToolResult, ToolError> {
-        let conn = self
-            .db
-            .lock()
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
-
         let profile_id = args
             .get("profile_id")
             .and_then(|v| v.as_str())
@@ -59,7 +52,7 @@ impl NotesTool {
             updated_at: now,
         };
 
-        NotesRepo::create(&conn, &note).map_err(|e| ToolError::ExecutionError(e.to_string()))?;
+        NotesRepo::create(&self.db, &note).await?;
 
         Ok(ToolResult {
             success: true,
@@ -69,19 +62,13 @@ impl NotesTool {
     }
 
     async fn list_notes(&self, args: Value) -> Result<ToolResult, ToolError> {
-        let conn = self
-            .db
-            .lock()
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
-
         let profile_id = args
             .get("profile_id")
             .and_then(|v| v.as_str())
             .unwrap_or("default");
         let category = args.get("category").and_then(|v| v.as_str());
 
-        let notes = NotesRepo::list(&conn, profile_id, category)
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
+        let notes = NotesRepo::list(&self.db, profile_id, category).await?;
 
         Ok(ToolResult {
             success: true,
@@ -101,12 +88,7 @@ impl NotesTool {
             return Err(ToolError::InvalidArguments("id is required".into()));
         }
 
-        let conn = self
-            .db
-            .lock()
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
-
-        NotesRepo::delete(&conn, &id).map_err(|e| ToolError::ExecutionError(e.to_string()))?;
+        NotesRepo::delete(&self.db, &id).await?;
 
         Ok(ToolResult {
             success: true,
@@ -171,36 +153,42 @@ impl Tool for NotesTool {
 mod tests {
     use super::*;
     use crate::db::schema::run_migrations;
+    use sqlx::sqlite::SqlitePoolOptions;
 
-    fn setup_db() -> Arc<Mutex<Connection>> {
-        let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
-        conn.execute(
+    async fn setup_db() -> Result<SqlitePool, sqlx::Error> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await?;
+        run_migrations(&pool).await.unwrap();
+        sqlx::query(
             "INSERT INTO profiles (id, name, preferences) VALUES ('profile-1', 'Test', '{}')",
-            [],
         )
-        .unwrap();
-        Arc::new(Mutex::new(conn))
+        .execute(&pool)
+        .await?;
+        Ok(pool)
     }
 
     #[tokio::test]
-    async fn test_notes_name_and_description() {
-        let db = setup_db();
+    async fn test_notes_name_and_description() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = NotesTool::new(db);
         assert_eq!(tool.name(), "notes");
         assert!(tool.description().contains("categorías"));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_notes_permission() {
-        let db = setup_db();
+    async fn test_notes_permission() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = NotesTool::new(db);
         assert_eq!(tool.permission(), Permission::NoConfirm);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_create_note_idea() {
-        let db = setup_db();
+    async fn test_create_note_idea() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = NotesTool::new(db);
 
         let args = serde_json::json!({
@@ -216,11 +204,12 @@ mod tests {
         assert_eq!(result.data["content"], "Una idea genial");
         assert_eq!(result.data["category"], "idea");
         assert_eq!(result.data["tags"], "creatividad,proyecto");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_create_note_journal() {
-        let db = setup_db();
+    async fn test_create_note_journal() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = NotesTool::new(db);
 
         let args = serde_json::json!({
@@ -233,11 +222,12 @@ mod tests {
         let result = tool.execute(args).await.unwrap();
         assert!(result.success);
         assert_eq!(result.data["category"], "journal");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_create_note_fact() {
-        let db = setup_db();
+    async fn test_create_note_fact() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = NotesTool::new(db);
 
         let args = serde_json::json!({
@@ -250,11 +240,12 @@ mod tests {
         let result = tool.execute(args).await.unwrap();
         assert!(result.success);
         assert_eq!(result.data["category"], "fact");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_create_note_todo() {
-        let db = setup_db();
+    async fn test_create_note_todo() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = NotesTool::new(db);
 
         let args = serde_json::json!({
@@ -267,11 +258,12 @@ mod tests {
         let result = tool.execute(args).await.unwrap();
         assert!(result.success);
         assert_eq!(result.data["category"], "todo");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_create_note_default_category() {
-        let db = setup_db();
+    async fn test_create_note_default_category() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = NotesTool::new(db);
 
         let args = serde_json::json!({
@@ -283,11 +275,12 @@ mod tests {
         let result = tool.execute(args).await.unwrap();
         assert!(result.success);
         assert_eq!(result.data["category"], "idea");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_create_note_missing_content() {
-        let db = setup_db();
+    async fn test_create_note_missing_content() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = NotesTool::new(db);
 
         let err = tool
@@ -298,11 +291,12 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ToolError::InvalidArguments(_)));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_list_notes() {
-        let db = setup_db();
+    async fn test_list_notes() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = NotesTool::new(db);
 
         // Create notes in different categories
@@ -343,11 +337,12 @@ mod tests {
             .unwrap();
         let all: Vec<Note> = serde_json::from_value(result.data).unwrap();
         assert_eq!(all.len(), 3);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_list_notes_by_category() {
-        let db = setup_db();
+    async fn test_list_notes_by_category() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = NotesTool::new(db);
 
         tool.execute(serde_json::json!({
@@ -398,11 +393,12 @@ mod tests {
             .unwrap();
         let todos: Vec<Note> = serde_json::from_value(result.data).unwrap();
         assert_eq!(todos.len(), 1);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_delete_note() {
-        let db = setup_db();
+    async fn test_delete_note() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = NotesTool::new(db);
 
         let created = tool
@@ -436,11 +432,12 @@ mod tests {
             .unwrap();
         let notes: Vec<Note> = serde_json::from_value(list.data).unwrap();
         assert!(notes.is_empty());
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_delete_note_missing_id() {
-        let db = setup_db();
+    async fn test_delete_note_missing_id() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = NotesTool::new(db);
 
         let err = tool
@@ -450,11 +447,12 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ToolError::InvalidArguments(_)));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_unknown_operation() {
-        let db = setup_db();
+    async fn test_unknown_operation() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = NotesTool::new(db);
 
         let err = tool
@@ -464,15 +462,17 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ToolError::InvalidArguments(_)));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_parameters_returns_valid_json_schema() {
-        let db = setup_db();
+    async fn test_parameters_returns_valid_json_schema() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = NotesTool::new(db);
         let params = tool.parameters();
         assert_eq!(params["type"], "object");
         assert!(params.get("properties").is_some());
         assert!(params.get("required").is_some());
+        Ok(())
     }
 }

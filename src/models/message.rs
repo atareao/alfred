@@ -35,7 +35,6 @@ impl MessageRole {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub id: String,
-    pub conversation_id: String,
     pub role: String,
     pub content: String,
     pub tool_calls: Option<Value>,
@@ -56,13 +55,45 @@ pub struct CreateMessage {
     pub tool_results: Option<Value>,
 }
 
-/// Estimate the number of tokens in a text string.
+/// Estimate the number of tokens in a markdown text string using a heuristic.
 ///
-/// Uses a simple heuristic: `ceil(char_count / 3.5) + 4`.
-/// This is intentionally a stub until a proper tokenizer is integrated.
-pub fn estimate_tokens(text: &str) -> usize {
-    let char_count = text.chars().count();
-    ((char_count as f64) / 3.5).ceil() as usize + 4
+/// This improved heuristic accounts for markdown syntax overhead such as
+/// headings, bold, lists, and inline code.
+pub fn estimate_markdown_tokens_heuristic(text: &str) -> usize {
+    let factor = 1.33;
+    let mut words = 0usize;
+    let mut md_symbols = 0usize;
+    let mut in_word = false;
+
+    for &b in text.as_bytes() {
+        match b {
+            b' ' | b'\t' | b'\n' | b'\r' => {
+                if in_word {
+                    words += 1;
+                    in_word = false;
+                }
+            }
+            // Símbolos de puntuación y sintaxis Markdown
+            b'#' | b'*' | b'`' | b'_' | b'[' | b']' | b'(' | b')' | b'>' | b'-' | b'+' | b'!'
+            | b'.' | b',' | b';' | b':' | b'?' | b'"' | b'\'' | b'/' | b'\\' | b'=' | b'~'
+            | b'|' => {
+                md_symbols += 1;
+                if in_word {
+                    words += 1;
+                    in_word = false;
+                }
+            }
+            _ => {
+                in_word = true;
+            }
+        }
+    }
+
+    if in_word {
+        words += 1;
+    }
+
+    ((words as f32 * factor) as usize) + md_symbols
 }
 
 #[cfg(test)]
@@ -70,26 +101,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_estimate_tokens_empty() {
-        assert_eq!(estimate_tokens(""), 4);
+    fn test_estimate_markdown_tokens_heuristic_empty() {
+        assert_eq!(estimate_markdown_tokens_heuristic(""), 0);
     }
 
     #[test]
-    fn test_estimate_tokens_short() {
-        // "Hola" = 4 chars: ceil(4/3.5)=2 + 4 = 6
-        assert_eq!(estimate_tokens("Hola"), 6);
+    fn test_estimate_markdown_tokens_heuristic_plain_text() {
+        assert_eq!(estimate_markdown_tokens_heuristic("Hola"), 1);
     }
 
     #[test]
-    fn test_estimate_tokens_long() {
-        // 3500 chars: ceil(3500/3.5) + 4 = 1000 + 4 = 1004
-        let long_text = "a".repeat(3500);
-        assert_eq!(estimate_tokens(&long_text), 1004);
+    fn test_estimate_markdown_tokens_heuristic_markdown_heading() {
+        assert_eq!(estimate_markdown_tokens_heuristic("# Hello World"), 3);
     }
 
     #[test]
-    fn test_estimate_tokens_hello_world() {
-        // "Hello World" = 11 chars: ceil(11/3.5)=4 + 4 = 8
-        assert_eq!(estimate_tokens("Hello World"), 8);
+    fn test_estimate_markdown_tokens_heuristic_markdown_bold() {
+        assert_eq!(estimate_markdown_tokens_heuristic("Some **bold** text"), 7);
+    }
+
+    #[test]
+    fn test_estimate_markdown_tokens_heuristic_markdown_list() {
+        let text = "- Item one\n- Item two";
+        assert_eq!(estimate_markdown_tokens_heuristic(text), 7);
+    }
+
+    #[test]
+    fn test_estimate_markdown_tokens_heuristic_inline_code() {
+        let text = "Use `let x = 1;`";
+        assert_eq!(estimate_markdown_tokens_heuristic(text), 9);
     }
 }

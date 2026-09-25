@@ -1,19 +1,18 @@
 use async_trait::async_trait;
 use chrono::Utc;
-use rusqlite::Connection;
 use serde_json::Value;
-use std::sync::{Arc, Mutex};
+use sqlx::SqlitePool;
 
 use crate::db::repos::habits::HabitsRepo;
 use crate::tools::permission::Permission;
 use crate::tools::r#trait::{Tool, ToolError, ToolResult};
 
 pub struct HabitsTool {
-    db: Arc<Mutex<Connection>>,
+    db: SqlitePool,
 }
 
 impl HabitsTool {
-    pub fn new(db: Arc<Mutex<Connection>>) -> Self {
+    pub fn new(db: SqlitePool) -> Self {
         Self { db }
     }
 
@@ -36,13 +35,7 @@ impl HabitsTool {
             .and_then(|v| v.as_u64())
             .map(|t| t as u32);
 
-        let conn = self
-            .db
-            .lock()
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
-
-        let habit = HabitsRepo::create(&conn, profile_id, name, frequency, target)
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
+        let habit = HabitsRepo::create(&self.db, profile_id, name, frequency, target).await?;
 
         Ok(ToolResult {
             success: true,
@@ -57,14 +50,8 @@ impl HabitsTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArguments("Missing habit_id".into()))?;
 
-        let conn = self
-            .db
-            .lock()
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
-
         // Check if the habit exists
-        let habit = HabitsRepo::find_by_id(&conn, habit_id)
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
+        let habit = HabitsRepo::find_by_id(&self.db, habit_id).await?;
 
         if habit.is_none() {
             return Err(ToolError::NotFound(format!(
@@ -74,8 +61,7 @@ impl HabitsTool {
         }
 
         let today = Utc::now().date_naive().to_string();
-        HabitsRepo::log(&conn, habit_id, &today)
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
+        HabitsRepo::log(&self.db, habit_id, &today).await?;
 
         Ok(ToolResult {
             success: true,
@@ -93,13 +79,7 @@ impl HabitsTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArguments("Missing profile_id".into()))?;
 
-        let conn = self
-            .db
-            .lock()
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
-
-        let streaks = HabitsRepo::get_streaks(&conn, profile_id)
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
+        let streaks = HabitsRepo::get_streaks(&self.db, profile_id).await?;
 
         Ok(ToolResult {
             success: true,
@@ -119,13 +99,8 @@ impl HabitsTool {
             .and_then(|v| v.as_str())
             .unwrap_or("month");
 
-        let conn = self
-            .db
-            .lock()
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
-
-        let (total_completed, total_expected) = HabitsRepo::get_stats(&conn, habit_id, period)
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
+        let (total_completed, total_expected) =
+            HabitsRepo::get_stats(&self.db, habit_id, period).await?;
 
         let completion_rate = if total_expected > 0 {
             total_completed as f64 / total_expected as f64
@@ -208,39 +183,44 @@ impl Tool for HabitsTool {
 mod tests {
     use super::*;
     use crate::db::schema::run_migrations;
+    use sqlx::sqlite::SqlitePoolOptions;
 
-    fn setup() -> (Arc<Mutex<Connection>>, HabitsTool) {
-        let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
-        conn.execute(
+    async fn setup() -> Result<(SqlitePool, HabitsTool), sqlx::Error> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await?;
+        run_migrations(&pool).await.unwrap();
+        sqlx::query(
             "INSERT INTO profiles (id, name, preferences) VALUES ('profile-1', 'Test', '{}')",
-            [],
         )
-        .unwrap();
-        let db = Arc::new(Mutex::new(conn));
-        let tool = HabitsTool::new(db.clone());
-        (db, tool)
+        .execute(&pool)
+        .await?;
+        let tool = HabitsTool::new(pool.clone());
+        Ok((pool, tool))
     }
 
     #[tokio::test]
-    async fn test_habits_name_and_description() {
-        let (_, tool) = setup();
+    async fn test_habits_name_and_description() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
         assert_eq!(tool.name(), "habits");
         assert_eq!(
             tool.description(),
             "Seguimiento de hábitos y rachas diarias/semanales"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_habits_permission() {
-        let (_, tool) = setup();
+    async fn test_habits_permission() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
         assert_eq!(tool.permission(), Permission::Notify);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_habits_parameters_has_operations() {
-        let (_, tool) = setup();
+    async fn test_habits_parameters_has_operations() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
         let params = tool.parameters();
         assert_eq!(params["type"], "object");
         let ops = params["properties"]["operation"]["enum"]
@@ -251,11 +231,12 @@ mod tests {
         assert!(op_names.contains(&"log_habit"));
         assert!(op_names.contains(&"habit_streaks"));
         assert!(op_names.contains(&"habit_stats"));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_create_habit_missing_name() {
-        let (_, tool) = setup();
+    async fn test_create_habit_missing_name() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
         let err = tool
             .execute(serde_json::json!({
                 "operation": "create_habit",
@@ -264,11 +245,12 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ToolError::InvalidArguments(_)));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_log_habit_not_found() {
-        let (_, tool) = setup();
+    async fn test_log_habit_not_found() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
         let err = tool
             .execute(serde_json::json!({
                 "operation": "log_habit",
@@ -277,11 +259,12 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ToolError::NotFound(_)));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_invalid_operation() {
-        let (_, tool) = setup();
+    async fn test_invalid_operation() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
         let err = tool
             .execute(serde_json::json!({
                 "operation": "nonexistent"
@@ -289,11 +272,12 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ToolError::InvalidArguments(_)));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_create_habit_success() {
-        let (_, tool) = setup();
+    async fn test_create_habit_success() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
         let result = tool
             .execute(serde_json::json!({
                 "operation": "create_habit",
@@ -307,11 +291,12 @@ mod tests {
         assert_eq!(result.data["profile_id"], "profile-1");
         assert_eq!(result.data["frequency"], "daily");
         assert!(result.data["id"].is_string());
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_habit_streaks_missing_profile() {
-        let (_, tool) = setup();
+    async fn test_habit_streaks_missing_profile() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
         let err = tool
             .execute(serde_json::json!({
                 "operation": "habit_streaks"
@@ -319,11 +304,12 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ToolError::InvalidArguments(_)));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_create_habit_with_custom_frequency() {
-        let (_, tool) = setup();
+    async fn test_create_habit_with_custom_frequency() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
         let result = tool
             .execute(serde_json::json!({
                 "operation": "create_habit",
@@ -338,11 +324,12 @@ mod tests {
         assert_eq!(result.data["name"], "Jardinería");
         assert_eq!(result.data["frequency"], "weekly");
         assert_eq!(result.data["target"], 2);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_log_habit_success() {
-        let (_, tool) = setup();
+    async fn test_log_habit_success() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
         // Create a habit first
         let created = tool
             .execute(serde_json::json!({
@@ -365,11 +352,12 @@ mod tests {
         assert!(result.success);
         assert_eq!(result.data["habit_id"], habit_id);
         assert!(result.data["date"].is_string());
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_habit_streaks_success() {
-        let (_, tool) = setup();
+    async fn test_habit_streaks_success() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
         // Create a habit and log it
         let created = tool
             .execute(serde_json::json!({
@@ -400,11 +388,12 @@ mod tests {
         let streaks = result.data.as_array().unwrap();
         assert_eq!(streaks.len(), 1);
         assert_eq!(streaks[0]["habit_id"], habit_id);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_habit_stats_success() {
-        let (_, tool) = setup();
+    async fn test_habit_stats_success() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
         // Create a habit
         let created = tool
             .execute(serde_json::json!({
@@ -439,11 +428,12 @@ mod tests {
         assert!(result.data["completion_rate"].is_f64());
         assert!(result.data["total_expected"].is_u64());
         assert!(result.data["total_completed"].is_u64());
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_habit_stats_default_period() {
-        let (_, tool) = setup();
+    async fn test_habit_stats_default_period() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
         let created = tool
             .execute(serde_json::json!({
                 "operation": "create_habit",
@@ -464,5 +454,6 @@ mod tests {
             .unwrap();
         assert!(result.success);
         assert_eq!(result.data["period"], "month");
+        Ok(())
     }
 }

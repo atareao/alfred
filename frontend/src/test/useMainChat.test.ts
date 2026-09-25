@@ -12,38 +12,24 @@ const { capturedBrowserContext } = vi.hoisted(() => ({ capturedBrowserContext: {
 
 vi.mock('../api/client', () => ({
   api: {
-    getMainConversation: vi.fn().mockResolvedValue({ id: 'conv-1' }),
-    listMessages: vi.fn().mockResolvedValue({ data: [], next_cursor: undefined }),
-    getSettings: vi.fn().mockResolvedValue({}),
+    chatInit: vi.fn().mockResolvedValue({ messages: [], settings: {} }),
+    listMessages: vi.fn(),
+    getSettings: vi.fn(),
   },
   BASE_URL: 'http://localhost:3000',
 }));
 
 vi.mock('../hooks/useSSE', () => ({
   useSSE: vi.fn(() => ({
-    connect: vi.fn((_convId: string, _content: string, options: { onChunk?: (c: string) => void; onDone?: (...args: string[]) => void; onError?: (m: string) => void }, browserContext?: unknown) => {
+    connect: vi.fn((_content: string, options: { onChunk?: (c: string) => void; onDone?: (...args: string[]) => void; onError?: (m: string) => void; onToolCall?: (name: string, args: unknown) => void }, browserContext?: unknown) => {
       sseCallbacks.onChunk = options.onChunk;
       sseCallbacks.onDone = options.onDone;
       sseCallbacks.onError = options.onError;
+      sseCallbacks.onToolCall = options.onToolCall;
       capturedBrowserContext.current = browserContext;
     }),
     disconnect: vi.fn(),
     connected: false,
-  })),
-}));
-
-vi.mock('../hooks/useBrowserContext', () => ({
-  useBrowserContext: vi.fn(() => ({
-    context: {
-      timestamp: '2026-09-24T08:00:00.000Z',
-      timezone: 'Europe/Madrid',
-      latitude: 39.36,
-      longitude: -0.41,
-      location_name: 'Silla, Valencia, España',
-    },
-    error: null,
-    permission: 'granted' as const,
-    refresh: vi.fn(),
   })),
 }));
 
@@ -54,27 +40,57 @@ describe('useMainChat', () => {
     sseCallbacks.onChunk = undefined;
     sseCallbacks.onDone = undefined;
     sseCallbacks.onError = undefined;
+    sseCallbacks.onToolCall = undefined;
   });
 
   // -----------------------------------------------------------------------
-  // Bug #2 — User message deleted on stream complete
-  //
-  // Current (broken) onDone in useMainChat:
-  //   return [...prev.filter(m => m.id !== optimistic.id), assistant];
-  //
-  // Expected (fixed) onDone should PRESERVE the user message and update its
-  // ID with the server-assigned ID.
+  // Loading initial messages from chatInit
   // -----------------------------------------------------------------------
-  it('preserves user message when stream completes', async () => {
+  it('loads initial messages and settings on mount', async () => {
     const { result } = renderHook(() => useMainChat());
 
-    // Wait for the initial conversation load to finish
+    // Initially loading is true
+    expect(result.current.loading).toBe(true);
+
+    // Wait for the initial load to finish
     await vi.waitFor(() => {
       expect(result.current.loading).toBe(false);
     }, { timeout: 3000 });
 
-    // Verify we have a conversation ID
-    expect(result.current.conversationId).toBe('conv-1');
+    // chatInit should have been called
+    expect(api.chatInit).toHaveBeenCalledTimes(1);
+
+    // Messages should be empty (as mocked)
+    expect(result.current.messages).toEqual([]);
+    expect(result.current.error).toBeNull();
+  });
+
+  // -----------------------------------------------------------------------
+  // Handles chatInit error gracefully
+  // -----------------------------------------------------------------------
+  it('handles chatInit error gracefully', async () => {
+    vi.mocked(api.chatInit).mockRejectedValueOnce(new Error('Network error'));
+
+    const { result } = renderHook(() => useMainChat());
+
+    await vi.waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    }, { timeout: 3000 });
+
+    expect(result.current.error).toBe('Network error');
+    expect(result.current.messages).toEqual([]);
+  });
+
+  // -----------------------------------------------------------------------
+  // preserves user message when stream completes
+  // -----------------------------------------------------------------------
+  it('preserves user message when stream completes', async () => {
+    const { result } = renderHook(() => useMainChat());
+
+    // Wait for the initial load to finish
+    await vi.waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    }, { timeout: 3000 });
 
     // Send a message — this adds the optimistic user message and calls SSE.connect
     await act(async () => {
@@ -97,27 +113,13 @@ describe('useMainChat', () => {
       doneFn();
     });
 
-    // ------------------------------------------------------------------
-    // RED phase assertion — this SHOULD FAIL with current broken code.
-    //
-    // The current code does:
-    //   return [...prev.filter(m => m.id !== optimistic.id), assistant];
-    //
-    // which removes the user message. After the fix, the user message
-    // should remain (its ID gets replaced with the server-assigned ID).
-    // ------------------------------------------------------------------
     const userMessages = result.current.messages.filter(m => m.role === 'user');
     expect(userMessages).toHaveLength(1);
     expect(userMessages[0].content).toBe('Hola');
   });
 
   // -----------------------------------------------------------------------
-  // Bug #2 — User message deleted on stream error
-  //
-  // Current (broken) onError in useMainChat:
-  //   setMessages(prev => prev.filter(m => m.id !== optimistic.id));
-  //
-  // Expected: the user message should remain visible (as a failed message).
+  // preserves user message when stream errors
   // -----------------------------------------------------------------------
   it('preserves user message when stream errors', async () => {
     const { result } = renderHook(() => useMainChat());
@@ -141,29 +143,19 @@ describe('useMainChat', () => {
       errorFn('Stream error');
     });
 
-    // ------------------------------------------------------------------
-    // RED phase assertion — this SHOULD FAIL with current broken code.
-    //
-    // The current code filters out the user message on error.
-    // After the fix, the user message should remain visible.
-    // ------------------------------------------------------------------
     const userMessages = result.current.messages.filter(m => m.role === 'user');
     expect(userMessages).toHaveLength(1);
     expect(userMessages[0].content).toBe('Hola');
+    expect(result.current.error).toBe('Stream error');
   });
 
   // -----------------------------------------------------------------------
-  // context-personality: Browser context passed to SSE connect
-  //
-  // After the change, useMainChat should call useBrowserContext() internally
-  // and pass the browserContext object as the 4th argument to sse.connect().
-  // This test will FAIL in RED phase because useMainChat does not yet use
-  // useBrowserContext.
+  // browser context passed to SSE connect
   // -----------------------------------------------------------------------
   it('sends message with browser context', async () => {
     const { result } = renderHook(() => useMainChat());
 
-    // Wait for the initial conversation load to finish
+    // Wait for the initial load to finish
     await vi.waitFor(() => {
       expect(result.current.loading).toBe(false);
     }, { timeout: 3000 });
@@ -173,16 +165,7 @@ describe('useMainChat', () => {
       result.current.sendMessage('Hola');
     });
 
-    // ------------------------------------------------------------------
-    // RED phase assertion — this SHOULD FAIL because the current
-    // useMainChat does not import useBrowserContext, so capturedBrowserContext
-    // will be undefined.
-    //
-    // After the GREEN phase, useMainChat will:
-    //   1. Import and call useBrowserContext()
-    //   2. Pass browserContext as the 4th arg to sse.connect()
-    //   3. capturedBrowserContext will be a valid BrowserContext object
-    // ------------------------------------------------------------------
+    // The browser context should be passed as the 3rd argument to sse.connect
     expect(capturedBrowserContext.current).toBeTruthy();
     expect(capturedBrowserContext.current).toHaveProperty('timestamp');
     expect(capturedBrowserContext.current).toHaveProperty('timezone');
@@ -192,77 +175,27 @@ describe('useMainChat', () => {
   });
 
   // -----------------------------------------------------------------------
-  // message_page_size — Configurable page size from settings
-  //
-  // Current code hardcodes 50 in both initial load and loadMore.
-  // After the change, useMainChat SHALL read message_page_size from
-  // api.getSettings() and use that value instead.
+  // tracks active tools during streaming
   // -----------------------------------------------------------------------
-  it('uses message_page_size from settings for initial load', async () => {
-    // Mock getSettings to return message_page_size = 25
-    vi.mocked(api.getSettings).mockResolvedValue({ message_page_size: '25' });
-
+  it('tracks active tools during streaming', async () => {
     const { result } = renderHook(() => useMainChat());
 
-    // Wait for the initial conversation load to finish
     await vi.waitFor(() => {
       expect(result.current.loading).toBe(false);
     }, { timeout: 3000 });
 
-    // ------------------------------------------------------------------
-    // RED phase assertion — this SHOULD FAIL because useMainChat
-    // currently hardcodes 50 instead of reading from settings.
-    //
-    // After the GREEN phase, useMainChat will:
-    //   1. Call api.getSettings() on mount
-    //   2. Use the returned message_page_size value
-    //   3. Call api.listMessages(conv.id, 25) instead of (conv.id, 50)
-    // ------------------------------------------------------------------
-    expect(api.listMessages).toHaveBeenCalledWith('conv-1', 25);
-  });
-
-  // -----------------------------------------------------------------------
-  // message_page_size — loadMore uses the same configurable value
-  //
-  // Current code hardcodes 50 in loadMore as well.
-  // After the change, loadMore SHALL use the same message_page_size value.
-  // -----------------------------------------------------------------------
-  it('uses message_page_size from settings for loadMore', async () => {
-    // Mock getSettings to return message_page_size = 25
-    vi.mocked(api.getSettings).mockResolvedValue({ message_page_size: '25' });
-
-    // Mock listMessages to return a cursor so loadMore can proceed
-    vi.mocked(api.listMessages).mockResolvedValue({
-      data: [{ id: 'old-1', conversation_id: 'conv-1', role: 'user', content: 'old', created_at: '2026-01-01T00:00:00Z' }],
-      next_cursor: 'cursor-abc',
-    });
-
-    const { result } = renderHook(() => useMainChat());
-
-    // Wait for initial load
-    await vi.waitFor(() => {
-      expect(result.current.loading).toBe(false);
-    }, { timeout: 3000 });
-
-    // Reset the mock to track new calls
-    vi.mocked(api.listMessages).mockClear();
-    vi.mocked(api.listMessages).mockResolvedValue({
-      data: [],
-      next_cursor: undefined,
-    });
-
-    // Call loadMore — it should use the same page size as initial load
     await act(async () => {
-      await result.current.loadMore();
+      result.current.sendMessage('Hola');
     });
 
-    // ------------------------------------------------------------------
-    // RED phase assertion — this SHOULD FAIL because loadMore currently
-    // hardcodes 50 instead of reading from settings.
-    //
-    // After the GREEN phase, loadMore will use the same message_page_size
-    // value that was read during initial load.
-    // ------------------------------------------------------------------
-    expect(api.listMessages).toHaveBeenCalledWith('conv-1', 25, expect.any(String));
+    expect(result.current.activeTools).toEqual([]);
+
+    // Simulate tool call via the captured callback
+    await act(async () => {
+      const toolCallFn = sseCallbacks.onToolCall as ((name: string, args: unknown) => void);
+      if (toolCallFn) toolCallFn('search', { query: 'test' });
+    });
+
+    expect(result.current.activeTools).toContain('search');
   });
 });

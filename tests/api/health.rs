@@ -9,7 +9,7 @@ use tower::ServiceExt;
 /// This will FAIL because the stub handler returns status = "starting".
 #[tokio::test]
 async fn test_health_status_200() {
-    let app = alfred::app();
+    let app = alfred::app().await;
 
     let response = app
         .oneshot(
@@ -28,7 +28,7 @@ async fn test_health_status_200() {
 /// This will FAIL because the stub returns status = "starting".
 #[tokio::test]
 async fn test_health_body_status_ok() {
-    let app = alfred::app();
+    let app = alfred::app().await;
 
     let response = app
         .oneshot(
@@ -53,7 +53,7 @@ async fn test_health_body_status_ok() {
 /// This will FAIL because the stub returns version = "0.0.0".
 #[tokio::test]
 async fn test_health_body_version() {
-    let app = alfred::app();
+    let app = alfred::app().await;
 
     let response = app
         .oneshot(
@@ -78,7 +78,7 @@ async fn test_health_body_version() {
 /// This will FAIL because the stub returns db = "disconnected".
 #[tokio::test]
 async fn test_health_body_db_connected() {
-    let app = alfred::app();
+    let app = alfred::app().await;
 
     let response = app
         .oneshot(

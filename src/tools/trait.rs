@@ -17,6 +17,12 @@ pub enum ToolError {
     NotFound(String),
 }
 
+impl From<sqlx::Error> for ToolError {
+    fn from(e: sqlx::Error) -> Self {
+        ToolError::ExecutionError(e.to_string())
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct ToolResult {
     pub success: bool,

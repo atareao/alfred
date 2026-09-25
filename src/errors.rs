@@ -13,6 +13,18 @@ pub enum AppError {
     Internal(String),
 }
 
+impl From<sqlx::Error> for AppError {
+    fn from(err: sqlx::Error) -> Self {
+        AppError::Internal(err.to_string())
+    }
+}
+
+impl From<crate::embeddings::provider::EmbeddingError> for AppError {
+    fn from(err: crate::embeddings::provider::EmbeddingError) -> Self {
+        AppError::Internal(err.to_string())
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct ApiError {
     pub error: String,

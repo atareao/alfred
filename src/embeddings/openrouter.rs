@@ -83,9 +83,10 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_openrouter_no_api_key_returns_error() {
+    async fn test_openrouter_no_api_key_returns_error() -> Result<(), Box<dyn std::error::Error>> {
         let provider = OpenRouterProvider::new(String::new(), None);
         let result = provider.embed("test").await;
         assert!(result.is_err());
+        Ok(())
     }
 }

@@ -1,5 +1,4 @@
 pub mod contacts;
-pub mod conversations;
 pub mod events;
 pub mod habits;
 pub mod meal_plans;

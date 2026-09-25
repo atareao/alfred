@@ -1,59 +1,95 @@
-use rusqlite::{params, Connection};
+use sqlx::{Row, SqlitePool};
 
 /// Add FTS5 triggers to keep indexes up to date
-pub fn create_fts_triggers(conn: &Connection) -> Result<(), rusqlite::Error> {
+pub async fn create_fts_triggers(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     // Messages FTS triggers
-    conn.execute_batch(
+    sqlx::query(
         "CREATE TRIGGER IF NOT EXISTS messages_fts_ai AFTER INSERT ON messages BEGIN
             INSERT INTO messages_fts(rowid, content) VALUES (new.rowid, new.content);
-        END;
-        CREATE TRIGGER IF NOT EXISTS messages_fts_ad AFTER DELETE ON messages BEGIN
+        END;",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE TRIGGER IF NOT EXISTS messages_fts_ad AFTER DELETE ON messages BEGIN
             INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', old.rowid, old.content);
-        END;
-        CREATE TRIGGER IF NOT EXISTS messages_fts_au AFTER UPDATE ON messages BEGIN
+        END;",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE TRIGGER IF NOT EXISTS messages_fts_au AFTER UPDATE ON messages BEGIN
             INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', old.rowid, old.content);
             INSERT INTO messages_fts(rowid, content) VALUES (new.rowid, new.content);
-        END;"
-    )?;
+        END;",
+    )
+    .execute(pool)
+    .await?;
 
     // Memories FTS triggers
-    conn.execute_batch(
+    sqlx::query(
         "CREATE TRIGGER IF NOT EXISTS memories_fts_ai AFTER INSERT ON memories BEGIN
             INSERT INTO memories_fts(rowid, content) VALUES (new.rowid, new.content);
-        END;
-        CREATE TRIGGER IF NOT EXISTS memories_fts_ad AFTER DELETE ON memories BEGIN
+        END;",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE TRIGGER IF NOT EXISTS memories_fts_ad AFTER DELETE ON memories BEGIN
             INSERT INTO memories_fts(memories_fts, rowid, content) VALUES('delete', old.rowid, old.content);
-        END;
-        CREATE TRIGGER IF NOT EXISTS memories_fts_au AFTER UPDATE ON memories BEGIN
+        END;",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE TRIGGER IF NOT EXISTS memories_fts_au AFTER UPDATE ON memories BEGIN
             INSERT INTO memories_fts(memories_fts, rowid, content) VALUES('delete', old.rowid, old.content);
             INSERT INTO memories_fts(rowid, content) VALUES (new.rowid, new.content);
-        END;"
-    )?;
+        END;",
+    )
+    .execute(pool)
+    .await?;
 
     // Notes FTS triggers
-    conn.execute_batch(
+    sqlx::query(
         "CREATE TRIGGER IF NOT EXISTS notes_ai AFTER INSERT ON notes BEGIN
             INSERT INTO notes_fts(rowid, content) VALUES (new.rowid, new.content);
-        END;
-        CREATE TRIGGER IF NOT EXISTS notes_ad AFTER DELETE ON notes BEGIN
+        END;",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE TRIGGER IF NOT EXISTS notes_ad AFTER DELETE ON notes BEGIN
             INSERT INTO notes_fts(notes_fts, rowid, content) VALUES('delete', old.rowid, old.content);
-        END;
-        CREATE TRIGGER IF NOT EXISTS notes_au AFTER UPDATE ON notes BEGIN
+        END;",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE TRIGGER IF NOT EXISTS notes_au AFTER UPDATE ON notes BEGIN
             INSERT INTO notes_fts(notes_fts, rowid, content) VALUES('delete', old.rowid, old.content);
             INSERT INTO notes_fts(rowid, content) VALUES (new.rowid, new.content);
-        END;"
-    )?;
+        END;",
+    )
+    .execute(pool)
+    .await?;
 
     tracing::info!("FTS5 triggers created");
     Ok(())
 }
 
 /// Search messages using FTS5
-pub fn search_messages_fts(
-    conn: &Connection,
+pub async fn search_messages_fts(
+    pool: &SqlitePool,
     query: &str,
     limit: i64,
-) -> Result<Vec<(String, String, f64)>, rusqlite::Error> {
+) -> Result<Vec<(String, String, f64)>, sqlx::Error> {
     let actual_limit = limit.clamp(1, 100);
     // Sanitize FTS5 query: escape special chars and add prefix matching
     let sanitized: String = query
@@ -70,32 +106,38 @@ pub fn search_messages_fts(
         .collect::<Vec<_>>()
         .join(" AND ");
 
-    let mut stmt = conn.prepare(
+    let rows = sqlx::query(
         "SELECT m.id, m.content, rank
          FROM messages_fts
          JOIN messages m ON messages_fts.rowid = m.rowid
          WHERE messages_fts MATCH ?1
          ORDER BY rank
          LIMIT ?2",
-    )?;
-    let mut rows = stmt.query(params![fts_query, actual_limit])?;
-    let mut results = Vec::new();
-    while let Some(row) = rows.next()? {
-        results.push((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, f64>(2)?,
-        ));
-    }
+    )
+    .bind(&fts_query)
+    .bind(actual_limit)
+    .fetch_all(pool)
+    .await?;
+
+    let results: Vec<(String, String, f64)> = rows
+        .iter()
+        .map(|row| {
+            (
+                row.get::<String, _>(0),
+                row.get::<String, _>(1),
+                row.get::<f64, _>(2),
+            )
+        })
+        .collect();
     Ok(results)
 }
 
 /// Search memories using FTS5
-pub fn search_memories_fts(
-    conn: &Connection,
+pub async fn search_memories_fts(
+    pool: &SqlitePool,
     query: &str,
     limit: i64,
-) -> Result<Vec<(String, String, f64)>, rusqlite::Error> {
+) -> Result<Vec<(String, String, f64)>, sqlx::Error> {
     let actual_limit = limit.clamp(1, 100);
     let sanitized: String = query
         .chars()
@@ -110,109 +152,124 @@ pub fn search_memories_fts(
         .collect::<Vec<_>>()
         .join(" AND ");
 
-    let mut stmt = conn.prepare(
+    let rows = sqlx::query(
         "SELECT m.id, m.content, rank
          FROM memories_fts
          JOIN memories m ON memories_fts.rowid = m.rowid
          WHERE memories_fts MATCH ?1
          ORDER BY rank
          LIMIT ?2",
-    )?;
-    let mut rows = stmt.query(params![fts_query, actual_limit])?;
-    let mut results = Vec::new();
-    while let Some(row) = rows.next()? {
-        results.push((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, f64>(2)?,
-        ));
-    }
+    )
+    .bind(&fts_query)
+    .bind(actual_limit)
+    .fetch_all(pool)
+    .await?;
+
+    let results: Vec<(String, String, f64)> = rows
+        .iter()
+        .map(|row| {
+            (
+                row.get::<String, _>(0),
+                row.get::<String, _>(1),
+                row.get::<f64, _>(2),
+            )
+        })
+        .collect();
     Ok(results)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rusqlite::Connection;
+    use sqlx::sqlite::SqlitePoolOptions;
+    use sqlx::SqlitePool;
 
-    fn setup() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS messages (
-                id TEXT PRIMARY KEY,
-                conversation_id TEXT NOT NULL DEFAULT '',
-                role TEXT NOT NULL DEFAULT 'user',
-                content TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );
-            CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(content, content=messages, content_rowid=rowid);
-            CREATE TABLE IF NOT EXISTS memories (
-                id TEXT PRIMARY KEY,
-                profile_id TEXT NOT NULL DEFAULT '',
-                content TEXT NOT NULL DEFAULT '',
-                category TEXT NOT NULL DEFAULT 'general',
-                source TEXT NOT NULL DEFAULT 'manual',
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );
-            CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(content, content=memories, content_rowid=rowid);
-            CREATE TABLE IF NOT EXISTS notes (
-                id TEXT PRIMARY KEY,
-                profile_id TEXT NOT NULL DEFAULT '',
-                content TEXT NOT NULL DEFAULT '',
-                category TEXT NOT NULL DEFAULT 'idea',
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );
-            CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(content, content=notes, content_rowid=rowid);"
-        ).unwrap();
-        create_fts_triggers(&conn).unwrap();
-        conn
+    async fn setup_pool() -> Result<SqlitePool, sqlx::Error> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(":memory:")
+                    .create_if_missing(true),
+            )
+            .await?;
+        sqlx::migrate::Migrator::new(std::path::Path::new("migrations"))
+            .await
+            .unwrap()
+            .run(&pool)
+            .await
+            .unwrap();
+        Ok(pool)
     }
 
-    #[test]
-    fn test_trigger_inserts_into_fts() {
-        let conn = setup();
-        conn.execute(
-            "INSERT INTO messages (id, conversation_id, role, content) VALUES (?1, ?2, ?3, ?4)",
-            params!["m1", "c1", "user", "receta de pasta"],
-        )
-        .unwrap();
+    #[tokio::test]
+    async fn test_trigger_inserts_into_fts() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_pool().await?;
+        // Insert a message directly (no conversation FK needed)
+        sqlx::query("INSERT INTO messages (id, role, content) VALUES (?1, ?2, ?3)")
+            .bind("m1")
+            .bind("user")
+            .bind("receta de pasta")
+            .execute(&pool)
+            .await?;
 
-        let results = search_messages_fts(&conn, "receta", 10).unwrap();
+        let results = search_messages_fts(&pool, "receta", 10).await.unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0, "m1");
+        Ok(())
     }
 
-    #[test]
-    fn test_trigger_deletes_from_fts() {
-        let conn = setup();
-        conn.execute(
-            "INSERT INTO messages (id, conversation_id, role, content) VALUES (?1, ?2, ?3, ?4)",
-            params!["m1", "c1", "user", "test content"],
-        )
-        .unwrap();
-        conn.execute("DELETE FROM messages WHERE id = 'm1'", [])
-            .unwrap();
+    #[tokio::test]
+    async fn test_trigger_deletes_from_fts() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_pool().await?;
+        // Insert a message directly (no conversation FK needed)
+        sqlx::query("INSERT INTO messages (id, role, content) VALUES (?1, ?2, ?3)")
+            .bind("m1")
+            .bind("user")
+            .bind("test content")
+            .execute(&pool)
+            .await?;
 
-        let results = search_messages_fts(&conn, "test", 10).unwrap();
+        sqlx::query("DELETE FROM messages WHERE id = ?1")
+            .bind("m1")
+            .execute(&pool)
+            .await?;
+
+        let results = search_messages_fts(&pool, "test", 10).await.unwrap();
         assert_eq!(results.len(), 0);
+        Ok(())
     }
 
-    #[test]
-    fn test_search_memories_fts() {
-        let conn = setup();
-        conn.execute(
+    #[tokio::test]
+    async fn test_search_memories_fts() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_pool().await?;
+        // Create a profile first to satisfy FK constraint
+        sqlx::query(
+            "INSERT INTO profiles (id, name, preferences, created_at, updated_at) VALUES ('p1', 'Test', '{}', datetime('now'), datetime('now'))"
+        )
+        .execute(&pool)
+        .await?;
+        sqlx::query(
             "INSERT INTO memories (id, profile_id, content, category, source) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params!["mem1", "p1", "A Alfred le gusta el café", "fact", "manual"],
-        ).unwrap();
+        )
+        .bind("mem1")
+        .bind("p1")
+        .bind("A Alfred le gusta el café")
+        .bind("fact")
+        .bind("manual")
+        .execute(&pool)
+        .await?;
 
-        let results = search_memories_fts(&conn, "café", 10).unwrap();
+        let results = search_memories_fts(&pool, "café", 10).await.unwrap();
         assert_eq!(results.len(), 1);
+        Ok(())
     }
 
-    #[test]
-    fn test_empty_query_returns_empty() {
-        let conn = setup();
-        let results = search_messages_fts(&conn, "", 10).unwrap();
+    #[tokio::test]
+    async fn test_empty_query_returns_empty() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_pool().await?;
+        let results = search_messages_fts(&pool, "", 10).await.unwrap();
         assert!(results.is_empty());
+        Ok(())
     }
 }

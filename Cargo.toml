@@ -2,13 +2,14 @@
 name = "alfred"
 version = "0.1.0"
 edition = "2021"
+autobins = false
 
 [dependencies]
 axum = "0.7"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-rusqlite = { version = "0.31", features = ["bundled", "load_extension"] }
+sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio", "migrate"] }
 tower-http = { version = "0.5", features = ["cors", "fs"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
@@ -17,12 +18,21 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 thiserror = "1"
 dotenvy = "0.15"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 async-trait = "0.1"
 tokio-stream = "0.1"
 base64 = "0.22"
 futures = "0.3"
 async-stream = "0.3"
+url = "2"
+
+[[bin]]
+name = "alfred"
+path = "src/main.rs"
+
+[[bin]]
+name = "seed"
+path = "src/bin/seed.rs"
 
 [features]
 vec0 = []
@@ -40,10 +50,6 @@ path = "tests/api/health.rs"
 [[test]]
 name = "migrations"
 path = "tests/db/migrations.rs"
-
-[[test]]
-name = "conversations"
-path = "tests/api/conversations.rs"
 
 [[test]]
 name = "messages"
@@ -72,10 +78,6 @@ path = "tests/api/chat.rs"
 [[test]]
 name = "cors"
 path = "tests/api/cors.rs"
-
-[[bin]]
-name = "seed"
-path = "src/bin/seed.rs"
 
 [[test]]
 name = "seed"
