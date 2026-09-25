@@ -4,13 +4,12 @@ use serde_json::json;
 
 #[tokio::test]
 async fn test_create_message() {
-    // Given a conversation exists
-    // When POST /api/conversations/:id/messages is called with valid body
+    // When POST /api/messages is called with valid body
     // Then returns 201 with the created message
     let app = TestApp::new().await;
 
     let resp = app
-        .post("/api/conversations/conv-id/messages")
+        .post("/api/messages")
         .json(&json!({
             "role": "user",
             "content": "Hello, Alfred!"
@@ -27,13 +26,12 @@ async fn test_create_message() {
 
 #[tokio::test]
 async fn test_create_message_with_tool_calls() {
-    // Given a conversation exists
     // When creating a message with tool_calls
     // Then returns 201 with tool_calls preserved
     let app = TestApp::new().await;
 
     let resp = app
-        .post("/api/conversations/conv-id/messages")
+        .post("/api/messages")
         .json(&json!({
             "role": "assistant",
             "content": "Let me check that.",
@@ -50,12 +48,11 @@ async fn test_create_message_with_tool_calls() {
 
 #[tokio::test]
 async fn test_list_messages() {
-    // Given a conversation has messages
-    // When GET /api/conversations/:id/messages is called
+    // When GET /api/messages is called
     // Then returns 200 with paginated messages
     let app = TestApp::new().await;
 
-    let resp = app.get("/api/conversations/conv-id/messages").await;
+    let resp = app.get("/api/messages").await;
 
     assert_eq!(resp.status(), 200);
     let body = resp.json::<serde_json::Value>().await;
@@ -64,26 +61,23 @@ async fn test_list_messages() {
 
 #[tokio::test]
 async fn test_list_messages_with_pagination() {
-    // Given a conversation has many messages
-    // When GET /api/conversations/:id/messages?limit=10 is called
+    // When GET /api/messages?limit=10 is called
     // Then returns 200 with paginated data
     let app = TestApp::new().await;
 
-    let resp = app
-        .get("/api/conversations/conv-id/messages?limit=10")
-        .await;
+    let resp = app.get("/api/messages?limit=10").await;
 
     assert_eq!(resp.status(), 200);
 }
 
 #[tokio::test]
 async fn test_get_message() {
-    // Given a message exists in a conversation
-    // When GET /api/conversations/:id/messages/:msg_id is called
+    // Given a message exists
+    // When GET /api/messages/msg-id is called
     // Then returns 200 with the message
     let app = TestApp::new().await;
 
-    let resp = app.get("/api/conversations/conv-id/messages/msg-id").await;
+    let resp = app.get("/api/messages/msg-id").await;
 
     assert_eq!(resp.status(), 200);
     let body = resp.json::<serde_json::Value>().await;
@@ -93,20 +87,17 @@ async fn test_get_message() {
 #[tokio::test]
 async fn test_get_message_not_found() {
     // Given no message with that id exists
-    // When GET /api/conversations/:id/messages/:msg_id is called
+    // When GET /api/messages/non-existent is called
     // Then returns 404
     let app = TestApp::new().await;
 
-    let resp = app
-        .get("/api/conversations/conv-id/messages/non-existent")
-        .await;
+    let resp = app.get("/api/messages/non-existent").await;
 
     assert_eq!(resp.status(), 404);
 }
 
 #[tokio::test]
 async fn test_create_long_message_triggers_collapse() {
-    // Given a conversation exists
     // When creating a message with very long content (> 2000 estimated tokens)
     // Then the response includes tokens_count > 0
     let app = TestApp::new().await;
@@ -115,7 +106,7 @@ async fn test_create_long_message_triggers_collapse() {
     let long_content = "A ".repeat(4000);
 
     let resp = app
-        .post("/api/conversations/conv-id/messages")
+        .post("/api/messages")
         .json(&json!({
             "role": "user",
             "content": long_content

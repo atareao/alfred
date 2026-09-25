@@ -69,33 +69,33 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_sliding_window_context() {
+    async fn test_sliding_window_context() -> Result<(), Box<dyn std::error::Error>> {
         let builder = ContextBuilder::new();
         let ctx = builder
             .build(ContextStrategy::SlidingWindow, "profile-1", "hello")
-            .await
-            .unwrap();
+            .await?;
         assert!(ctx.system_prompt.contains("Alfred"));
         assert!(ctx.token_estimate <= 2000);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_historical_context() {
+    async fn test_historical_context() -> Result<(), Box<dyn std::error::Error>> {
         let builder = ContextBuilder::new();
         let ctx = builder
             .build(ContextStrategy::Historical, "profile-1", "history")
-            .await
-            .unwrap();
+            .await?;
         assert!(ctx.token_estimate >= 1000);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_rag_context_has_memories() {
+    async fn test_rag_context_has_memories() -> Result<(), Box<dyn std::error::Error>> {
         let builder = ContextBuilder::new();
         let ctx = builder
             .build(ContextStrategy::RAG, "profile-1", "search")
-            .await
-            .unwrap();
+            .await?;
         assert!(!ctx.rag_memories.is_empty());
+        Ok(())
     }
 }

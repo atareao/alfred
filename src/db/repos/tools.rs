@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection};
+use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
 
 use crate::models::Tool;
@@ -6,66 +6,64 @@ use crate::models::Tool;
 pub struct ToolsRepo;
 
 impl ToolsRepo {
-    pub fn list(conn: &Connection) -> Result<Vec<Tool>, rusqlite::Error> {
-        let mut stmt =
-            conn.prepare("SELECT id, name, description, enabled FROM tools ORDER BY name")?;
-        let mut rows = stmt.query([])?;
-        let mut items = Vec::new();
-        while let Some(row) = rows.next()? {
-            let enabled_int: i32 = row.get(3)?;
-            items.push(Tool {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                description: row.get(2)?,
-                enabled: enabled_int != 0,
-            });
-        }
+    pub async fn list(pool: &SqlitePool) -> Result<Vec<Tool>, sqlx::Error> {
+        let rows = sqlx::query("SELECT id, name, description, enabled FROM tools ORDER BY name")
+            .fetch_all(pool)
+            .await?;
+
+        let items: Vec<Tool> = rows
+            .iter()
+            .map(|row| Tool {
+                id: row.get(0),
+                name: row.get(1),
+                description: row.get(2),
+                enabled: row.get::<bool, _>(3),
+            })
+            .collect();
+
         Ok(items)
     }
 
-    pub fn find_by_name(conn: &Connection, name: &str) -> Result<Option<Tool>, rusqlite::Error> {
-        let mut stmt =
-            conn.prepare("SELECT id, name, description, enabled FROM tools WHERE name = ?1")?;
-        let mut rows = stmt.query(params![name])?;
-        match rows.next()? {
-            Some(row) => {
-                let enabled_int: i32 = row.get(3)?;
-                Ok(Some(Tool {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    description: row.get(2)?,
-                    enabled: enabled_int != 0,
-                }))
-            }
-            None => Ok(None),
-        }
+    pub async fn find_by_name(pool: &SqlitePool, name: &str) -> Result<Option<Tool>, sqlx::Error> {
+        let row = sqlx::query("SELECT id, name, description, enabled FROM tools WHERE name = ?1")
+            .bind(name)
+            .fetch_optional(pool)
+            .await?;
+
+        Ok(row.map(|r| Tool {
+            id: r.get(0),
+            name: r.get(1),
+            description: r.get(2),
+            enabled: r.get::<bool, _>(3),
+        }))
     }
 
-    pub fn toggle_enabled(conn: &Connection, id: &str) -> Result<Option<Tool>, rusqlite::Error> {
-        conn.execute(
+    pub async fn toggle_enabled(pool: &SqlitePool, id: &str) -> Result<Option<Tool>, sqlx::Error> {
+        sqlx::query(
             "UPDATE tools SET enabled = CASE WHEN enabled = 1 THEN 0 ELSE 1 END WHERE id = ?1",
-            params![id],
-        )?;
+        )
+        .bind(id)
+        .execute(pool)
+        .await?;
 
-        let mut stmt =
-            conn.prepare("SELECT id, name, description, enabled FROM tools WHERE id = ?1")?;
-        let mut rows = stmt.query(params![id])?;
-        match rows.next()? {
-            Some(row) => {
-                let enabled_int: i32 = row.get(3)?;
-                Ok(Some(Tool {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    description: row.get(2)?,
-                    enabled: enabled_int != 0,
-                }))
-            }
-            None => Ok(None),
-        }
+        let row = sqlx::query("SELECT id, name, description, enabled FROM tools WHERE id = ?1")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?;
+
+        Ok(row.map(|r| Tool {
+            id: r.get(0),
+            name: r.get(1),
+            description: r.get(2),
+            enabled: r.get::<bool, _>(3),
+        }))
     }
 
-    pub fn seed_defaults(conn: &Connection) -> Result<(), rusqlite::Error> {
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM tools", [], |row| row.get(0))?;
+    pub async fn seed_defaults(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tools")
+            .fetch_one(pool)
+            .await?;
+
         if count > 0 {
             return Ok(());
         }
@@ -88,10 +86,14 @@ impl ToolsRepo {
 
         for (name, description) in defaults {
             let id = Uuid::new_v4().to_string();
-            conn.execute(
+            sqlx::query(
                 "INSERT INTO tools (id, name, description, enabled) VALUES (?1, ?2, ?3, 1)",
-                params![id, name, description],
-            )?;
+            )
+            .bind(id)
+            .bind(name)
+            .bind(description)
+            .execute(pool)
+            .await?;
         }
         Ok(())
     }
@@ -100,40 +102,67 @@ impl ToolsRepo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::schema::run_migrations;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
-    fn setup() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
-        ToolsRepo::seed_defaults(&conn).unwrap();
-        conn
+    async fn setup() -> Result<SqlitePool, sqlx::Error> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(":memory:")
+                    .create_if_missing(true),
+            )
+            .await?;
+        sqlx::migrate::Migrator::new(std::path::Path::new("migrations"))
+            .await
+            .unwrap()
+            .run(&pool)
+            .await
+            .unwrap();
+        ToolsRepo::seed_defaults(&pool).await?;
+        Ok(pool)
     }
 
-    #[test]
-    fn test_list_tools() {
-        let conn = setup();
-        let tools = ToolsRepo::list(&conn).unwrap();
+    #[tokio::test]
+    async fn test_list_tools() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
+        let tools = ToolsRepo::list(&pool).await?;
         assert_eq!(tools.len(), 10);
         assert!(tools.iter().any(|t| t.name == "weather"));
         assert!(tools.iter().any(|t| t.name == "unified_search"));
+        Ok(())
     }
 
-    #[test]
-    fn test_toggle_enabled() {
-        let conn = setup();
-        let tools = ToolsRepo::list(&conn).unwrap();
+    #[tokio::test]
+    async fn test_toggle_enabled() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
+        let tools = ToolsRepo::list(&pool).await?;
         let tool = tools.into_iter().find(|t| t.name == "weather").unwrap();
         assert!(tool.enabled);
 
-        let toggled = ToolsRepo::toggle_enabled(&conn, &tool.id).unwrap().unwrap();
+        let toggled = ToolsRepo::toggle_enabled(&pool, &tool.id).await?.unwrap();
         assert!(!toggled.enabled);
+        Ok(())
     }
 
-    #[test]
-    fn test_toggle_not_found() {
-        let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
-        let result = ToolsRepo::toggle_enabled(&conn, "nonexistent").unwrap();
+    #[tokio::test]
+    async fn test_toggle_not_found() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(":memory:")
+                    .create_if_missing(true),
+            )
+            .await?;
+        sqlx::migrate::Migrator::new(std::path::Path::new("migrations"))
+            .await
+            .unwrap()
+            .run(&pool)
+            .await
+            .unwrap();
+        let result = ToolsRepo::toggle_enabled(&pool, "nonexistent").await?;
         assert!(result.is_none());
+        Ok(())
     }
 }

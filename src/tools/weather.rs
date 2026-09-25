@@ -1,8 +1,7 @@
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
-use rusqlite::Connection;
 use serde_json::Value;
-use std::sync::{Arc, Mutex};
+use sqlx::SqlitePool;
 
 use crate::tools::permission::Permission;
 use crate::tools::r#trait::{Tool, ToolError, ToolResult};
@@ -24,13 +23,13 @@ fn parse_forecast_date(date_str: &str) -> Option<DateTime<Utc>> {
 
 pub struct WeatherTool {
     #[allow(dead_code)]
-    db: Arc<Mutex<Connection>>,
+    db: SqlitePool,
     api_key: String,
     client: reqwest::Client,
 }
 
 impl WeatherTool {
-    pub fn new(db: Arc<Mutex<Connection>>, api_key: String) -> Self {
+    pub fn new(db: SqlitePool, api_key: String) -> Self {
         Self {
             db,
             api_key,
@@ -38,29 +37,15 @@ impl WeatherTool {
         }
     }
 
-    async fn get_weather(&self, args: Value) -> Result<ToolResult, ToolError> {
-        let lat = args
-            .get("latitude")
-            .and_then(|v| v.as_f64())
-            .ok_or_else(|| ToolError::InvalidArguments("Missing or invalid latitude".into()))?;
-        let lon = args
-            .get("longitude")
-            .and_then(|v| v.as_f64())
-            .ok_or_else(|| ToolError::InvalidArguments("Missing or invalid longitude".into()))?;
-
-        let date = args.get("date").and_then(|v| v.as_str());
-
-        if let Some(date_str) = date {
-            self.get_forecast(lat, lon, date_str).await
-        } else {
-            self.get_current_weather(lat, lon).await
-        }
-    }
-
-    async fn get_current_weather(&self, lat: f64, lon: f64) -> Result<ToolResult, ToolError> {
+    async fn get_current_weather(
+        &self,
+        lat: f64,
+        lon: f64,
+        api_key: &str,
+    ) -> Result<ToolResult, ToolError> {
         let url = format!(
             "https://api.openweathermap.org/data/2.5/weather?lat={}&lon={}&appid={}&units=metric&lang=es",
-            lat, lon, self.api_key
+            lat, lon, api_key
         );
 
         let resp = self.client.get(&url).send().await.map_err(|e| {
@@ -92,10 +77,11 @@ impl WeatherTool {
         lat: f64,
         lon: f64,
         date_str: &str,
+        api_key: &str,
     ) -> Result<ToolResult, ToolError> {
         let url = format!(
             "https://api.openweathermap.org/data/2.5/forecast?lat={}&lon={}&appid={}&units=metric&lang=es",
-            lat, lon, self.api_key
+            lat, lon, api_key
         );
 
         let resp = self.client.get(&url).send().await.map_err(|e| {
@@ -174,10 +160,6 @@ impl Tool for WeatherTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "operation": {
-                    "type": "string",
-                    "enum": ["get_weather"]
-                },
                 "latitude": {
                     "type": "number",
                     "description": "Latitud en grados decimales"
@@ -188,10 +170,10 @@ impl Tool for WeatherTool {
                 },
                 "date": {
                     "type": "string",
-                    "description": "Fecha opcional para pronóstico (formato ISO 8601)"
+                    "description": "Fecha opcional para pronóstico (formato ISO 8601 o YYYY-MM-DD)"
                 }
             },
-            "required": ["operation"]
+            "required": ["latitude", "longitude"]
         })
     }
 
@@ -200,12 +182,36 @@ impl Tool for WeatherTool {
     }
 
     async fn execute(&self, args: Value) -> Result<ToolResult, ToolError> {
-        match args.get("operation").and_then(|v| v.as_str()).unwrap_or("") {
-            "get_weather" => self.get_weather(args).await,
-            op => Err(ToolError::InvalidArguments(format!(
-                "Unknown operation: {}",
-                op
-            ))),
+        // Try to get API key from settings DB first, fallback to Config/ENV
+        let api_key =
+            match crate::db::repos::settings::SettingsRepo::get(&self.db, "openweather_api_key")
+                .await
+            {
+                Ok(Some(key)) if !key.is_empty() => key,
+                _ => self.api_key.clone(),
+            };
+
+        if api_key.is_empty() {
+            return Err(ToolError::ExecutionError(
+                "OpenWeather API key is not configured".into(),
+            ));
+        }
+
+        let lat = args
+            .get("latitude")
+            .and_then(|v| v.as_f64())
+            .ok_or_else(|| ToolError::InvalidArguments("Missing or invalid latitude".into()))?;
+        let lon = args
+            .get("longitude")
+            .and_then(|v| v.as_f64())
+            .ok_or_else(|| ToolError::InvalidArguments("Missing or invalid longitude".into()))?;
+
+        let date = args.get("date").and_then(|v| v.as_str());
+
+        if let Some(date_str) = date {
+            self.get_forecast(lat, lon, date_str, &api_key).await
+        } else {
+            self.get_current_weather(lat, lon, &api_key).await
         }
     }
 }
@@ -214,81 +220,96 @@ impl Tool for WeatherTool {
 mod tests {
     use super::*;
     use crate::db::schema::run_migrations;
+    use sqlx::sqlite::SqlitePoolOptions;
 
-    fn setup() -> (Arc<Mutex<Connection>>, WeatherTool) {
-        let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
-        let db = Arc::new(Mutex::new(conn));
-        let tool = WeatherTool::new(db.clone(), "test-api-key".into());
-        (db, tool)
+    async fn setup() -> Result<(SqlitePool, WeatherTool), sqlx::Error> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await?;
+        run_migrations(&pool).await.unwrap();
+        let tool = WeatherTool::new(pool.clone(), "test-api-key".into());
+        Ok((pool, tool))
     }
 
     #[tokio::test]
-    async fn test_weather_name_and_description() {
-        let (_, tool) = setup();
+    async fn test_weather_name_and_description() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
         assert_eq!(tool.name(), "weather");
         assert_eq!(
             tool.description(),
             "Consulta del clima actual o pronóstico para coordenadas geográficas"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_weather_permission() {
-        let (_, tool) = setup();
+    async fn test_weather_permission() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
         assert_eq!(tool.permission(), Permission::NoConfirm);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_weather_parameters_has_operation() {
-        let (_, tool) = setup();
+    async fn test_weather_parameters_has_no_operation() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
         let params = tool.parameters();
         assert_eq!(params["type"], "object");
-        let operation = params["properties"]["operation"].as_object().unwrap();
-        assert_eq!(operation["type"], "string");
-        let enum_values = operation["enum"].as_array().unwrap();
-        assert!(enum_values.contains(&serde_json::json!("get_weather")));
+        // Must NOT have an operation property
+        assert!(
+            params["properties"].get("operation").is_none(),
+            "Should not have operation property"
+        );
+        // Required must be latitude and longitude
+        let required = params["required"].as_array().unwrap();
+        let req_values: Vec<&str> = required.iter().map(|v| v.as_str().unwrap()).collect();
+        assert_eq!(req_values, vec!["latitude", "longitude"]);
+        // Properties should have latitude, longitude, date
+        let props = params["properties"].as_object().unwrap();
+        assert!(props.contains_key("latitude"), "Should have latitude");
+        assert!(props.contains_key("longitude"), "Should have longitude");
+        assert!(props.contains_key("date"), "Should have date");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_weather_missing_coordinates() {
-        let (_, tool) = setup();
-        // Missing latitude
+    async fn test_weather_missing_latitude_returns_error() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (_, tool) = setup().await?;
         let result = tool
             .execute(serde_json::json!({
-                "operation": "get_weather",
                 "longitude": -3.7038
             }))
             .await;
-        assert!(matches!(result, Err(ToolError::InvalidArguments(_))));
-
-        // Missing longitude
-        let result = tool
-            .execute(serde_json::json!({
-                "operation": "get_weather",
-                "latitude": 40.4168
-            }))
-            .await;
-        assert!(matches!(result, Err(ToolError::InvalidArguments(_))));
-
-        // Missing both
-        let result = tool
-            .execute(serde_json::json!({
-                "operation": "get_weather"
-            }))
-            .await;
-        assert!(matches!(result, Err(ToolError::InvalidArguments(_))));
+        assert!(
+            matches!(result, Err(ToolError::InvalidArguments(_))),
+            "Expected InvalidArguments error for missing latitude"
+        );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_weather_invalid_operation() {
-        let (_, tool) = setup();
+    async fn test_weather_missing_longitude_returns_error() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (_, tool) = setup().await?;
         let result = tool
             .execute(serde_json::json!({
-                "operation": "nonexistent"
+                "latitude": 40.4168
             }))
             .await;
+        assert!(
+            matches!(result, Err(ToolError::InvalidArguments(_))),
+            "Expected InvalidArguments error for missing longitude"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_weather_missing_both_coordinates() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
+        let result = tool.execute(serde_json::json!({})).await;
         assert!(matches!(result, Err(ToolError::InvalidArguments(_))));
+        Ok(())
     }
 
     // ------------------------------------------------------------------

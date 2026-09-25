@@ -1,22 +1,20 @@
 use crate::tools::permission::Permission;
 use crate::tools::r#trait::{Tool, ToolError, ToolResult};
 use async_trait::async_trait;
-use rusqlite::Connection;
 use serde_json::Value;
-use std::sync::{Arc, Mutex};
+use sqlx::{Row, SqlitePool};
 
 pub struct UnifiedSearchTool {
-    db: Arc<Mutex<Connection>>,
+    db: SqlitePool,
 }
 
 impl UnifiedSearchTool {
-    pub fn new(db: Arc<Mutex<Connection>>) -> Self {
+    pub fn new(db: SqlitePool) -> Self {
         Self { db }
     }
 
-    fn search_table(
+    async fn search_table(
         &self,
-        conn: &Connection,
         fts_table: &str,
         query: &str,
         source: &str,
@@ -32,19 +30,19 @@ impl UnifiedSearchTool {
             fts_table,
             fts_table,
         );
-        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map(rusqlite::params![query, limit as i64], |row| {
-                Ok(serde_json::json!({
-                    "source": row.get::<_, String>(0)?,
-                    "snippet": row.get::<_, String>(2)?,
-                }))
-            })
+        let rows = sqlx::query(&sql)
+            .bind(query)
+            .bind(limit as i64)
+            .fetch_all(&self.db)
+            .await
             .map_err(|e| e.to_string())?;
 
         let mut results = Vec::new();
         for row in rows {
-            results.push(row.map_err(|e| e.to_string())?);
+            results.push(serde_json::json!({
+                "source": row.try_get::<String, _>(0).map_err(|e| e.to_string())?,
+                "snippet": row.try_get::<String, _>(2).map_err(|e| e.to_string())?,
+            }));
         }
         Ok(results)
     }
@@ -55,11 +53,6 @@ impl UnifiedSearchTool {
         dimensions: Option<&str>,
         limit: usize,
     ) -> Result<ToolResult, ToolError> {
-        let conn = self
-            .db
-            .lock()
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
-
         let tables: Vec<(&str, &str)> = match dimensions {
             Some("messages") => vec![("messages_fts", "message")],
             Some("memories") => vec![("memories_fts", "memory")],
@@ -79,7 +72,7 @@ impl UnifiedSearchTool {
 
         let mut all_results = Vec::new();
         for (table, source) in tables {
-            if let Ok(mut results) = self.search_table(&conn, table, query, source, limit) {
+            if let Ok(mut results) = self.search_table(table, query, source, limit).await {
                 all_results.append(&mut results);
             }
         }
@@ -149,75 +142,72 @@ impl Tool for UnifiedSearchTool {
 mod tests {
     use super::*;
     use crate::db::schema::run_migrations;
+    use sqlx::sqlite::SqlitePoolOptions;
 
-    fn setup() -> UnifiedSearchTool {
-        let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
+    async fn setup() -> Result<UnifiedSearchTool, sqlx::Error> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await?;
+        run_migrations(&pool).await.unwrap();
         // Create FTS triggers
-        crate::db::fts::create_fts_triggers(&conn).unwrap();
+        crate::db::fts::create_fts_triggers(&pool).await.unwrap();
         // Seed a profile
-        conn.execute(
-            "INSERT INTO profiles (id, name, preferences) VALUES ('p1', 'Test', '{}')",
-            [],
-        )
-        .unwrap();
-        // Seed a conversation
-        conn.execute(
-            "INSERT INTO conversations (id, title) VALUES ('c1', 'Test')",
-            [],
-        )
-        .unwrap();
+        sqlx::query("INSERT INTO profiles (id, name, preferences) VALUES ('p1', 'Test', '{}')")
+            .execute(&pool)
+            .await?;
         // Insert a message (FTS trigger will index it)
-        conn.execute(
-            "INSERT INTO messages (id, conversation_id, role, content) \
-             VALUES ('m1', 'c1', 'user', 'prueba de búsqueda unificada')",
-            [],
+        sqlx::query(
+            "INSERT INTO messages (id, role, content) \
+             VALUES ('m1', 'user', 'prueba de búsqueda unificada')",
         )
-        .unwrap();
+        .execute(&pool)
+        .await?;
         // Insert a note
-        conn.execute(
+        sqlx::query(
             "INSERT INTO notes (id, profile_id, content, category) \
              VALUES ('n1', 'p1', 'nota de prueba para búsqueda', 'idea')",
-            [],
         )
-        .unwrap();
+        .execute(&pool)
+        .await?;
         // Insert an event
-        conn.execute(
+        sqlx::query(
             "INSERT INTO events (id, profile_id, title, description, start_time, end_time) \
              VALUES ('e1', 'p1', 'Evento de prueba', 'descripción del evento', \
              '2025-01-01T10:00:00Z', '2025-01-01T11:00:00Z')",
-            [],
         )
-        .unwrap();
+        .execute(&pool)
+        .await?;
         // Insert a task
-        conn.execute(
+        sqlx::query(
             "INSERT INTO tasks (id, profile_id, content) \
              VALUES ('t1', 'p1', 'tarea de prueba para buscar')",
-            [],
         )
-        .unwrap();
+        .execute(&pool)
+        .await?;
         // Insert a contact
-        conn.execute(
+        sqlx::query(
             "INSERT INTO contacts (id, profile_id, name) \
              VALUES ('c1', 'p1', 'Contacto de Prueba')",
-            [],
         )
-        .unwrap();
+        .execute(&pool)
+        .await?;
 
-        let db = Arc::new(Mutex::new(conn));
-        UnifiedSearchTool::new(db)
+        Ok(UnifiedSearchTool::new(pool))
     }
 
     #[tokio::test]
-    async fn test_search_rejects_empty_query() {
-        let tool = setup();
+    async fn test_search_rejects_empty_query() -> Result<(), Box<dyn std::error::Error>> {
+        let tool = setup().await?;
         let result = tool.execute(serde_json::json!({"query": ""})).await;
         assert!(matches!(result, Err(ToolError::InvalidArguments(_))));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_search_finds_results_across_dimensions() {
-        let tool = setup();
+    async fn test_search_finds_results_across_dimensions() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let tool = setup().await?;
         let result = tool
             .execute(serde_json::json!({"query": "prueba", "limit": 10}))
             .await
@@ -225,31 +215,34 @@ mod tests {
         assert!(result.success);
         let results = result.data.as_array().unwrap();
         assert!(!results.is_empty(), "Should find at least one result");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_search_with_messages_dimension() {
-        let tool = setup();
+    async fn test_search_with_messages_dimension() -> Result<(), Box<dyn std::error::Error>> {
+        let tool = setup().await?;
         let result = tool
             .execute(serde_json::json!({"query": "búsqueda", "dimensions": "messages", "limit": 5}))
             .await
             .unwrap();
         assert!(result.success);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_search_with_notes_dimension() {
-        let tool = setup();
+    async fn test_search_with_notes_dimension() -> Result<(), Box<dyn std::error::Error>> {
+        let tool = setup().await?;
         let result = tool
             .execute(serde_json::json!({"query": "nota", "dimensions": "notes", "limit": 5}))
             .await
             .unwrap();
         assert!(result.success);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_search_respects_limit() {
-        let tool = setup();
+    async fn test_search_respects_limit() -> Result<(), Box<dyn std::error::Error>> {
+        let tool = setup().await?;
         let result = tool
             .execute(serde_json::json!({"query": "prueba", "limit": 1}))
             .await
@@ -257,11 +250,12 @@ mod tests {
         assert!(result.success);
         let results = result.data.as_array().unwrap();
         assert!(results.len() <= 1, "Should respect limit of 1");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_search_no_match_returns_empty() {
-        let tool = setup();
+    async fn test_search_no_match_returns_empty() -> Result<(), Box<dyn std::error::Error>> {
+        let tool = setup().await?;
         let result = tool
             .execute(serde_json::json!({"query": "zzzznoexiste", "limit": 10}))
             .await
@@ -272,5 +266,6 @@ mod tests {
             results.is_empty(),
             "Should return empty for non-matching query"
         );
+        Ok(())
     }
 }

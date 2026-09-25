@@ -134,10 +134,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_execute_unknown_tool_returns_error() {
+    async fn test_execute_unknown_tool_returns_error() -> Result<(), Box<dyn std::error::Error>> {
         let reg = ToolRegistry::new();
         let result = reg.execute("unknown", serde_json::json!({})).await;
         assert!(matches!(result, Err(ToolError::NotFound(_))));
+        Ok(())
     }
 
     #[test]

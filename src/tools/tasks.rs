@@ -1,8 +1,7 @@
 use async_trait::async_trait;
 use chrono::Utc;
-use rusqlite::Connection;
 use serde_json::Value;
-use std::sync::{Arc, Mutex};
+use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::db::repos::tasks::{Task, TasksRepo};
@@ -10,11 +9,11 @@ use crate::tools::permission::Permission;
 use crate::tools::r#trait::{Tool, ToolError, ToolResult};
 
 pub struct TasksTool {
-    db: Arc<Mutex<Connection>>,
+    db: SqlitePool,
 }
 
 impl TasksTool {
-    pub fn new(db: Arc<Mutex<Connection>>) -> Self {
+    pub fn new(db: SqlitePool) -> Self {
         Self { db }
     }
 
@@ -24,19 +23,15 @@ impl TasksTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArguments("Missing profile_id".into()))?;
 
-        let conn = self
-            .db
-            .lock()
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
         let tasks = TasksRepo::list(
-            &conn,
+            &self.db,
             profile_id,
             args.get("status").and_then(|v| v.as_str()),
             args.get("priority").and_then(|v| v.as_str()),
             args.get("project").and_then(|v| v.as_str()),
             args.get("scope").and_then(|v| v.as_str()),
         )
-        .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
+        .await?;
 
         Ok(ToolResult {
             success: true,
@@ -83,11 +78,7 @@ impl TasksTool {
             updated_at: now,
         };
 
-        let conn = self
-            .db
-            .lock()
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
-        TasksRepo::create(&conn, &task).map_err(|e| ToolError::ExecutionError(e.to_string()))?;
+        TasksRepo::create(&self.db, &task).await?;
 
         Ok(ToolResult {
             success: true,
@@ -102,12 +93,8 @@ impl TasksTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArguments("Missing id".into()))?;
 
-        let conn = self
-            .db
-            .lock()
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
         TasksRepo::update(
-            &conn,
+            &self.db,
             id,
             args.get("content").and_then(|v| v.as_str()),
             args.get("priority").and_then(|v| v.as_str()),
@@ -115,7 +102,7 @@ impl TasksTool {
             args.get("due_date").and_then(|v| v.as_str()),
             args.get("scope").and_then(|v| v.as_str()),
         )
-        .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
+        .await?;
 
         Ok(ToolResult {
             success: true,
@@ -130,11 +117,7 @@ impl TasksTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArguments("Missing id".into()))?;
 
-        let conn = self
-            .db
-            .lock()
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
-        TasksRepo::complete(&conn, id).map_err(|e| ToolError::ExecutionError(e.to_string()))?;
+        TasksRepo::complete(&self.db, id).await?;
 
         Ok(ToolResult {
             success: true,
@@ -197,23 +180,26 @@ impl Tool for TasksTool {
 mod tests {
     use super::*;
     use crate::db::schema::run_migrations;
+    use sqlx::sqlite::SqlitePoolOptions;
 
-    fn setup() -> (Arc<Mutex<Connection>>, TasksTool) {
-        let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
-        conn.execute(
+    async fn setup() -> Result<(SqlitePool, TasksTool), sqlx::Error> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await?;
+        run_migrations(&pool).await.unwrap();
+        sqlx::query(
             "INSERT INTO profiles (id, name, preferences) VALUES ('profile-1', 'Test', '{}')",
-            [],
         )
-        .unwrap();
-        let db = Arc::new(Mutex::new(conn));
-        let tool = TasksTool::new(db.clone());
-        (db, tool)
+        .execute(&pool)
+        .await?;
+        let tool = TasksTool::new(pool.clone());
+        Ok((pool, tool))
     }
 
     #[tokio::test]
-    async fn test_list_empty() {
-        let (_, tool) = setup();
+    async fn test_list_empty() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
         let result = tool
             .execute(serde_json::json!({
                 "operation": "list_tasks",
@@ -223,11 +209,12 @@ mod tests {
             .unwrap();
         assert!(result.success);
         assert_eq!(result.data.as_array().unwrap().len(), 0);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_add_task() {
-        let (_, tool) = setup();
+    async fn test_add_task() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
         let result = tool
             .execute(serde_json::json!({
                 "operation": "add_task",
@@ -243,11 +230,12 @@ mod tests {
         assert_eq!(result.data["priority"], "high");
         assert_eq!(result.data["project"], "Casa");
         assert_eq!(result.data["status"], "pending");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_complete_task() {
-        let (_, tool) = setup();
+    async fn test_complete_task() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
         // Add a task first
         let created = tool
             .execute(serde_json::json!({
@@ -269,22 +257,24 @@ mod tests {
             .unwrap();
         assert!(result.success);
         assert_eq!(result.data["id"], task_id);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_invalid_operation() {
-        let (_, tool) = setup();
+    async fn test_invalid_operation() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
         let result = tool
             .execute(serde_json::json!({
                 "operation": "nonexistent"
             }))
             .await;
         assert!(matches!(result, Err(ToolError::InvalidArguments(_))));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_update_task() {
-        let (_, tool) = setup();
+    async fn test_update_task() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
         // Add a task first
         let created = tool
             .execute(serde_json::json!({
@@ -321,11 +311,12 @@ mod tests {
         let updated = tasks.iter().find(|t| t["id"] == task_id).unwrap();
         assert_eq!(updated["content"], "Tarea actualizada");
         assert_eq!(updated["priority"], "high");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_list_tasks_with_filters() {
-        let (_, tool) = setup();
+    async fn test_list_tasks_with_filters() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
         // Add two tasks with different projects
         tool.execute(serde_json::json!({
             "operation": "add_task",
@@ -357,5 +348,6 @@ mod tests {
         let tasks = result.data.as_array().unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0]["project"], "Alpha");
+        Ok(())
     }
 }

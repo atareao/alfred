@@ -69,10 +69,11 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_ollama_embed_timeout_returns_error() {
+    async fn test_ollama_embed_timeout_returns_error() -> Result<(), Box<dyn std::error::Error>> {
         // Point to unreachable address to test error handling
         let provider = OllamaProvider::new(Some("http://localhost:1".to_string()), None);
         let result = provider.embed("test").await;
         assert!(result.is_err());
+        Ok(())
     }
 }

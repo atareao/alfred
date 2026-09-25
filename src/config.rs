@@ -30,6 +30,12 @@ pub struct Config {
     // Weather
     pub openweather_api_key: Option<String>,
 
+    // Google Places
+    pub google_places_api_key: Option<String>,
+
+    // Brave Search
+    pub brave_search_api_key: Option<String>,
+
     // Workers
     pub briefing_time: String,
     pub consolidation_time: String,
@@ -74,6 +80,9 @@ impl Config {
             jwt_secret: env::var("JWT_SECRET").unwrap_or_default(),
 
             openweather_api_key: env::var("OPENWEATHER_API_KEY").ok(),
+
+            google_places_api_key: env::var("GOOGLE_PLACES_API_KEY").ok(),
+            brave_search_api_key: env::var("BRAVE_SEARCH_API_KEY").ok(),
 
             briefing_time: env::var("BRIEFING_TIME").unwrap_or_else(|_| "08:15".into()),
             consolidation_time: env::var("CONSOLIDATION_TIME").unwrap_or_else(|_| "23:00".into()),
@@ -120,6 +129,8 @@ mod tests {
             "AUTH_REDIRECT_URL",
             "JWT_SECRET",
             "OPENWEATHER_API_KEY",
+            "GOOGLE_PLACES_API_KEY",
+            "BRAVE_SEARCH_API_KEY",
             "BRIEFING_TIME",
             "CONSOLIDATION_TIME",
             "TRAVEL_PREP_DAYS_BEFORE",
@@ -150,6 +161,8 @@ mod tests {
         assert_eq!(cfg.jwt_secret, "");
 
         assert!(cfg.openweather_api_key.is_none());
+        assert!(cfg.google_places_api_key.is_none());
+        assert!(cfg.brave_search_api_key.is_none());
 
         assert_eq!(cfg.briefing_time, "08:15");
         assert_eq!(cfg.consolidation_time, "23:00");
@@ -180,6 +193,8 @@ mod tests {
         env::set_var("AUTH_REDIRECT_URL", "https://app.example.com/callback");
         env::set_var("JWT_SECRET", "super-secret-key");
         env::set_var("OPENWEATHER_API_KEY", "weather-key-123");
+        env::set_var("GOOGLE_PLACES_API_KEY", "google-places-key-456");
+        env::set_var("BRAVE_SEARCH_API_KEY", "brave-search-key-789");
         env::set_var("BRIEFING_TIME", "07:00");
         env::set_var("CONSOLIDATION_TIME", "22:30");
         env::set_var("TRAVEL_PREP_DAYS_BEFORE", "5");
@@ -207,6 +222,14 @@ mod tests {
         assert_eq!(cfg.jwt_secret, "super-secret-key");
 
         assert_eq!(cfg.openweather_api_key.as_deref(), Some("weather-key-123"));
+        assert_eq!(
+            cfg.google_places_api_key.as_deref(),
+            Some("google-places-key-456")
+        );
+        assert_eq!(
+            cfg.brave_search_api_key.as_deref(),
+            Some("brave-search-key-789")
+        );
 
         assert_eq!(cfg.briefing_time, "07:00");
         assert_eq!(cfg.consolidation_time, "22:30");
@@ -232,6 +255,8 @@ mod tests {
             "AUTH_REDIRECT_URL",
             "JWT_SECRET",
             "OPENWEATHER_API_KEY",
+            "GOOGLE_PLACES_API_KEY",
+            "BRAVE_SEARCH_API_KEY",
             "BRIEFING_TIME",
             "CONSOLIDATION_TIME",
             "TRAVEL_PREP_DAYS_BEFORE",
@@ -263,6 +288,8 @@ mod tests {
             "AUTH_REDIRECT_URL",
             "JWT_SECRET",
             "OPENWEATHER_API_KEY",
+            "GOOGLE_PLACES_API_KEY",
+            "BRAVE_SEARCH_API_KEY",
             "BRIEFING_TIME",
             "CONSOLIDATION_TIME",
             "TRAVEL_PREP_DAYS_BEFORE",
@@ -297,6 +324,8 @@ mod tests {
             "AUTH_REDIRECT_URL",
             "JWT_SECRET",
             "OPENWEATHER_API_KEY",
+            "GOOGLE_PLACES_API_KEY",
+            "BRAVE_SEARCH_API_KEY",
             "BRIEFING_TIME",
             "CONSOLIDATION_TIME",
             "TRAVEL_PREP_DAYS_BEFORE",

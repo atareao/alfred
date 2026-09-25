@@ -87,6 +87,12 @@ pub enum LLMError {
     Internal(String),
 }
 
+impl From<reqwest::Error> for LLMError {
+    fn from(e: reqwest::Error) -> Self {
+        LLMError::HttpError(e.to_string())
+    }
+}
+
 /// Trait that all LLM providers must implement.
 ///
 /// Provides chat completions (both streaming and non-streaming) and embeddings.

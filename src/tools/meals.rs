@@ -1,9 +1,8 @@
 use async_trait::async_trait;
 use chrono::Datelike;
-use rusqlite::Connection;
 use serde_json::Value;
+use sqlx::SqlitePool;
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
 
 use crate::db::repos::meal_plans::MealPlansRepo;
 use crate::db::repos::shopping_list::ShoppingListRepo;
@@ -11,7 +10,7 @@ use crate::tools::permission::Permission;
 use crate::tools::r#trait::{Tool, ToolError, ToolResult};
 
 pub struct MealsTool {
-    db: Arc<Mutex<Connection>>,
+    db: SqlitePool,
 }
 
 const LUNCHES: &[&str] = &[
@@ -131,7 +130,7 @@ fn dish_ingredients(dish: &str) -> Vec<(&str, &str)> {
 }
 
 impl MealsTool {
-    pub fn new(db: Arc<Mutex<Connection>>) -> Self {
+    pub fn new(db: SqlitePool) -> Self {
         Self { db }
     }
 
@@ -176,13 +175,7 @@ impl MealsTool {
         let week_start = Self::current_week_monday();
         let meals_value = Value::Object(meals_map);
 
-        let conn = self
-            .db
-            .lock()
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
-
-        let plan = MealPlansRepo::upsert(&conn, profile_id, &week_start, &meals_value)
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
+        let plan = MealPlansRepo::upsert(&self.db, profile_id, &week_start, &meals_value).await?;
 
         let mut message = format!("Menú semanal creado para {}", week_start);
         if !preferences.is_empty() {
@@ -202,13 +195,8 @@ impl MealsTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArguments("Missing profile_id".into()))?;
 
-        let conn = self
-            .db
-            .lock()
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
-
-        let plan = MealPlansRepo::get_current(&conn, profile_id)
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?
+        let plan = MealPlansRepo::get_current(&self.db, profile_id)
+            .await?
             .ok_or_else(|| ToolError::NotFound("No hay plan de comidas para esta semana".into()))?;
 
         let meals = &plan.meals;
@@ -233,8 +221,7 @@ impl MealsTool {
             .collect();
 
         // Get existing items to avoid duplicates in the DB
-        let existing_items = ShoppingListRepo::list(&conn, profile_id, None)
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
+        let existing_items = ShoppingListRepo::list(&self.db, profile_id, None).await?;
         let existing_names: HashSet<String> = existing_items
             .iter()
             .map(|i| i.item.to_lowercase())
@@ -243,8 +230,8 @@ impl MealsTool {
         let mut added_items = Vec::new();
         for (item, category) in &unique_ingredients {
             if !existing_names.contains(&item.to_lowercase()) {
-                let added = ShoppingListRepo::add(&conn, profile_id, item, None, Some(category))
-                    .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
+                let added =
+                    ShoppingListRepo::add(&self.db, profile_id, item, None, Some(category)).await?;
                 added_items.push(added);
             }
         }
@@ -271,13 +258,8 @@ impl MealsTool {
         let quantity = args.get("quantity").and_then(|v| v.as_str());
         let category = args.get("category").and_then(|v| v.as_str());
 
-        let conn = self
-            .db
-            .lock()
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
-
-        let shopping_item = ShoppingListRepo::add(&conn, profile_id, item, quantity, category)
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
+        let shopping_item =
+            ShoppingListRepo::add(&self.db, profile_id, item, quantity, category).await?;
 
         Ok(ToolResult {
             success: true,
@@ -293,13 +275,7 @@ impl MealsTool {
             .ok_or_else(|| ToolError::InvalidArguments("Missing profile_id".into()))?;
         let category = args.get("category").and_then(|v| v.as_str());
 
-        let conn = self
-            .db
-            .lock()
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
-
-        let items = ShoppingListRepo::list(&conn, profile_id, category)
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
+        let items = ShoppingListRepo::list(&self.db, profile_id, category).await?;
 
         Ok(ToolResult {
             success: true,
@@ -318,13 +294,7 @@ impl MealsTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArguments("Missing item".into()))?;
 
-        let conn = self
-            .db
-            .lock()
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
-
-        let updated = ShoppingListRepo::check_off(&conn, profile_id, item)
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
+        let updated = ShoppingListRepo::check_off(&self.db, profile_id, item).await?;
 
         if !updated {
             return Err(ToolError::NotFound(format!(
@@ -401,39 +371,45 @@ impl Tool for MealsTool {
 mod tests {
     use super::*;
     use crate::db::schema::run_migrations;
+    use sqlx::sqlite::SqlitePoolOptions;
 
-    fn setup_db() -> Arc<Mutex<Connection>> {
-        let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
-        conn.execute(
+    async fn setup_db() -> Result<SqlitePool, sqlx::Error> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await?;
+        run_migrations(&pool).await.unwrap();
+        sqlx::query(
             "INSERT INTO profiles (id, name, preferences) VALUES ('profile-1', 'Test', '{}')",
-            [],
         )
-        .unwrap();
-        Arc::new(Mutex::new(conn))
+        .execute(&pool)
+        .await?;
+        Ok(pool)
     }
 
     #[tokio::test]
-    async fn test_meals_name_and_description() {
-        let db = setup_db();
+    async fn test_meals_name_and_description() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = MealsTool::new(db);
         assert_eq!(tool.name(), "meals");
         assert_eq!(
             tool.description(),
             "Planificación de comidas semanales y gestión de la lista de la compra"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_meals_permission() {
-        let db = setup_db();
+    async fn test_meals_permission() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = MealsTool::new(db);
         assert_eq!(tool.permission(), Permission::Notify);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_meals_parameters_has_operations() {
-        let db = setup_db();
+    async fn test_meals_parameters_has_operations() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = MealsTool::new(db);
         let params = tool.parameters();
         assert_eq!(params["type"], "object");
@@ -449,11 +425,12 @@ mod tests {
         assert!(op_names.contains(&"add_to_shopping_list"));
         assert!(op_names.contains(&"list_shopping_list"));
         assert!(op_names.contains(&"check_off_item"));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_plan_week_meals_missing_profile() {
-        let db = setup_db();
+    async fn test_plan_week_meals_missing_profile() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = MealsTool::new(db);
         let err = tool
             .execute(serde_json::json!({
@@ -462,11 +439,12 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ToolError::InvalidArguments(_)));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_add_to_shopping_list_missing_item() {
-        let db = setup_db();
+    async fn test_add_to_shopping_list_missing_item() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = MealsTool::new(db);
         let err = tool
             .execute(serde_json::json!({
@@ -476,11 +454,12 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ToolError::InvalidArguments(_)));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_check_off_item_not_found() {
-        let db = setup_db();
+    async fn test_check_off_item_not_found() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = MealsTool::new(db);
         let err = tool
             .execute(serde_json::json!({
@@ -491,11 +470,12 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ToolError::NotFound(_)));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_invalid_operation() {
-        let db = setup_db();
+    async fn test_invalid_operation() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = MealsTool::new(db);
         let err = tool
             .execute(serde_json::json!({
@@ -504,11 +484,12 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ToolError::InvalidArguments(_)));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_plan_week_meals_creates_plan() {
-        let db = setup_db();
+    async fn test_plan_week_meals_creates_plan() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = MealsTool::new(db);
 
         let result = tool
@@ -532,11 +513,12 @@ mod tests {
         let monday = &meals["lunes"];
         assert!(monday.get("lunch").and_then(|v| v.as_str()).is_some());
         assert!(monday.get("dinner").and_then(|v| v.as_str()).is_some());
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_plan_week_meals_with_custom_days() {
-        let db = setup_db();
+    async fn test_plan_week_meals_with_custom_days() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = MealsTool::new(db);
 
         let result = tool
@@ -555,11 +537,12 @@ mod tests {
         assert!(meals.contains_key("martes"));
         assert!(meals.contains_key("miércoles"));
         assert!(!meals.contains_key("jueves"));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_add_and_list_shopping() {
-        let db = setup_db();
+    async fn test_add_and_list_shopping() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = MealsTool::new(db);
 
         // Add an item
@@ -592,11 +575,12 @@ mod tests {
         let items = list_result.data.as_array().unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["item"], "Leche");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_generate_shopping_list_no_plan() {
-        let db = setup_db();
+    async fn test_generate_shopping_list_no_plan() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = MealsTool::new(db);
 
         let err = tool
@@ -608,11 +592,12 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(err, ToolError::NotFound(_)));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_generate_shopping_list_with_plan() {
-        let db = setup_db();
+    async fn test_generate_shopping_list_with_plan() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = MealsTool::new(db);
 
         // First create a meal plan
@@ -640,11 +625,12 @@ mod tests {
         for item in items {
             assert!(item.get("category").and_then(|v| v.as_str()).is_some());
         }
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_check_off_item_success() {
-        let db = setup_db();
+    async fn test_check_off_item_success() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
         let tool = MealsTool::new(db);
 
         // Add an item first
@@ -670,5 +656,6 @@ mod tests {
         assert!(result.success);
         assert_eq!(result.data["item"], "Pan");
         assert_eq!(result.data["checked"], true);
+        Ok(())
     }
 }

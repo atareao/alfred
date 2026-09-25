@@ -1,6 +1,6 @@
 use chrono::Utc;
-use rusqlite::{params, Connection};
 use serde_json::{json, Value};
+use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
 
 use crate::models::Profile;
@@ -8,20 +8,22 @@ use crate::models::Profile;
 pub struct ProfilesRepo;
 
 impl ProfilesRepo {
-    pub fn get_or_create(conn: &Connection) -> Result<Profile, rusqlite::Error> {
-        let mut stmt = conn.prepare(
+    pub async fn get_or_create(pool: &SqlitePool) -> Result<Profile, sqlx::Error> {
+        let row = sqlx::query(
             "SELECT id, name, avatar_url, preferences, created_at, updated_at FROM profiles LIMIT 1",
-        )?;
-        let mut rows = stmt.query([])?;
-        if let Some(row) = rows.next()? {
-            let prefs: String = row.get(3)?;
+        )
+        .fetch_optional(pool)
+        .await?;
+
+        if let Some(row) = row {
+            let prefs: String = row.get("preferences");
             return Ok(Profile {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                avatar_url: row.get(2)?,
+                id: row.get("id"),
+                name: row.get("name"),
+                avatar_url: row.get("avatar_url"),
                 preferences: serde_json::from_str(&prefs).unwrap_or(json!({})),
-                created_at: row.get(4)?,
-                updated_at: row.get(5)?,
+                created_at: row.get("created_at"),
+                updated_at: row.get("updated_at"),
             });
         }
 
@@ -29,18 +31,19 @@ impl ProfilesRepo {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
         let default_prefs = json!({}).to_string();
-        conn.execute(
+
+        sqlx::query(
             "INSERT INTO profiles (id, name, avatar_url, preferences, created_at, updated_at) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![
-                id,
-                "Alfred User",
-                Option::<String>::None,
-                default_prefs,
-                now,
-                now
-            ],
-        )?;
+        )
+        .bind(&id)
+        .bind("Alfred User")
+        .bind(Option::<String>::None)
+        .bind(&default_prefs)
+        .bind(&now)
+        .bind(&now)
+        .execute(pool)
+        .await?;
 
         Ok(Profile {
             id,
@@ -52,14 +55,14 @@ impl ProfilesRepo {
         })
     }
 
-    pub fn update(
-        conn: &Connection,
+    pub async fn update(
+        pool: &SqlitePool,
         name: Option<&str>,
         avatar_url: Option<&str>,
         preferences: Option<&Value>,
-    ) -> Result<Profile, rusqlite::Error> {
+    ) -> Result<Profile, sqlx::Error> {
         // Ensure a profile exists first, so we can update by ID
-        let existing = Self::get_or_create(conn)?;
+        let existing = Self::get_or_create(pool).await?;
         let now = Utc::now().to_rfc3339();
 
         let new_name = name.unwrap_or(&existing.name);
@@ -68,10 +71,16 @@ impl ProfilesRepo {
             .map(|v| v.to_string())
             .unwrap_or_else(|| existing.preferences.to_string());
 
-        conn.execute(
+        sqlx::query(
             "UPDATE profiles SET name = ?1, avatar_url = ?2, preferences = ?3, updated_at = ?4 WHERE id = ?5",
-            params![new_name, new_avatar, new_prefs, now, existing.id],
-        )?;
+        )
+        .bind(new_name)
+        .bind(new_avatar)
+        .bind(&new_prefs)
+        .bind(&now)
+        .bind(&existing.id)
+        .execute(pool)
+        .await?;
 
         Ok(Profile {
             id: existing.id,
@@ -87,51 +96,67 @@ impl ProfilesRepo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::schema::run_migrations;
     use serde_json::json;
+    use sqlx::sqlite::SqlitePoolOptions;
 
-    fn setup() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
-        conn
+    async fn setup() -> Result<SqlitePool, sqlx::Error> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate::Migrator::new(std::path::Path::new("migrations"))
+            .await
+            .unwrap()
+            .run(&pool)
+            .await
+            .unwrap();
+        Ok(pool)
     }
 
-    #[test]
-    fn test_get_or_create_creates_default() {
-        let conn = setup();
-        let profile = ProfilesRepo::get_or_create(&conn).unwrap();
+    #[tokio::test]
+    async fn test_get_or_create_creates_default() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
+        let profile = ProfilesRepo::get_or_create(&pool).await.unwrap();
         assert_eq!(profile.name, "Alfred User");
         assert!(profile.avatar_url.is_none());
+
+        Ok(())
     }
 
-    #[test]
-    fn test_get_or_create_is_idempotent() {
-        let conn = setup();
-        let p1 = ProfilesRepo::get_or_create(&conn).unwrap();
-        let p2 = ProfilesRepo::get_or_create(&conn).unwrap();
+    #[tokio::test]
+    async fn test_get_or_create_is_idempotent() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
+        let p1 = ProfilesRepo::get_or_create(&pool).await.unwrap();
+        let p2 = ProfilesRepo::get_or_create(&pool).await.unwrap();
         assert_eq!(p1.id, p2.id);
+
+        Ok(())
     }
 
-    #[test]
-    fn test_update_profile() {
-        let conn = setup();
+    #[tokio::test]
+    async fn test_update_profile() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
         let profile = ProfilesRepo::update(
-            &conn,
+            &pool,
             Some("New Name"),
             None,
             Some(&json!({"theme": "dark"})),
         )
-        .unwrap();
+        .await?;
         assert_eq!(profile.name, "New Name");
         assert_eq!(profile.preferences["theme"], "dark");
+
+        Ok(())
     }
 
-    #[test]
-    fn test_update_profile_partial_no_name() {
-        let conn = setup();
-        let profile =
-            ProfilesRepo::update(&conn, None, None, Some(&json!({"lang": "es"}))).unwrap();
+    #[tokio::test]
+    async fn test_update_profile_partial_no_name() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
+        let profile = ProfilesRepo::update(&pool, None, None, Some(&json!({"lang": "es"}))).await?;
         assert_eq!(profile.name, "Alfred User");
         assert_eq!(profile.preferences["lang"], "es");
+
+        Ok(())
     }
 }

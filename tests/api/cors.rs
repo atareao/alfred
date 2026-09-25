@@ -6,7 +6,7 @@ use tower::ServiceExt;
 /// This will FAIL because the CorsLayer has not been added yet.
 #[tokio::test]
 async fn test_cors_headers_present() {
-    let app = alfred::app();
+    let app = alfred::app().await;
 
     let response = app
         .oneshot(

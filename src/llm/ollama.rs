@@ -234,7 +234,7 @@ mod tests {
 
     // Simulate embedding with mocked endpoint
     #[tokio::test]
-    async fn test_ollama_embed_no_server_returns_error() {
+    async fn test_ollama_embed_no_server_returns_error() -> Result<(), Box<dyn std::error::Error>> {
         let config = OllamaConfig {
             base_url: "http://localhost:19999".into(),
             model: "nomic-embed-text".into(),
@@ -244,6 +244,7 @@ mod tests {
         let provider = OllamaProvider::new(config);
         let result = provider.embed("test").await;
         assert!(result.is_err());
+        Ok(())
     }
 
     // ---------------------------------------------------------------------------

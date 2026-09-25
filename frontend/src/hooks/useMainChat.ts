@@ -2,61 +2,81 @@ import { useState, useCallback, useEffect } from 'react';
 import type { Message } from '../types';
 import { api } from '../api/client';
 import { useSSE } from './useSSE';
-import { useBrowserContext } from './useBrowserContext';
+
+function getTimezone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone;
+  } catch {
+    return 'UTC';
+  }
+}
+
+function getTimestamp(): string {
+  return new Date().toISOString();
+}
+
+/**
+ * Get the browser's geolocation as a Promise.
+ * Falls back to null if unavailable, denied, or timed out.
+ */
+function getCurrentPosition(): Promise<{
+  latitude: number;
+  longitude: number;
+} | null> {
+  return new Promise((resolve) => {
+    if (!navigator.geolocation) {
+      resolve(null);
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) =>
+        resolve({
+          latitude: pos.coords.latitude,
+          longitude: pos.coords.longitude,
+        }),
+      () => resolve(null),
+      { enableHighAccuracy: false, timeout: 5000, maximumAge: 300000 },
+    );
+  });
+}
 
 export function useMainChat() {
-  const [conversationId, setConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [hasMore, setHasMore] = useState(false);
-  const [cursor, setCursor] = useState<string | undefined>(undefined);
-  const [pageSize, setPageSize] = useState<number>(50);
   const [streamingContent, setStreamingContent] = useState<string>('');
   const [streaming, setStreaming] = useState(false);
   const [activeTools, setActiveTools] = useState<string[]>([]);
   const [usedTools, setUsedTools] = useState<string[]>([]);
 
   const sse = useSSE();
-  const { context: browserContext } = useBrowserContext();
 
   useEffect(() => {
     let mounted = true;
     setLoading(true);
-    Promise.all([
-      api.getMainConversation(),
-      api.getSettings(),
-    ])
-      .then(([conv, settings]) => {
+
+    api.chatInit()
+      .then((data) => {
         if (!mounted) return;
-        setConversationId(conv.id);
-        const ps = parseInt(settings.message_page_size || '50');
-        setPageSize(ps);
-        console.log('[useMainChat] Conversation loaded:', conv.id, 'pageSize:', ps);
-        return api.listMessages(conv.id, ps).then(resp => {
-          if (!mounted) return;
-          setMessages(resp.data);
-          setHasMore(resp.next_cursor != null);
-          setCursor(resp.next_cursor);
-        });
+        setMessages(data.messages || []);
+        console.log('[useMainChat] Chat initialized, messages:', data.messages?.length);
       })
-      .catch(err => {
-        console.error('[useMainChat] Failed to load conversation:', err.message);
+      .catch((err: Error) => {
+        console.error('[useMainChat] Failed to initialize chat:', err.message);
         if (mounted) setError(err.message);
       })
       .finally(() => {
         if (mounted) setLoading(false);
       });
+
     return () => { mounted = false; };
   }, []);
 
   const sendMessage = useCallback(async (content: string) => {
-    if (!conversationId) return;
-    console.log('[useMainChat] Sending message:', { conversationId, content: content.slice(0, 100) });
+    console.log('[useMainChat] Sending message:', content.slice(0, 100));
 
     const optimistic: Message = {
       id: 'temp-' + Date.now(),
-      conversation_id: conversationId,
       role: 'user',
       content,
       created_at: new Date().toISOString(),
@@ -71,7 +91,26 @@ export function useMainChat() {
 
     let assistantContent = '';
 
-    sse.connect(conversationId, content, {
+    // Get browser context: timestamp + timezone
+    const browserContext = {
+      timestamp: getTimestamp(),
+      timezone: getTimezone(),
+      latitude: null as number | null,
+      longitude: null as number | null,
+      location_name: null as string | null,
+    };
+
+    // Try to get the browser's geolocation (falls back to null on denial/timeout)
+    const coords = await getCurrentPosition();
+    if (coords) {
+      browserContext.latitude = coords.latitude;
+      browserContext.longitude = coords.longitude;
+      console.log('[useMainChat] Geolocation obtained:', coords.latitude, coords.longitude);
+    } else {
+      console.warn('[useMainChat] Geolocation unavailable or denied');
+    }
+
+    sse.connect(content, {
       onChunk: (chunk) => {
         console.log('[useMainChat] Chunk received:', chunk.slice(0, 50));
         assistantContent += chunk;
@@ -92,13 +131,12 @@ export function useMainChat() {
         setMessages(prev => {
           const assistant: Message = {
             id: messageId || 'msg-' + Date.now(),
-            conversation_id: conversationId,
             role: 'assistant',
             content: assistantContent,
             created_at: new Date().toISOString(),
           };
           return [
-            ...prev.map(m => 
+            ...prev.map(m =>
               m.id === optimistic.id && userMessageId
                 ? { ...m, id: userMessageId }
                 : m
@@ -121,28 +159,13 @@ export function useMainChat() {
         // Keep the user message visible - DON'T filter it out
       },
     }, browserContext);
-  }, [conversationId, sse, browserContext]);
-
-  const loadMore = useCallback(async () => {
-    if (!conversationId || !cursor) return;
-    try {
-      const resp = await api.listMessages(conversationId, pageSize, cursor);
-      setMessages(prev => [...resp.data, ...prev]);
-      setHasMore(resp.next_cursor != null);
-      setCursor(resp.next_cursor);
-    } catch (err: any) {
-      setError(err.message);
-    }
-  }, [conversationId, cursor, pageSize]);
+  }, [sse]);
 
   return {
-    conversationId,
     messages,
     loading,
     error,
     sendMessage,
-    loadMore,
-    hasMore,
     streaming,
     streamingContent,
     activeTools,

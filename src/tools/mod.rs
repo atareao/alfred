@@ -1,6 +1,7 @@
 pub mod calendar;
 pub mod contacts;
 pub mod geo;
+pub mod google_places;
 pub mod habits;
 pub mod knowledge;
 pub mod meals;
@@ -11,3 +12,4 @@ pub mod tasks;
 pub mod r#trait;
 pub mod unified_search;
 pub mod weather;
+pub mod web_search;

@@ -1,5 +1,5 @@
-use rusqlite::{params, Connection, Result as SqlResult};
 use serde::{Deserialize, Serialize};
+use sqlx::{Row, SqlitePool};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Note {
@@ -15,107 +15,116 @@ pub struct Note {
 pub struct NotesRepo;
 
 impl NotesRepo {
-    pub fn create(conn: &Connection, note: &Note) -> SqlResult<()> {
-        conn.execute(
+    pub async fn create(pool: &SqlitePool, note: &Note) -> Result<(), sqlx::Error> {
+        sqlx::query(
             "INSERT INTO notes (id, profile_id, content, category, tags, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                note.id,
-                note.profile_id,
-                note.content,
-                note.category,
-                note.tags,
-                note.created_at,
-                note.updated_at,
-            ],
-        )?;
+        )
+        .bind(&note.id)
+        .bind(&note.profile_id)
+        .bind(&note.content)
+        .bind(&note.category)
+        .bind(&note.tags)
+        .bind(&note.created_at)
+        .bind(&note.updated_at)
+        .execute(pool)
+        .await?;
         Ok(())
     }
 
-    pub fn find_by_id(conn: &Connection, id: &str) -> SqlResult<Option<Note>> {
-        let mut stmt = conn.prepare(
+    pub async fn find_by_id(pool: &SqlitePool, id: &str) -> Result<Option<Note>, sqlx::Error> {
+        let row = sqlx::query(
             "SELECT id, profile_id, content, category, tags, created_at, updated_at
              FROM notes WHERE id = ?1",
-        )?;
-        let mut rows = stmt.query_map(params![id], |row| {
-            Ok(Note {
-                id: row.get(0)?,
-                profile_id: row.get(1)?,
-                content: row.get(2)?,
-                category: row.get(3)?,
-                tags: row.get(4)?,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
-            })
-        })?;
-        match rows.next() {
-            Some(Ok(note)) => Ok(Some(note)),
-            _ => Ok(None),
-        }
+        )
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+
+        Ok(row.map(|r| Note {
+            id: r.get(0),
+            profile_id: r.get(1),
+            content: r.get(2),
+            category: r.get(3),
+            tags: r.get(4),
+            created_at: r.get(5),
+            updated_at: r.get(6),
+        }))
     }
 
-    pub fn list(
-        conn: &Connection,
+    pub async fn list(
+        pool: &SqlitePool,
         profile_id: &str,
         category: Option<&str>,
-    ) -> SqlResult<Vec<Note>> {
-        let mut sql = String::from(
-            "SELECT id, profile_id, content, category, tags, created_at, updated_at
-             FROM notes WHERE profile_id = ?1",
-        );
-        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> =
-            vec![Box::new(profile_id.to_string())];
+    ) -> Result<Vec<Note>, sqlx::Error> {
+        let rows = if let Some(cat) = category {
+            sqlx::query(
+                "SELECT id, profile_id, content, category, tags, created_at, updated_at
+                 FROM notes WHERE profile_id = ?1 AND category = ?2
+                 ORDER BY created_at DESC",
+            )
+            .bind(profile_id)
+            .bind(cat)
+            .fetch_all(pool)
+            .await?
+        } else {
+            sqlx::query(
+                "SELECT id, profile_id, content, category, tags, created_at, updated_at
+                 FROM notes WHERE profile_id = ?1
+                 ORDER BY created_at DESC",
+            )
+            .bind(profile_id)
+            .fetch_all(pool)
+            .await?
+        };
 
-        if let Some(cat) = category {
-            param_values.push(Box::new(cat.to_string()));
-            sql.push_str(&format!(" AND category = ?{}", param_values.len()));
-        }
-
-        sql.push_str(" ORDER BY created_at DESC");
-
-        let mut stmt = conn.prepare(&sql)?;
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-            param_values.iter().map(|p| p.as_ref()).collect();
-        let rows = stmt.query_map(param_refs.as_slice(), |row| {
-            Ok(Note {
-                id: row.get(0)?,
-                profile_id: row.get(1)?,
-                content: row.get(2)?,
-                category: row.get(3)?,
-                tags: row.get(4)?,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
+        let notes: Vec<Note> = rows
+            .iter()
+            .map(|row| Note {
+                id: row.get(0),
+                profile_id: row.get(1),
+                content: row.get(2),
+                category: row.get(3),
+                tags: row.get(4),
+                created_at: row.get(5),
+                updated_at: row.get(6),
             })
-        })?;
-        let mut notes = Vec::new();
-        for row in rows {
-            notes.push(row?);
-        }
+            .collect();
+
         Ok(notes)
     }
 
-    pub fn update(
-        conn: &Connection,
+    pub async fn update(
+        pool: &SqlitePool,
         id: &str,
         content: Option<&str>,
         category: Option<&str>,
         tags: Option<&str>,
-    ) -> SqlResult<()> {
+    ) -> Result<(), sqlx::Error> {
         let now = chrono::Utc::now().to_rfc3339();
-        conn.execute(
+        sqlx::query(
             "UPDATE notes SET
                 content = COALESCE(?1, content),
                 category = COALESCE(?2, category),
                 tags = COALESCE(?3, tags),
                 updated_at = ?4
              WHERE id = ?5",
-            params![content, category, tags, now, id],
-        )?;
+        )
+        .bind(content)
+        .bind(category)
+        .bind(tags)
+        .bind(&now)
+        .bind(id)
+        .execute(pool)
+        .await?;
         Ok(())
     }
 
-    pub fn delete(conn: &Connection, id: &str) -> SqlResult<()> {
-        conn.execute("DELETE FROM notes WHERE id = ?1", params![id])?;
+    pub async fn delete(pool: &SqlitePool, id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM notes WHERE id = ?1")
+            .bind(id)
+            .execute(pool)
+            .await?;
         Ok(())
     }
 }
@@ -123,17 +132,29 @@ impl NotesRepo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::schema::run_migrations;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
-    fn setup() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
-        conn.execute(
+    async fn setup() -> Result<SqlitePool, sqlx::Error> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(":memory:")
+                    .create_if_missing(true),
+            )
+            .await?;
+        sqlx::migrate::Migrator::new(std::path::Path::new("migrations"))
+            .await
+            .unwrap()
+            .run(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
             "INSERT INTO profiles (id, name, preferences) VALUES ('profile-1', 'Test', '{}')",
-            [],
         )
-        .unwrap();
-        conn
+        .execute(&pool)
+        .await?;
+        Ok(pool)
     }
 
     fn sample_note(id: &str, content: &str, category: &str, tags: Option<&str>) -> Note {
@@ -148,71 +169,81 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_create_note() {
-        let conn = setup();
+    #[tokio::test]
+    async fn test_create_note() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
         let note = sample_note(
             "note-1",
             "Recordar comprar pan",
             "idea",
             Some("compras,casa"),
         );
-        NotesRepo::create(&conn, &note).unwrap();
-        let found = NotesRepo::find_by_id(&conn, "note-1").unwrap().unwrap();
+        NotesRepo::create(&pool, &note).await.unwrap();
+        let found = NotesRepo::find_by_id(&pool, "note-1").await?.unwrap();
         assert_eq!(found.content, "Recordar comprar pan");
         assert_eq!(found.category, "idea");
         assert_eq!(found.tags.unwrap(), "compras,casa");
+
+        Ok(())
     }
 
-    #[test]
-    fn test_list_by_category() {
-        let conn = setup();
-        NotesRepo::create(&conn, &sample_note("n1", "Idea genial", "idea", None)).unwrap();
-        NotesRepo::create(&conn, &sample_note("n2", "Diario del día", "journal", None)).unwrap();
-        NotesRepo::create(&conn, &sample_note("n3", "Dato curioso", "fact", None)).unwrap();
-        NotesRepo::create(&conn, &sample_note("n4", "Otra idea", "idea", None)).unwrap();
+    #[tokio::test]
+    async fn test_list_by_category() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
+        NotesRepo::create(&pool, &sample_note("n1", "Idea genial", "idea", None)).await?;
+        NotesRepo::create(&pool, &sample_note("n2", "Diario del día", "journal", None)).await?;
+        NotesRepo::create(&pool, &sample_note("n3", "Dato curioso", "fact", None)).await?;
+        NotesRepo::create(&pool, &sample_note("n4", "Otra idea", "idea", None)).await?;
 
-        let ideas = NotesRepo::list(&conn, "profile-1", Some("idea")).unwrap();
+        let ideas = NotesRepo::list(&pool, "profile-1", Some("idea")).await?;
         assert_eq!(ideas.len(), 2);
 
-        let journals = NotesRepo::list(&conn, "profile-1", Some("journal")).unwrap();
+        let journals = NotesRepo::list(&pool, "profile-1", Some("journal")).await?;
         assert_eq!(journals.len(), 1);
+
+        Ok(())
     }
 
-    #[test]
-    fn test_list_all() {
-        let conn = setup();
-        NotesRepo::create(&conn, &sample_note("n5", "Nota 1", "idea", None)).unwrap();
-        NotesRepo::create(&conn, &sample_note("n6", "Nota 2", "fact", None)).unwrap();
+    #[tokio::test]
+    async fn test_list_all() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
+        NotesRepo::create(&pool, &sample_note("n5", "Nota 1", "idea", None)).await?;
+        NotesRepo::create(&pool, &sample_note("n6", "Nota 2", "fact", None)).await?;
 
-        let all = NotesRepo::list(&conn, "profile-1", None).unwrap();
+        let all = NotesRepo::list(&pool, "profile-1", None).await.unwrap();
         assert_eq!(all.len(), 2);
+
+        Ok(())
     }
 
-    #[test]
-    fn test_update_note() {
-        let conn = setup();
-        NotesRepo::create(&conn, &sample_note("n7", "Original", "idea", None)).unwrap();
+    #[tokio::test]
+    async fn test_update_note() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
+        NotesRepo::create(&pool, &sample_note("n7", "Original", "idea", None)).await?;
         NotesRepo::update(
-            &conn,
+            &pool,
             "n7",
             Some("Actualizado"),
             Some("journal"),
             Some("importante"),
         )
-        .unwrap();
-        let found = NotesRepo::find_by_id(&conn, "n7").unwrap().unwrap();
+        .await?;
+        let found = NotesRepo::find_by_id(&pool, "n7").await.unwrap().unwrap();
         assert_eq!(found.content, "Actualizado");
         assert_eq!(found.category, "journal");
         assert_eq!(found.tags.unwrap(), "importante");
+
+        Ok(())
     }
 
-    #[test]
-    fn test_delete_note() {
-        let conn = setup();
-        NotesRepo::create(&conn, &sample_note("n8", "Para borrar", "todo", None)).unwrap();
-        NotesRepo::delete(&conn, "n8").unwrap();
-        let found = NotesRepo::find_by_id(&conn, "n8").unwrap();
+    #[tokio::test]
+    async fn test_delete_note() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
+        NotesRepo::create(&pool, &sample_note("n8", "Para borrar", "todo", None)).await?;
+        NotesRepo::delete(&pool, "n8").await.unwrap();
+        let found = NotesRepo::find_by_id(&pool, "n8").await.unwrap();
         assert!(found.is_none());
+
+        Ok(())
     }
 }

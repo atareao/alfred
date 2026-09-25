@@ -1,8 +1,7 @@
 use async_trait::async_trait;
 use chrono::Utc;
-use rusqlite::Connection;
 use serde_json::Value;
-use std::sync::{Arc, Mutex};
+use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::db::repos::events::{Event, EventsRepo};
@@ -10,11 +9,11 @@ use crate::tools::permission::Permission;
 use crate::tools::r#trait::{Tool, ToolError, ToolResult};
 
 pub struct CalendarTool {
-    db: Arc<Mutex<Connection>>,
+    db: SqlitePool,
 }
 
 impl CalendarTool {
-    pub fn new(db: Arc<Mutex<Connection>>) -> Self {
+    pub fn new(db: SqlitePool) -> Self {
         Self { db }
     }
 
@@ -32,12 +31,7 @@ impl CalendarTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArguments("Missing end".into()))?;
 
-        let conn = self
-            .db
-            .lock()
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
-        let events = EventsRepo::list_by_date_range(&conn, profile_id, start, end)
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
+        let events = EventsRepo::list_by_date_range(&self.db, profile_id, start, end).await?;
 
         Ok(ToolResult {
             success: true,
@@ -60,12 +54,7 @@ impl CalendarTool {
             .and_then(|v| v.as_i64())
             .ok_or_else(|| ToolError::InvalidArguments("Missing duration".into()))?;
 
-        let conn = self
-            .db
-            .lock()
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
-        let slots = EventsRepo::find_free_slots(&conn, profile_id, date, duration)
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
+        let slots = EventsRepo::find_free_slots(&self.db, profile_id, date, duration).await?;
 
         let slots_json: Vec<Value> = slots
             .into_iter()
@@ -121,11 +110,7 @@ impl CalendarTool {
             updated_at: now,
         };
 
-        let conn = self
-            .db
-            .lock()
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
-        EventsRepo::create(&conn, &event).map_err(|e| ToolError::ExecutionError(e.to_string()))?;
+        EventsRepo::create(&self.db, &event).await?;
 
         Ok(ToolResult {
             success: true,
@@ -140,18 +125,14 @@ impl CalendarTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArguments("Missing id".into()))?;
 
-        let conn = self
-            .db
-            .lock()
-            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
         EventsRepo::update(
-            &conn,
+            &self.db,
             id,
             args.get("title").and_then(|v| v.as_str()),
             args.get("description").and_then(|v| v.as_str()),
             args.get("location").and_then(|v| v.as_str()),
         )
-        .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
+        .await?;
 
         Ok(ToolResult {
             success: true,
@@ -216,23 +197,26 @@ impl Tool for CalendarTool {
 mod tests {
     use super::*;
     use crate::db::schema::run_migrations;
+    use sqlx::sqlite::SqlitePoolOptions;
 
-    fn setup() -> (Arc<Mutex<Connection>>, CalendarTool) {
-        let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
-        conn.execute(
+    async fn setup() -> Result<(SqlitePool, CalendarTool), sqlx::Error> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await?;
+        run_migrations(&pool).await.unwrap();
+        sqlx::query(
             "INSERT INTO profiles (id, name, preferences) VALUES ('profile-1', 'Test', '{}')",
-            [],
         )
-        .unwrap();
-        let db = Arc::new(Mutex::new(conn));
-        let tool = CalendarTool::new(db.clone());
-        (db, tool)
+        .execute(&pool)
+        .await?;
+        let tool = CalendarTool::new(pool.clone());
+        Ok((pool, tool))
     }
 
     #[tokio::test]
-    async fn test_get_events_empty() {
-        let (_, tool) = setup();
+    async fn test_get_events_empty() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
         let result = tool
             .execute(serde_json::json!({
                 "operation": "get_events",
@@ -244,11 +228,12 @@ mod tests {
             .unwrap();
         assert!(result.success);
         assert_eq!(result.data.as_array().unwrap().len(), 0);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_create_event() {
-        let (_, tool) = setup();
+    async fn test_create_event() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
         let result = tool
             .execute(serde_json::json!({
                 "operation": "create_event",
@@ -263,11 +248,12 @@ mod tests {
         assert!(result.success);
         assert_eq!(result.data["title"], "Reunión");
         assert_eq!(result.data["scope"], "shared");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_check_availability() {
-        let (_, tool) = setup();
+    async fn test_check_availability() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
         // First create an event
         tool.execute(serde_json::json!({
             "operation": "create_event",
@@ -293,22 +279,24 @@ mod tests {
         assert!(!slots.is_empty());
         // Should have at least one slot before 10:00 and one after 11:00
         assert!(slots.len() >= 2);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_invalid_operation() {
-        let (_, tool) = setup();
+    async fn test_invalid_operation() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
         let result = tool
             .execute(serde_json::json!({
                 "operation": "nonexistent"
             }))
             .await;
         assert!(matches!(result, Err(ToolError::InvalidArguments(_))));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_update_event() {
-        let (_, tool) = setup();
+    async fn test_update_event() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
         // Create an event first
         let created = tool
             .execute(serde_json::json!({
@@ -334,11 +322,12 @@ mod tests {
             .unwrap();
         assert!(result.success);
         assert_eq!(result.data["id"], event_id);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_missing_required_args() {
-        let (_, tool) = setup();
+    async fn test_missing_required_args() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
         let result = tool
             .execute(serde_json::json!({
                 "operation": "create_event",
@@ -347,5 +336,6 @@ mod tests {
             }))
             .await;
         assert!(matches!(result, Err(ToolError::InvalidArguments(_))));
+        Ok(())
     }
 }

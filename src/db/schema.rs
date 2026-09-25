@@ -1,274 +1,198 @@
-use rusqlite::Connection;
+use sqlx::SqlitePool;
 
-/// Run all database migrations.
+/// Run all database migrations using sqlx's embedded migration system.
 ///
-/// Creates all core tables (`conversations`, `messages`, `profiles`, `memories`,
-/// `tools`, `message_embeddings`, `memory_embeddings`) unconditionally.
-/// FTS5 virtual tables are wrapped in try-blocks for resilience; they should
-/// succeed since FTS5 is built into bundled SQLite.
-/// sqlite-vec will be wired in a future phase.
-pub fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
-    // ── Core tables ──────────────────────────────────────────────────────────
-    conn.execute_batch(
-        "
-        CREATE TABLE IF NOT EXISTS conversations (
-            id TEXT PRIMARY KEY,
-            title TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
+/// Migrations live in the `migrations/` directory. This function resolves
+/// the path relative to `CARGO_MANIFEST_DIR` (embedded at compile time) to
+/// work reliably regardless of the process's current working directory.
+pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let migrations_path = manifest.join("migrations");
+    sqlx::migrate::Migrator::new(migrations_path)
+        .await?
+        .run(pool)
+        .await?;
+    Ok(())
+}
 
-        CREATE TABLE IF NOT EXISTS messages (
-            id TEXT PRIMARY KEY,
-            conversation_id TEXT NOT NULL REFERENCES conversations(id),
-            role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system', 'tool')),
-            content TEXT NOT NULL,
-            tool_calls TEXT,
-            tool_results TEXT,
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-
-        CREATE TABLE IF NOT EXISTS profiles (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            avatar_url TEXT,
-            preferences TEXT NOT NULL DEFAULT '{}',
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-
-        CREATE TABLE IF NOT EXISTS memories (
-            id TEXT PRIMARY KEY,
-            profile_id TEXT NOT NULL REFERENCES profiles(id),
-            content TEXT NOT NULL,
-            category TEXT NOT NULL DEFAULT 'general',
-            source TEXT NOT NULL DEFAULT 'manual',
-            embedding_id TEXT,
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-
-        CREATE TABLE IF NOT EXISTS tools (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL UNIQUE,
-            description TEXT NOT NULL,
-            enabled INTEGER NOT NULL DEFAULT 1
-        );
-        ",
-    )?;
-
-    // Migrate: add new columns to messages table (safe repeated runs)
-    let has_tokens_count: bool = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name='tokens_count'",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
-        .unwrap_or(0)
-        > 0;
-    if !has_tokens_count {
-        conn.execute_batch(
-            "ALTER TABLE messages ADD COLUMN tokens_count INTEGER NOT NULL DEFAULT 0;
-             ALTER TABLE messages ADD COLUMN collapsed_content TEXT;
-             ALTER TABLE messages ADD COLUMN collapsed_tokens_count INTEGER NOT NULL DEFAULT 0;
-             ALTER TABLE messages ADD COLUMN is_indexed INTEGER NOT NULL DEFAULT 0;
-             ALTER TABLE messages ADD COLUMN summary_ref TEXT;",
-        )?;
-    }
-
-    // ── Embedding tables (regular tables; vec0 will be added in a future phase) ─
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS message_embeddings (
-            id TEXT PRIMARY KEY,
-            embedding TEXT NOT NULL DEFAULT '[]'
-        );
-
-        CREATE TABLE IF NOT EXISTS memory_embeddings (
-            id TEXT PRIMARY KEY,
-            embedding TEXT NOT NULL DEFAULT '[]'
-        );",
-    )?;
-
-    // ── FTS5 virtual tables ───────────────────────────────────────────────────
-    let _ = conn.execute_batch(
-        "CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-            content,
-            content=messages,
-            content_rowid=rowid
-        );",
-    );
-
-    let _ = conn.execute_batch(
-        "CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
-            content,
-            content=memories,
-            content_rowid=rowid
-        );",
-    );
-
-    let _ = conn.execute_batch(
-        "CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
-            content,
-            content=notes,
-            content_rowid=rowid
-        );",
-    );
-
-    let _ = conn.execute_batch(
-        "CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
-            title, description,
-            content=events,
-            content_rowid=rowid
-        );",
-    );
-
-    let _ = conn.execute_batch(
-        "CREATE VIRTUAL TABLE IF NOT EXISTS tasks_fts USING fts5(
-            content,
-            content=tasks,
-            content_rowid=rowid
-        );",
-    );
-
-    let _ = conn.execute_batch(
-        "CREATE VIRTUAL TABLE IF NOT EXISTS contacts_fts USING fts5(
-            name,
-            content=contacts,
-            content_rowid=rowid
-        );",
-    );
-
-    // ── Tools Core tables (events, tasks, reminders, notes, contacts) ──────
-    conn.execute_batch(
-        "
-        CREATE TABLE IF NOT EXISTS events (
-            id TEXT PRIMARY KEY,
-            profile_id TEXT NOT NULL REFERENCES profiles(id),
-            title TEXT NOT NULL,
-            description TEXT,
-            start_time TEXT NOT NULL,
-            end_time TEXT NOT NULL,
-            location TEXT,
-            scope TEXT NOT NULL DEFAULT 'shared' CHECK(scope IN ('shared', 'personal')),
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-
-        CREATE TABLE IF NOT EXISTS tasks (
-            id TEXT PRIMARY KEY,
-            profile_id TEXT NOT NULL REFERENCES profiles(id),
-            content TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'completed', 'cancelled')),
-            priority TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('low', 'medium', 'high')),
-            project TEXT,
-            due_date TEXT,
-            scope TEXT NOT NULL DEFAULT 'shared' CHECK(scope IN ('shared', 'personal')),
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-
-        CREATE TABLE IF NOT EXISTS reminders (
-            id TEXT PRIMARY KEY,
-            profile_id TEXT NOT NULL REFERENCES profiles(id),
-            text TEXT NOT NULL,
-            datetime TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'dismissed', 'snoozed')),
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-
-        CREATE TABLE IF NOT EXISTS notes (
-            id TEXT PRIMARY KEY,
-            profile_id TEXT NOT NULL REFERENCES profiles(id),
-            content TEXT NOT NULL,
-            category TEXT NOT NULL DEFAULT 'idea' CHECK(category IN ('idea', 'journal', 'fact', 'todo')),
-            tags TEXT,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-
-        CREATE TABLE IF NOT EXISTS contacts (
-            id TEXT PRIMARY KEY,
-            profile_id TEXT NOT NULL REFERENCES profiles(id),
-            name TEXT NOT NULL,
-            phone TEXT,
-            email TEXT,
-            notes TEXT,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-        ",
-    )?;
-
-    // ── F5c: Tools de Valor tables (meal_plans, shopping_list, habits, habit_logs) ──
-    conn.execute_batch(
-        "
-        CREATE TABLE IF NOT EXISTS meal_plans (
-            id TEXT PRIMARY KEY,
-            profile_id TEXT NOT NULL REFERENCES profiles(id),
-            week_start TEXT NOT NULL,
-            meals TEXT NOT NULL DEFAULT '{}',
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_meal_plans_profile_week
-            ON meal_plans(profile_id, week_start);
-
-        CREATE TABLE IF NOT EXISTS shopping_list (
-            id TEXT PRIMARY KEY,
-            profile_id TEXT NOT NULL REFERENCES profiles(id),
-            item TEXT NOT NULL,
-            quantity TEXT,
-            category TEXT,
-            checked INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-
-        CREATE TABLE IF NOT EXISTS habits (
-            id TEXT PRIMARY KEY,
-            profile_id TEXT NOT NULL REFERENCES profiles(id),
-            name TEXT NOT NULL,
-            frequency TEXT NOT NULL DEFAULT 'daily' CHECK(frequency IN ('daily', 'weekly')),
-            target INTEGER,
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-
-        CREATE TABLE IF NOT EXISTS habit_logs (
-            habit_id TEXT NOT NULL REFERENCES habits(id),
-            date TEXT NOT NULL,
-            completed INTEGER NOT NULL DEFAULT 1,
-            PRIMARY KEY (habit_id, date)
-        );
-
-        CREATE TABLE IF NOT EXISTS settings (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL,
-            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-        ",
-    )?;
-
-    // Seed default settings
-    crate::db::repos::settings::SettingsRepo::seed_defaults(conn)?;
-
+/// Seed default settings into the database.
+/// Called after migrations to ensure required settings exist.
+pub async fn seed_default_settings(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    crate::db::repos::settings::SettingsRepo::seed_defaults(pool).await?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
-    /// After running migrations, the `messages` table must contain the new
-    /// enrichment columns (tokens_count, collapsed_content, etc.).
-    #[test]
-    fn test_messages_table_has_new_columns() {
-        let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
+    async fn setup() -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(":memory:")
+                    .create_if_missing(true),
+            )
+            .await
+            .unwrap();
+        run_migrations(&pool).await.unwrap();
+        pool
+    }
 
-        let mut stmt = conn.prepare("PRAGMA table_info(messages)").unwrap();
-        let column_names: Vec<String> = stmt
-            .query_map([], |row| row.get::<_, String>(1))
-            .unwrap()
-            .filter_map(|r| r.ok())
-            .collect();
+    #[tokio::test]
+    async fn test_migrations_does_not_create_conversations() {
+        let pool = setup().await;
+
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='conversations'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(
+            count, 0,
+            "Table 'conversations' should NOT exist after migration"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_migrations_creates_messages_table() {
+        let pool = setup().await;
+
+        let has_table: bool = sqlx::query_scalar(
+            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='messages'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert!(
+            has_table,
+            "Expected 'messages' table to exist after migration"
+        );
+
+        // Verify no conversation_id column exists
+        let column_names: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM pragma_table_info('messages')")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+
+        assert!(
+            !column_names.contains(&"conversation_id".to_string()),
+            "Column 'conversation_id' should NOT exist in messages table"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_migrations_creates_meal_plans_table() {
+        let pool = setup().await;
+
+        let has_table: bool = sqlx::query_scalar(
+            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='meal_plans'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert!(
+            has_table,
+            "Expected 'meal_plans' table to exist after migration"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_migrations_creates_shopping_list_table() {
+        let pool = setup().await;
+
+        let has_table: bool = sqlx::query_scalar(
+            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='shopping_list'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert!(
+            has_table,
+            "Expected 'shopping_list' table to exist after migration"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_migrations_creates_habits_table() {
+        let pool = setup().await;
+
+        let has_table: bool = sqlx::query_scalar(
+            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='habits'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert!(
+            has_table,
+            "Expected 'habits' table to exist after migration"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_migrations_creates_habit_logs_table() {
+        let pool = setup().await;
+
+        let has_table: bool = sqlx::query_scalar(
+            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='habit_logs'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert!(
+            has_table,
+            "Expected 'habit_logs' table to exist after migration"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_idempotent_includes_new_tables() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(":memory:")
+                    .create_if_missing(true),
+            )
+            .await
+            .unwrap();
+
+        run_migrations(&pool).await.unwrap();
+        run_migrations(&pool).await.unwrap();
+
+        let tables: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+
+        for table in &["meal_plans", "shopping_list", "habits", "habit_logs"] {
+            assert!(
+                tables.contains(&table.to_string()),
+                "Expected '{table}' table after idempotent migration"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_messages_table_has_new_columns() {
+        let pool = setup().await;
+
+        let column_names: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM pragma_table_info('messages')")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
 
         assert!(
             column_names.contains(&"tokens_count".to_string()),
