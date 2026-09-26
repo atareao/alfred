@@ -14,9 +14,12 @@
   "dependencies": {
     "@ant-design/icons": "^5.5.1",
     "antd": "^5.21.0",
+    "chart.js": "^4.5.1",
     "react": "^18.3.1",
+    "react-chartjs-2": "^5.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^10.1.0",
+    "react-router-dom": "^7.18.4",
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {

@@ -9,5 +9,6 @@ pub mod profiles;
 pub mod reminders;
 pub mod settings;
 pub mod shopping_list;
+pub mod stats;
 pub mod tasks;
 pub mod tools;

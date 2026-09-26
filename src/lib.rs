@@ -312,6 +312,8 @@ pub fn app_with_state(state: AppState) -> Router {
         .merge(routes::events::routes())
         // Tasks
         .merge(routes::tasks::routes())
+        // Stats
+        .merge(routes::stats::routes())
         // Search
         .route("/api/search", get(handlers::search::search))
         // Streaming + approval

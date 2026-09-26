@@ -18,7 +18,11 @@ import { useSettings } from "../hooks/useSettings";
 const { Header, Content } = Layout;
 const { Text } = Typography;
 
-export const AppLayout: React.FC = () => {
+interface AppLayoutProps {
+  children?: React.ReactNode;
+}
+
+export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
   const mainChat = useMainChat();
   const profile = useProfile();
   const { settings } = useSettings();
@@ -86,15 +90,17 @@ export const AppLayout: React.FC = () => {
           overflow: "hidden",
         }}
       >
-        <ChatView
-          messages={mainChat.messages}
-          loading={mainChat.loading}
-          onSendMessage={mainChat.sendMessage}
-          streaming={mainChat.streaming}
-          streamingContent={mainChat.streamingContent}
-          activeTools={mainChat.activeTools}
-          settings={settings}
-        />
+        {children || (
+          <ChatView
+            messages={mainChat.messages}
+            loading={mainChat.loading}
+            onSendMessage={mainChat.sendMessage}
+            streaming={mainChat.streaming}
+            streamingContent={mainChat.streamingContent}
+            activeTools={mainChat.activeTools}
+            settings={settings}
+          />
+        )}
       </Content>
       <Modal
         title="📅 Agenda"

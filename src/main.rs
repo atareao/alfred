@@ -19,6 +19,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Build full application state (database, orchestrator, tools, guardrails, auth)
     let state = AppState::new_with_orchestrator(&config.database_url).await?;
 
+    // Spawn the stats cleanup worker (runs hourly, purges old llm_requests)
+    let pool = state.db.clone();
+    tokio::spawn(alfred::workers::stats_cleanup::run_cleanup_worker(pool));
+
     // Build the application router
     let router = app_with_state(state);
 
