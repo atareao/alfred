@@ -124,6 +124,12 @@ impl AppState {
         tool_registry.register(Box::new(crate::tools::habits::HabitsTool::new(
             pool.clone(),
         )));
+        tool_registry.register(Box::new(crate::tools::calendar::CalendarTool::new(
+            pool.clone(),
+        )));
+        tool_registry.register(Box::new(crate::tools::reminders::RemindersTool::new(
+            pool.clone(),
+        )));
         let tool_registry = Arc::new(tool_registry);
 
         // 3. Create guardrails
@@ -301,6 +307,8 @@ pub fn app_with_state(state: AppState) -> Router {
             "/api/settings",
             get(routes::settings::get_settings).put(routes::settings::update_settings),
         )
+        // Events
+        .merge(routes::events::routes())
         // Search
         .route("/api/search", get(handlers::search::search))
         // Streaming + approval

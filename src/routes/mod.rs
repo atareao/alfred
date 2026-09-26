@@ -1,4 +1,5 @@
 pub mod chat;
+pub mod events;
 pub mod export;
 pub mod memories;
 pub mod messages;

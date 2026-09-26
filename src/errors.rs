@@ -9,6 +9,8 @@ pub enum AppError {
     NotFound(String),
     #[error("Bad request: {0}")]
     BadRequest(String),
+    #[error("Unprocessable entity: {0}")]
+    UnprocessableEntity(String),
     #[error("Internal error: {0}")]
     Internal(String),
 }
@@ -35,6 +37,7 @@ impl IntoResponse for AppError {
         let (status, message) = match &self {
             Self::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
             Self::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
+            Self::UnprocessableEntity(msg) => (StatusCode::UNPROCESSABLE_ENTITY, msg.clone()),
             Self::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
         };
         (status, Json(ApiError { error: message })).into_response()
