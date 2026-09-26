@@ -200,6 +200,9 @@ pub struct BrowserContext {
     pub location_name: Option<String>,
 }
 
+/// Maximum number of times the same tool+operation can be called in one ReAct loop.
+const MAX_TOOL_RETRIES: usize = 5;
+
 /// Spanish day-of-week names (ISO weekday: 1 = Monday … 7 = Sunday).
 const DIAS: [&str; 7] = [
     "lunes",
@@ -570,7 +573,7 @@ impl Orchestrator {
                             };
                             let tool_count = tool_call_counts.entry(op_key).or_insert(0);
                             *tool_count += 1;
-                            if *tool_count > 3 {
+                            if *tool_count > MAX_TOOL_RETRIES {
                                 let display_name = match op {
                                     Some(op_val) => format!("{}::{}", tc.name, op_val),
                                     None => tc.name.clone(),
@@ -931,7 +934,7 @@ impl Orchestrator {
                                         let tool_count =
                                             tool_call_counts.entry(op_key).or_insert(0);
                                         *tool_count += 1;
-                                        if *tool_count > 3 {
+                                        if *tool_count > MAX_TOOL_RETRIES {
                                             let display_name = match op {
                                                 Some(op_val) => format!("{}::{}", tc.name, op_val),
                                                 None => tc.name.clone(),
@@ -2048,21 +2051,21 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Mock tool that fails 3 times then succeeds — for the retry limit test
+    // Mock tool that counts calls — for the retry limit test
     // -----------------------------------------------------------------------
 
-    struct MockThreeTimeTool {
+    struct MockLimitedTool {
         call_count: Arc<AtomicUsize>,
     }
 
     #[async_trait::async_trait]
-    impl Tool for MockThreeTimeTool {
+    impl Tool for MockLimitedTool {
         fn name(&self) -> &'static str {
             "limited_tool"
         }
 
         fn description(&self) -> &'static str {
-            "Tool that fails 3 times then succeeds"
+            "Tool that counts calls"
         }
 
         fn parameters(&self) -> serde_json::Value {
@@ -2074,37 +2077,30 @@ mod tests {
         }
 
         async fn execute(&self, _args: serde_json::Value) -> Result<ToolResult, ToolError> {
-            let count = self.call_count.fetch_add(1, Ordering::SeqCst);
-            if count < 3 {
-                Err(ToolError::ExecutionError(format!(
-                    "Attempt {} failed",
-                    count + 1
-                )))
-            } else {
-                Ok(ToolResult {
-                    success: true,
-                    data: serde_json::json!({"status": "ok"}),
-                    message: None,
-                })
-            }
+            self.call_count.fetch_add(1, Ordering::SeqCst);
+            Ok(ToolResult {
+                success: true,
+                data: serde_json::json!({"status": "ok"}),
+                message: None,
+            })
         }
     }
 
     // -----------------------------------------------------------------------
-    // Mock LLM that returns a tool call for limited_tool 4 times,
-    // then returns plain text on the 5th call.
+    // Mock LLM that calls limited_tool MAX_TOOL_RETRIES + 1 times,
+    // then returns plain text on the next call.
     // -----------------------------------------------------------------------
 
-    struct MockLLM4Times {
+    struct MockLLMExceedingRetries {
         call_count: Arc<Mutex<usize>>,
     }
 
     #[async_trait::async_trait]
-    impl LLMProvider for MockLLM4Times {
+    impl LLMProvider for MockLLMExceedingRetries {
         async fn chat(&self, _request: ChatRequest) -> Result<ChatResponse, LLMError> {
             let mut count = self.call_count.lock().unwrap();
             *count += 1;
-            if *count <= 4 {
+            if *count <= MAX_TOOL_RETRIES + 1 {
                 // Return a tool call for limited_tool
                 Ok(ChatResponse {
                     message: ChatMessage {
@@ -2177,7 +2173,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[tokio::test]
-    async fn test_tool_max_3_retries_in_react_loop() -> Result<(), Box<dyn std::error::Error>> {
+    async fn test_tool_max_retries_in_react_loop() -> Result<(), Box<dyn std::error::Error>> {
         // 1. Create in-memory SQLite pool and run migrations
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -2194,16 +2190,16 @@ mod tests {
             .await
             .unwrap();
 
-        // 2. Registry with MockThreeTimeTool
+        // 2. Registry with MockLimitedTool
         let call_count = Arc::new(AtomicUsize::new(0));
         let mut registry = ToolRegistry::new();
-        registry.register(Box::new(MockThreeTimeTool {
+        registry.register(Box::new(MockLimitedTool {
             call_count: call_count.clone(),
         }));
         let registry = Arc::new(registry);
 
-        // 3. Mock LLM that calls limited_tool 4 times
-        let llm = Arc::new(MockLLM4Times {
+        // 3. Mock LLM that calls limited_tool MAX_TOOL_RETRIES + 1 times
+        let llm = Arc::new(MockLLMExceedingRetries {
             call_count: Arc::new(Mutex::new(0)),
         });
         let guardrails = Arc::new(Guardrails::new(registry.clone()));
@@ -2234,11 +2230,12 @@ mod tests {
             result
         );
 
-        // 6. Verify: tool should be called max 3 times (4th call is blocked)
+        // 6. Verify: tool should be called max MAX_TOOL_RETRIES times
         assert_eq!(
             call_count.load(Ordering::SeqCst),
-            3,
-            "Tool should be called max 3 times, but was called {} times",
+            MAX_TOOL_RETRIES,
+            "Tool should be called max {} times, but was called {} times",
+            MAX_TOOL_RETRIES,
             call_count.load(Ordering::SeqCst)
         );
 
