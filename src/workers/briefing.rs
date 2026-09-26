@@ -48,7 +48,7 @@ impl BriefingWorker {
         }
 
         // ── Tasks pending ─────────────────────────────────────────────────
-        let tasks = TasksRepo::list(&self.db, "profile-id", Some("pending"), None, None, None)
+        let tasks = TasksRepo::list(&self.db, "profile-id", Some("inbox"), None, None, None)
             .await
             .map_err(|e| e.to_string())?;
         if !tasks.is_empty() {
@@ -148,12 +148,12 @@ mod tests {
         };
         EventsRepo::create(&db, &event).await?;
 
-        // Insert a pending task
+        // Insert an inbox task
         let task = Task {
             id: "task-brief-1".into(),
             profile_id: "profile-id".into(),
             content: "Comprar víveres".into(),
-            status: "pending".into(),
+            status: "inbox".into(),
             priority: "high".into(),
             project: None,
             due_date: None,
