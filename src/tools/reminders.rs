@@ -126,7 +126,7 @@ impl Tool for RemindersTool {
     }
 
     fn description(&self) -> &'static str {
-        "Gestión de recordatorios con alarma"
+        "Recordatorios — alarmas, avisos, alarmas temporales, posponer y descartar"
     }
 
     fn parameters(&self) -> Value {
@@ -137,7 +137,6 @@ impl Tool for RemindersTool {
                     "type": "string",
                     "enum": ["set_reminder", "list_reminders", "dismiss_reminder", "snooze_reminder"]
                 },
-                "profile_id": { "type": "string", "description": "Profile ID (defaults to 'default')" },
                 "text": { "type": "string", "description": "Reminder text" },
                 "datetime": { "type": "string", "description": "ISO 8601 datetime" },
                 "id": { "type": "string", "description": "Reminder ID" },
@@ -189,11 +188,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_parameters_does_not_expose_profile_id() {
+        let db = setup_db().await.unwrap();
+        let tool = RemindersTool::new(db);
+        let params = tool.parameters();
+        let properties = params["properties"].as_object().unwrap();
+        assert!(
+            !properties.contains_key("profile_id"),
+            "profile_id NO debe estar en el schema expuesto al LLM"
+        );
+    }
+
+    #[tokio::test]
     async fn test_reminders_name_and_description() -> Result<(), Box<dyn std::error::Error>> {
         let db = setup_db().await?;
         let tool = RemindersTool::new(db);
         assert_eq!(tool.name(), "reminders");
-        assert_eq!(tool.description(), "Gestión de recordatorios con alarma");
+        assert_eq!(
+            tool.description(),
+            "Recordatorios — alarmas, avisos, alarmas temporales, posponer y descartar"
+        );
         Ok(())
     }
 
