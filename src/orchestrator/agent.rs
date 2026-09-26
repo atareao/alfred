@@ -1,5 +1,8 @@
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex};
 
+use chrono::Datelike;
+use chrono::Timelike;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::SqlitePool;
@@ -197,6 +200,181 @@ pub struct BrowserContext {
     pub location_name: Option<String>,
 }
 
+/// Spanish day-of-week names (ISO weekday: 1 = Monday … 7 = Sunday).
+const DIAS: [&str; 7] = [
+    "lunes",
+    "martes",
+    "miércoles",
+    "jueves",
+    "viernes",
+    "sábado",
+    "domingo",
+];
+
+/// Spanish month names.
+const MESES: [&str; 12] = [
+    "enero",
+    "febrero",
+    "marzo",
+    "abril",
+    "mayo",
+    "junio",
+    "julio",
+    "agosto",
+    "septiembre",
+    "octubre",
+    "noviembre",
+    "diciembre",
+];
+
+/// Spanish time-of-day phrases keyed by hour.
+fn momento_del_dia(hora: u32) -> &'static str {
+    match hora {
+        0..=5 => "de la madrugada",
+        6..=11 => "de la mañana",
+        12..=20 => "de la tarde",
+        _ => "de la noche",
+    }
+}
+
+/// Parse an ISO‑8601 UTC timestamp and return a human‑readable Spanish string.
+///
+/// Returns `None` on parse failure so callers can fall back gracefully.
+fn format_browser_timestamp(iso: &str, tz: &str) -> Option<String> {
+    use chrono::NaiveDateTime;
+    use chrono_tz::Tz;
+    use std::str::FromStr;
+
+    // Accept both "2026-09-24T08:00:00Z" and "2026-09-26T10:00:00.000Z"
+    let naive =
+        NaiveDateTime::parse_from_str(iso.trim_end_matches('Z'), "%Y-%m-%dT%H:%M:%S%.f").ok()?;
+
+    let utc_dt: chrono::DateTime<chrono::Utc> =
+        chrono::DateTime::from_naive_utc_and_offset(naive, chrono::Utc);
+
+    // Convert to user's timezone
+    let tz = Tz::from_str(tz).ok()?;
+    let dt = utc_dt.with_timezone(&tz);
+
+    let wd = dt.format("%u").to_string().parse::<usize>().ok()?; // 1–7
+    let day_name = DIAS.get(wd - 1)?;
+    let month_name = MESES.get((dt.month0()) as usize)?;
+    let momento = momento_del_dia(dt.hour());
+
+    Some(format!(
+        "Hoy es {}, {} de {} de {}, son las {}:{:02} {}",
+        day_name,
+        dt.day(),
+        month_name,
+        dt.year(),
+        dt.hour(),
+        dt.minute(),
+        momento,
+    ))
+}
+
+/// Reverse‑geocode coordinates via Nominatim and return a short location name.
+///
+/// Results are cached in memory for 5 minutes, keyed by coordinates rounded
+/// to 2 decimal places (≈1 km precision).
+///
+/// Returns `None` on any error (network, parse, no results) so callers can
+/// fall back to showing raw coordinates.
+async fn reverse_geocode(lat: f64, lon: f64) -> Option<String> {
+    use std::time::Instant;
+
+    /// Cache key: (lat×2000, lon×2000) rounded to integers (~55 m precision).
+    type CacheKey = (i32, i32);
+    /// Cache value: (when cached, location name).
+    type CacheVal = (Instant, String);
+
+    static CACHE: LazyLock<Mutex<HashMap<CacheKey, CacheVal>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
+
+    let key: CacheKey = ((lat * 2000.0).round() as i32, (lon * 2000.0).round() as i32);
+
+    // Check cache (5-minute TTL)
+    {
+        let cache = CACHE.lock().unwrap();
+        if let Some((cached_at, name)) = cache.get(&key) {
+            if cached_at.elapsed() < std::time::Duration::from_secs(300) {
+                return Some(name.clone());
+            }
+        }
+    }
+
+    let url = format!(
+        "https://nominatim.openstreetmap.org/reverse?lat={}&lon={}&format=json&addressdetails=1",
+        lat, lon
+    );
+
+    let client = reqwest::Client::builder()
+        .user_agent("Alfred/0.5 (alfred@atareao.es)")
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .ok()?;
+
+    let resp = client.get(&url).send().await.ok()?;
+    let body: serde_json::Value = resp.json().await.ok()?;
+
+    if body.get("error").is_some() {
+        return None;
+    }
+
+    let addr = body.get("address")?;
+    // Build a compact location string: street, town/city, region, country
+    let mut parts: Vec<String> = Vec::new();
+
+    // Street + house number
+    if let Some(road) = addr.get("road").and_then(|v| v.as_str()) {
+        let s = match addr.get("house_number").and_then(|v| v.as_str()) {
+            Some(n) => format!("{} {}", road, n),
+            None => road.to_string(),
+        };
+        parts.push(s);
+    }
+
+    // Town / city / village / hamlet (first match wins, dedup against street)
+    for key in ["town", "city", "village", "hamlet"] {
+        if let Some(v) = addr.get(key).and_then(|v| v.as_str()) {
+            if parts.last().map(|l| l != v).unwrap_or(true) {
+                parts.push(v.to_string());
+                break;
+            }
+        }
+    }
+
+    // State, country
+    for key in ["state", "country"] {
+        if let Some(v) = addr.get(key).and_then(|v| v.as_str()) {
+            if parts.last().map(|l| l != v).unwrap_or(true) {
+                parts.push(v.to_string());
+            }
+        }
+    }
+
+    if parts.is_empty() {
+        None
+    } else {
+        // Deduplicate consecutive identical parts (e.g. same city and village)
+        let mut dedup: Vec<&str> = Vec::new();
+        for p in &parts {
+            if dedup.last().map(|&l| l != p.as_str()).unwrap_or(true) {
+                dedup.push(p.as_str());
+            }
+        }
+        let result = dedup.join(", ");
+
+        // Store in cache
+        {
+            let mut cache = CACHE.lock().unwrap();
+            cache.insert(key, (Instant::now(), result.clone()));
+        }
+
+        Some(result)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Orchestrator — ReAct loop
 // ---------------------------------------------------------------------------
@@ -385,12 +563,21 @@ impl Orchestrator {
                     match guardrail {
                         GuardrailResult::Allowed { .. } => {
                             // Check per-tool retry limit (max 3 calls per tool per ReAct loop)
-                            let tool_count = tool_call_counts.entry(tc.name.clone()).or_insert(0);
+                            let op = tc.arguments.get("operation").and_then(|v| v.as_str());
+                            let op_key = match op {
+                                Some(op_val) => format!("{}::{}", tc.name, op_val),
+                                None => tc.name.clone(),
+                            };
+                            let tool_count = tool_call_counts.entry(op_key).or_insert(0);
                             *tool_count += 1;
                             if *tool_count > 3 {
+                                let display_name = match op {
+                                    Some(op_val) => format!("{}::{}", tc.name, op_val),
+                                    None => tc.name.clone(),
+                                };
                                 let msg = format!(
                                     "Tool '{}' has been called 3 times. No more retries allowed. Inform the user and suggest alternatives.",
-                                    tc.name
+                                    display_name
                                 );
                                 messages.push(ChatMessage {
                                     role: "tool".into(),
@@ -402,11 +589,14 @@ impl Orchestrator {
                                 continue;
                             }
 
+                            // Inject profile_id from authenticated session
+                            let mut args = tc.arguments.clone();
+                            if let Some(obj) = args.as_object_mut() {
+                                obj.insert("profile_id".into(), serde_json::json!(profile_id));
+                            }
+
                             // Execute the tool
-                            let tool_result = self
-                                .registry
-                                .execute(&tc.name, tc.arguments.clone())
-                                .await?;
+                            let tool_result = self.registry.execute(&tc.name, args).await?;
 
                             let result_value = tool_result.data;
 
@@ -542,16 +732,40 @@ impl Orchestrator {
 
         // Inject browser context (date/time/location from user's browser)
         if let Some(ref ctx) = browser_context {
-            let mut parts = vec![format!(
-                "[Context] Hoy es {}. Zona horaria: {}.",
-                ctx.timestamp, ctx.timezone
-            )];
+            let fecha = format_browser_timestamp(&ctx.timestamp, &ctx.timezone)
+                .unwrap_or_else(|| ctx.timestamp.clone());
+
+            let mut parts = vec![format!("{}. Zona horaria: {}.", fecha, ctx.timezone)];
+
+            // Reverse‑geocode coordinates if we have them but no location name yet
+            let location_name = if let (Some(lat), Some(lon)) = (ctx.latitude, ctx.longitude) {
+                match &ctx.location_name {
+                    Some(name) => Some(name.clone()),
+                    None => reverse_geocode(lat, lon).await,
+                }
+            } else {
+                None
+            };
+
             if let (Some(lat), Some(lon)) = (ctx.latitude, ctx.longitude) {
-                parts.push(format!("Coordenadas: ({:.4}, {:.4}).", lat, lon));
+                match &location_name {
+                    Some(name) => parts.push(format!(
+                        "El usuario está en {} ({:.4}, {:.4}).",
+                        name, lat, lon
+                    )),
+                    None => parts.push(format!("Coordenadas: ({:.4}, {:.4}).", lat, lon)),
+                }
             }
-            if let Some(ref name) = ctx.location_name {
-                parts.push(format!("Ubicación: {}.", name));
-            }
+
+            tracing::info!(
+                timestamp = %ctx.timestamp,
+                timezone = %ctx.timezone,
+                latitude = ?ctx.latitude,
+                longitude = ?ctx.longitude,
+                location_name = ?location_name,
+                "🌍 Browser context injected"
+            );
+
             messages.push(ChatMessage {
                 role: "system".into(),
                 content: parts.join(" "),
@@ -709,18 +923,27 @@ impl Orchestrator {
                                 match guardrail {
                                     GuardrailResult::Allowed { .. } => {
                                         // Check per-tool retry limit (max 3 calls per tool per ReAct loop)
+                                        let op = tc.arguments.get("operation").and_then(|v| v.as_str());
+                                        let op_key = match op {
+                                            Some(op_val) => format!("{}::{}", tc.name, op_val),
+                                            None => tc.name.clone(),
+                                        };
                                         let tool_count =
-                                            tool_call_counts.entry(tc.name.clone()).or_insert(0);
+                                            tool_call_counts.entry(op_key).or_insert(0);
                                         *tool_count += 1;
                                         if *tool_count > 3 {
+                                            let display_name = match op {
+                                                Some(op_val) => format!("{}::{}", tc.name, op_val),
+                                                None => tc.name.clone(),
+                                            };
                                             tracing::warn!(
-                                                tool_name = %tc.name,
+                                                tool_name = %display_name,
                                                 call_count = %tool_count,
                                                 "⚠️ Tool retry limit reached"
                                             );
                                             let msg = format!(
                                                 "Tool '{}' has been called 3 times. No more retries allowed. Inform the user and suggest alternatives.",
-                                                tc.name
+                                                display_name
                                             );
                                             messages.push(ChatMessage {
                                                 role: "tool".into(),
@@ -746,27 +969,33 @@ impl Orchestrator {
                                             "🔧 Executing tool"
                                         );
 
-                                        let tool_result = match self
-                                            .registry
-                                            .execute(&tc.name, tc.arguments.clone())
-                                            .await
-                                        {
-                                            Ok(result) => result,
-                                            Err(e) => {
-                                                tracing::error!(
-                                                    tool_name = %tc.name,
-                                                    tool_args = %tc.arguments,
-                                                    error = %e,
-                                                    error_debug = ?e,
-                                                    "❌ Tool execution error"
-                                                );
-                                                ToolResult {
-                                                    success: false,
-                                                    data: serde_json::json!({}),
-                                                    message: Some(e.to_string()),
+                                        // Inject profile_id from authenticated session
+                                        let mut args = tc.arguments.clone();
+                                        if let Some(obj) = args.as_object_mut() {
+                                            obj.insert(
+                                                "profile_id".into(),
+                                                serde_json::json!(profile_id),
+                                            );
+                                        }
+
+                                        let tool_result =
+                                            match self.registry.execute(&tc.name, args).await {
+                                                Ok(result) => result,
+                                                Err(e) => {
+                                                    tracing::error!(
+                                                        tool_name = %tc.name,
+                                                        tool_args = %tc.arguments,
+                                                        error = %e,
+                                                        error_debug = ?e,
+                                                        "❌ Tool execution error"
+                                                    );
+                                                    ToolResult {
+                                                        success: false,
+                                                        data: serde_json::json!({}),
+                                                        message: Some(e.to_string()),
+                                                    }
                                                 }
-                                            }
-                                        };
+                                            };
 
                                         match tool_result.success {
                                             true => {
@@ -2024,5 +2253,443 @@ mod tests {
         assert!(got_done, "Should emit Done event");
 
         Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // T0.2: Orchestrator injects profile_id into tool calls
+    // -----------------------------------------------------------------------
+
+    /// Mock tool that records whether profile_id was injected.
+    struct ProfileIdCaptureTool {
+        profile_id_received: Arc<Mutex<bool>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Tool for ProfileIdCaptureTool {
+        fn name(&self) -> &'static str {
+            "capture_tool"
+        }
+
+        fn description(&self) -> &'static str {
+            "Tool that captures profile_id"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+
+        fn permission(&self) -> Permission {
+            Permission::NoConfirm
+        }
+
+        async fn execute(&self, args: serde_json::Value) -> Result<ToolResult, ToolError> {
+            let has_profile_id =
+                args.get("profile_id").and_then(|v| v.as_str()) == Some("profile-id");
+            *self.profile_id_received.lock().unwrap() = has_profile_id;
+            Ok(ToolResult {
+                success: true,
+                data: serde_json::json!({"ok": true}),
+                message: None,
+            })
+        }
+    }
+
+    /// Mock LLM that returns a tool call on first invocation (without profile_id),
+    /// then plain text on subsequent calls.
+    struct MockLLMWithToolCallNoProfile {
+        call_count: Arc<Mutex<usize>>,
+    }
+
+    #[async_trait::async_trait]
+    impl LLMProvider for MockLLMWithToolCallNoProfile {
+        async fn chat(&self, _request: ChatRequest) -> Result<ChatResponse, LLMError> {
+            let mut count = self.call_count.lock().unwrap();
+            *count += 1;
+            if *count == 1 {
+                // First call: return a tool call WITHOUT profile_id
+                Ok(ChatResponse {
+                    message: ChatMessage {
+                        role: "assistant".into(),
+                        content: "Let me process that.".into(),
+                        tool_calls: Some(vec![ToolCall {
+                            id: "call-1".into(),
+                            name: "capture_tool".into(),
+                            arguments: serde_json::json!({"some_arg": "value"}),
+                        }]),
+                        tool_result: None,
+                        tool_call_id: None,
+                    },
+                    usage: None,
+                })
+            } else {
+                // Subsequent calls: return plain text answer
+                Ok(ChatResponse {
+                    message: ChatMessage {
+                        role: "assistant".into(),
+                        content: "Done.".into(),
+                        tool_calls: None,
+                        tool_result: None,
+                        tool_call_id: None,
+                    },
+                    usage: None,
+                })
+            }
+        }
+
+        async fn chat_stream(
+            &self,
+            request: ChatRequest,
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, LLMError>> + Send>>, LLMError>
+        {
+            let result = self.chat(request).await?;
+            let tool_calls = result.message.tool_calls.clone();
+            let mut events: Vec<Result<StreamEvent, LLMError>> = Vec::new();
+            if let Some(tcs) = tool_calls {
+                for tc in tcs {
+                    events.push(Ok(StreamEvent::ToolCall(tc)));
+                }
+            }
+            events.push(Ok(StreamEvent::Done(result)));
+            let stream = futures::stream::iter(events);
+            Ok(Box::pin(stream))
+        }
+
+        async fn embed(&self, _input: &str) -> Result<Vec<f32>, LLMError> {
+            Ok(vec![])
+        }
+    }
+
+    #[tokio::test]
+    async fn test_orchestrator_injects_profile_id_into_tool_call(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // 1. Create in-memory SQLite pool
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(":memory:")
+                    .create_if_missing(true),
+            )
+            .await?;
+        sqlx::migrate::Migrator::new(std::path::Path::new("migrations"))
+            .await
+            .unwrap()
+            .run(&pool)
+            .await
+            .unwrap();
+
+        // 2. Create registry with capture tool
+        let profile_id_received = Arc::new(Mutex::new(false));
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(ProfileIdCaptureTool {
+            profile_id_received: profile_id_received.clone(),
+        }));
+        let registry = Arc::new(registry);
+
+        // 3. Create mock LLM that returns tool call WITHOUT profile_id
+        let call_count = Arc::new(Mutex::new(0));
+        let llm = Arc::new(MockLLMWithToolCallNoProfile {
+            call_count: call_count.clone(),
+        });
+        let guardrails = Arc::new(Guardrails::new(registry.clone()));
+        let context_builder = Arc::new(ContextBuilder::new());
+        let config = OrchestratorConfig::default();
+
+        let orchestrator = Orchestrator::new(
+            llm,
+            registry,
+            guardrails,
+            context_builder,
+            config,
+            pool.clone(),
+            None,
+        );
+
+        // 4. Call process_message (non-streaming) with profile-id
+        let result = orchestrator
+            .process_message("profile-id", "test message")
+            .await;
+
+        // 5. Verify: orchestrator should complete
+        assert!(
+            result.is_ok(),
+            "Orchestrator should complete, got: {:?}",
+            result
+        );
+
+        // 6. Verify: tool received profile_id injected by orchestrator
+        assert!(
+            *profile_id_received.lock().unwrap(),
+            "Tool should have received profile_id='profile-id' injected by orchestrator"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_streaming_injects_profile_id_into_tool_call(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // 1. Create in-memory SQLite pool
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(":memory:")
+                    .create_if_missing(true),
+            )
+            .await?;
+        sqlx::migrate::Migrator::new(std::path::Path::new("migrations"))
+            .await
+            .unwrap()
+            .run(&pool)
+            .await
+            .unwrap();
+
+        // 2. Create registry with capture tool
+        let profile_id_received = Arc::new(Mutex::new(false));
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(ProfileIdCaptureTool {
+            profile_id_received: profile_id_received.clone(),
+        }));
+        let registry = Arc::new(registry);
+
+        // 3. Create mock LLM
+        let call_count = Arc::new(Mutex::new(0));
+        let llm = Arc::new(MockLLMWithToolCallNoProfile {
+            call_count: call_count.clone(),
+        });
+        let guardrails = Arc::new(Guardrails::new(registry.clone()));
+        let context_builder = Arc::new(ContextBuilder::new());
+        let config = OrchestratorConfig::default();
+
+        let orchestrator = Orchestrator::new(
+            llm,
+            registry,
+            guardrails,
+            context_builder,
+            config,
+            pool.clone(),
+            None,
+        );
+
+        // 4. Call process_message_stream (streaming path)
+        let (tx, _rx) = mpsc::channel(100);
+        let result = orchestrator
+            .process_message_stream("profile-id", "gestiona mi agenda", None, tx)
+            .await;
+
+        // 5. Verify: streaming completes successfully
+        assert!(
+            result.is_ok(),
+            "Streaming should complete, got: {:?}",
+            result
+        );
+
+        // 6. Verify: tool received profile_id
+        assert!(
+            *profile_id_received.lock().unwrap(),
+            "Streaming path should inject profile_id into tool calls"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_calendar_description_includes_agenda_keywords(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Verify that the calendar tool description helps LLM route "agenda" correctly
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await?;
+        let tool = crate::tools::calendar::CalendarTool::new(pool);
+        let desc = tool.description();
+        assert!(
+            desc.to_lowercase().contains("agenda"),
+            "Calendar description should contain 'agenda', got: {}",
+            desc
+        );
+        assert!(
+            desc.contains("eventos") || desc.contains("citas"),
+            "Calendar description should contain 'eventos' or 'citas', got: {}",
+            desc
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_reminders_description_includes_alarm_keywords(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await?;
+        let tool = crate::tools::reminders::RemindersTool::new(pool);
+        let desc = tool.description();
+        assert!(
+            desc.contains("alarmas") || desc.contains("avisos"),
+            "Reminders description should contain 'alarmas' or 'avisos', got: {}",
+            desc
+        );
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Mock LLM that captures ChatRequest to inspect system prompt
+    // -----------------------------------------------------------------------
+
+    struct SystemPromptCaptureLLM {
+        captured: Arc<Mutex<Option<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl LLMProvider for SystemPromptCaptureLLM {
+        async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, LLMError> {
+            if let Some(msg) = request.messages.first() {
+                *self.captured.lock().unwrap() = Some(msg.content.clone());
+            }
+            Ok(ChatResponse {
+                message: ChatMessage {
+                    role: "assistant".into(),
+                    content: "OK.".into(),
+                    tool_calls: None,
+                    tool_result: None,
+                    tool_call_id: None,
+                },
+                usage: None,
+            })
+        }
+
+        async fn chat_stream(
+            &self,
+            request: ChatRequest,
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, LLMError>> + Send>>, LLMError>
+        {
+            if let Some(msg) = request.messages.first() {
+                *self.captured.lock().unwrap() = Some(msg.content.clone());
+            }
+            let events: Vec<Result<StreamEvent, LLMError>> =
+                vec![Ok(StreamEvent::Done(ChatResponse {
+                    message: ChatMessage {
+                        role: "assistant".into(),
+                        content: "OK.".into(),
+                        tool_calls: None,
+                        tool_result: None,
+                        tool_call_id: None,
+                    },
+                    usage: None,
+                }))];
+            let stream = futures::stream::iter(events);
+            Ok(Box::pin(stream))
+        }
+
+        async fn embed(&self, _input: &str) -> Result<Vec<f32>, LLMError> {
+            Ok(vec![])
+        }
+    }
+
+    #[tokio::test]
+    async fn test_custom_system_prompt_from_db_is_used_in_stream(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // 1. Create in-memory DB with migrations
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(":memory:")
+                    .create_if_missing(true),
+            )
+            .await?;
+        sqlx::migrate::Migrator::new(std::path::Path::new("migrations"))
+            .await
+            .unwrap()
+            .run(&pool)
+            .await
+            .unwrap();
+
+        // 2. Seed default settings then OVERRIDE system_prompt with a custom value
+        crate::db::repos::settings::SettingsRepo::seed_defaults(&pool).await?;
+        crate::db::repos::settings::SettingsRepo::set(
+            &pool,
+            "system_prompt",
+            "Eres un asistente de pruebas. Responde siempre en español.",
+        )
+        .await?;
+        crate::db::repos::settings::SettingsRepo::set(&pool, "max_window_tokens", "10000").await?;
+
+        // 3. Create mock LLM that captures the system prompt
+        let captured: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let llm = Arc::new(SystemPromptCaptureLLM {
+            captured: captured.clone(),
+        });
+
+        // 4. Build orchestrator components
+        let registry = Arc::new(crate::tools::registry::ToolRegistry::new());
+        let guardrails = Arc::new(crate::orchestrator::guardrails::Guardrails::new(
+            registry.clone(),
+        ));
+        let context_builder = Arc::new(ContextBuilder::new());
+        let config = OrchestratorConfig::default();
+
+        let orchestrator = Orchestrator::new(
+            llm,
+            registry,
+            guardrails,
+            context_builder,
+            config.clone(),
+            pool.clone(),
+            None,
+        );
+
+        // 5. Call process_message_stream
+        let (tx, mut rx) = mpsc::channel(100);
+        orchestrator
+            .process_message_stream("test-profile", "Hola", None, tx)
+            .await?;
+
+        // Drain rx to ensure processing completed
+        while rx.recv().await.is_some() {}
+
+        // 6. Assert the custom system prompt was used
+        let captured_prompt = captured.lock().unwrap().clone();
+        assert_eq!(
+            captured_prompt.as_deref(),
+            Some("Eres un asistente de pruebas. Responde siempre en español."),
+            "System prompt should be the custom value from DB, not the default template. Got: {:?}",
+            captured_prompt
+        );
+
+        // Also verify it is NOT the default template
+        if let Some(ref p) = captured_prompt {
+            assert!(
+                !p.contains("mayordomo británico"),
+                "System prompt should NOT be the default template, got: {}",
+                p
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_format_browser_timestamp_with_timezone() {
+        // 06:23 UTC on 2026-09-26 = 08:23 CEST (Europe/Madrid, UTC+2)
+        let result = format_browser_timestamp("2026-09-26T06:23:55.149Z", "Europe/Madrid");
+        assert!(result.is_some());
+        let s = result.unwrap();
+        // Should say "son las 8:23 de la mañana" (local time), NOT "6:23"
+        assert!(s.contains("8:23"), "Expected local time 8:23, got: {}", s);
+        assert!(s.contains("de la mañana"), "Expected morning, got: {}", s);
+        assert!(s.contains("sábado"), "Expected sábado");
+        assert!(s.contains("26 de septiembre de 2026"));
+    }
+
+    #[test]
+    fn test_format_browser_timestamp_utc() {
+        // UTC timestamp with UTC timezone should show UTC time
+        let result = format_browser_timestamp("2026-09-26T06:23:55.149Z", "UTC");
+        assert!(result.is_some());
+        let s = result.unwrap();
+        assert!(s.contains("6:23"), "Expected UTC time 6:23, got: {}", s);
     }
 }
