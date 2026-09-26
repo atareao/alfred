@@ -105,8 +105,8 @@ impl MessagesRepo {
                 sqlx::query(
                     "SELECT id, role, content, tool_calls, tool_results, \
                      tokens_count, collapsed_content, collapsed_tokens_count, is_indexed, summary_ref, created_at \
-                     FROM messages WHERE created_at > ?1 \
-                     ORDER BY created_at ASC LIMIT ?2",
+FROM messages WHERE created_at < ?1 \
+                      ORDER BY created_at DESC LIMIT ?2",
                 )
                 .bind(c)
                 .bind(actual_limit + 1)
@@ -118,7 +118,7 @@ impl MessagesRepo {
                     "SELECT id, role, content, tool_calls, tool_results, \
                      tokens_count, collapsed_content, collapsed_tokens_count, is_indexed, summary_ref, created_at \
                      FROM messages \
-                     ORDER BY created_at ASC LIMIT ?1",
+                     ORDER BY created_at DESC LIMIT ?1",
                 )
                 .bind(actual_limit + 1)
                 .fetch_all(pool)
@@ -146,13 +146,14 @@ impl MessagesRepo {
         }
 
         let has_more = items.len() > actual_limit as usize;
-        let data: Vec<Message> = if has_more {
+        let mut data: Vec<Message> = if has_more {
             items[..actual_limit as usize].to_vec()
         } else {
             items
         };
+        data.reverse();
         let next_cursor = if has_more {
-            data.last().map(|m| m.created_at.clone())
+            data.first().map(|m| m.created_at.clone())
         } else {
             None
         };
@@ -299,6 +300,8 @@ mod tests {
         MessagesRepo::create(&pool, "assistant", "Second", None, None, 2000, None).await?;
         let (msgs, cursor) = MessagesRepo::list_all(&pool, 10, None).await?;
         assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].content, "First");
+        assert_eq!(msgs[1].content, "Second");
         assert!(cursor.is_none());
 
         Ok(())
@@ -313,10 +316,53 @@ mod tests {
 
         let (page1, cursor) = MessagesRepo::list_all(&pool, 2, None).await?;
         assert_eq!(page1.len(), 2);
+        assert_eq!(page1[0].content, "Msg 2");
+        assert_eq!(page1[1].content, "Msg 3");
         assert!(cursor.is_some());
 
         let (page2, cursor2) = MessagesRepo::list_all(&pool, 2, cursor.as_deref()).await?;
         assert_eq!(page2.len(), 1);
+        assert_eq!(page2[0].content, "Msg 1");
+        assert!(cursor2.is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_list_all_returns_most_recent() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_pool().await?;
+        for i in 1..=55 {
+            let content = format!("Msg {}", i);
+            MessagesRepo::create(&pool, "user", &content, None, None, 2000, None).await?;
+        }
+
+        let (msgs, cursor) = MessagesRepo::list_all(&pool, 50, None).await?;
+        assert_eq!(msgs.len(), 50);
+        assert_eq!(msgs[0].content, "Msg 6");
+        assert_eq!(msgs[49].content, "Msg 55");
+        assert!(cursor.is_some());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_list_all_pagination_backwards() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_pool().await?;
+        for i in 1..=55 {
+            let content = format!("Msg {}", i);
+            MessagesRepo::create(&pool, "user", &content, None, None, 2000, None).await?;
+        }
+
+        let (page1, cursor) = MessagesRepo::list_all(&pool, 50, None).await?;
+        assert_eq!(page1.len(), 50);
+        assert_eq!(page1[0].content, "Msg 6");
+        assert_eq!(page1[49].content, "Msg 55");
+        assert!(cursor.is_some());
+
+        let (page2, cursor2) = MessagesRepo::list_all(&pool, 50, cursor.as_deref()).await?;
+        assert_eq!(page2.len(), 5);
+        assert_eq!(page2[0].content, "Msg 1");
+        assert_eq!(page2[4].content, "Msg 5");
         assert!(cursor2.is_none());
 
         Ok(())
