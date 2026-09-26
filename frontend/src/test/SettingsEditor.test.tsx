@@ -1,12 +1,12 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
-import { SettingsEditor } from '../components/SettingsEditor';
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { SettingsEditor } from "../components/SettingsEditor";
 
 // ---------------------------------------------------------------------------
 // Ant Design uses window.matchMedia which is not available in jsdom
 // ---------------------------------------------------------------------------
 beforeEach(() => {
-  Object.defineProperty(window, 'matchMedia', {
+  Object.defineProperty(window, "matchMedia", {
     writable: true,
     value: vi.fn().mockImplementation((query: string) => ({
       matches: false,
@@ -24,12 +24,12 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 // Mock useSettings hook
 // ---------------------------------------------------------------------------
-vi.mock('../hooks/useSettings', () => ({
+vi.mock("../hooks/useSettings", () => ({
   useSettings: vi.fn(() => ({
     settings: {
-      max_window_tokens: '10000',
-      system_prompt: '',
-      message_page_size: '50',
+      max_window_tokens: "10000",
+      system_prompt: "",
+      message_page_size: "50",
     },
     loading: false,
     saving: false,
@@ -39,7 +39,7 @@ vi.mock('../hooks/useSettings', () => ({
   })),
 }));
 
-describe('SettingsEditor', () => {
+describe("SettingsEditor", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -51,13 +51,8 @@ describe('SettingsEditor', () => {
   // After the change, it SHALL also include a message_page_size field
   // with min=10, max=100, step=10.
   // -----------------------------------------------------------------------
-  it('renders message_page_size field with correct constraints', () => {
-    render(
-      <SettingsEditor
-        visible={true}
-        onClose={vi.fn()}
-      />
-    );
+  it("renders message_page_size field with correct constraints", () => {
+    render(<SettingsEditor visible={true} onClose={vi.fn()} />);
 
     // ------------------------------------------------------------------
     // RED phase assertion — this SHOULD FAIL because SettingsEditor
@@ -68,16 +63,18 @@ describe('SettingsEditor', () => {
     // ------------------------------------------------------------------
 
     // Try to find the field by its label text
-    const pageSizeInput = screen.queryByLabelText(/tamaño de página|message_page_size|page size/i);
+    const pageSizeInput = screen.queryByLabelText(
+      /tamaño de página|message_page_size|page size/i,
+    );
     expect(pageSizeInput).not.toBeNull();
 
     // Verify it's an input element with the right constraints
     if (pageSizeInput) {
       const input = pageSizeInput as HTMLInputElement;
       // Ant Design v5 InputNumber uses aria-valuemin/aria-valuemax instead of min/max
-      expect(input).toHaveAttribute('aria-valuemin', '10');
-      expect(input).toHaveAttribute('aria-valuemax', '100');
-      expect(input).toHaveAttribute('step', '10');
+      expect(input).toHaveAttribute("aria-valuemin", "10");
+      expect(input).toHaveAttribute("aria-valuemax", "100");
+      expect(input).toHaveAttribute("step", "10");
     }
   });
 });

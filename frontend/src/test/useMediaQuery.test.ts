@@ -1,8 +1,8 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { renderHook, act } from '@testing-library/react';
-import { useMediaQuery } from '../hooks/useMediaQuery';
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { renderHook, act } from "@testing-library/react";
+import { useMediaQuery } from "../hooks/useMediaQuery";
 
-describe('useMediaQuery', () => {
+describe("useMediaQuery", () => {
   let originalMatchMedia: typeof window.matchMedia;
 
   beforeEach(() => {
@@ -13,7 +13,7 @@ describe('useMediaQuery', () => {
     window.matchMedia = originalMatchMedia;
   });
 
-  it('returns true when query matches', () => {
+  it("returns true when query matches", () => {
     window.matchMedia = vi.fn().mockImplementation((query: string) => ({
       matches: true,
       media: query,
@@ -25,11 +25,11 @@ describe('useMediaQuery', () => {
       dispatchEvent: vi.fn(),
     }));
 
-    const { result } = renderHook(() => useMediaQuery('(max-width: 767px)'));
+    const { result } = renderHook(() => useMediaQuery("(max-width: 767px)"));
     expect(result.current).toBe(true);
   });
 
-  it('returns false when query does not match', () => {
+  it("returns false when query does not match", () => {
     window.matchMedia = vi.fn().mockImplementation((query: string) => ({
       matches: false,
       media: query,
@@ -41,11 +41,11 @@ describe('useMediaQuery', () => {
       dispatchEvent: vi.fn(),
     }));
 
-    const { result } = renderHook(() => useMediaQuery('(max-width: 767px)'));
+    const { result } = renderHook(() => useMediaQuery("(max-width: 767px)"));
     expect(result.current).toBe(false);
   });
 
-  it('updates value when match changes', () => {
+  it("updates value when match changes", () => {
     const listeners: Record<string, Array<() => void>> = { change: [] };
     let matches = false;
 
@@ -62,19 +62,19 @@ describe('useMediaQuery', () => {
       dispatchEvent: vi.fn(),
     }));
 
-    const { result } = renderHook(() => useMediaQuery('(max-width: 767px)'));
+    const { result } = renderHook(() => useMediaQuery("(max-width: 767px)"));
     expect(result.current).toBe(false);
 
     // Simulate viewport resize
     act(() => {
       matches = true;
-      listeners.change.forEach(cb => cb());
+      listeners.change.forEach((cb) => cb());
     });
 
     expect(result.current).toBe(true);
   });
 
-  it('cleans up listener on unmount', () => {
+  it("cleans up listener on unmount", () => {
     const removeEventListener = vi.fn();
     window.matchMedia = vi.fn().mockImplementation((query: string) => ({
       matches: false,
@@ -87,7 +87,7 @@ describe('useMediaQuery', () => {
       dispatchEvent: vi.fn(),
     }));
 
-    const { unmount } = renderHook(() => useMediaQuery('(max-width: 767px)'));
+    const { unmount } = renderHook(() => useMediaQuery("(max-width: 767px)"));
     unmount();
     expect(removeEventListener).toHaveBeenCalled();
   });

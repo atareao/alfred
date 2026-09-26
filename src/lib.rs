@@ -127,6 +127,7 @@ impl AppState {
         tool_registry.register(Box::new(crate::tools::calendar::CalendarTool::new(
             pool.clone(),
         )));
+        tool_registry.register(Box::new(crate::tools::tasks::TasksTool::new(pool.clone())));
         tool_registry.register(Box::new(crate::tools::reminders::RemindersTool::new(
             pool.clone(),
         )));
@@ -309,6 +310,8 @@ pub fn app_with_state(state: AppState) -> Router {
         )
         // Events
         .merge(routes::events::routes())
+        // Tasks
+        .merge(routes::tasks::routes())
         // Search
         .route("/api/search", get(handlers::search::search))
         // Streaming + approval

@@ -177,9 +177,9 @@ impl CalendarTool {
             )));
         }
 
-        let updated = EventsRepo::find_by_id(&self.db, id)
-            .await?
-            .ok_or_else(|| ToolError::ExecutionError(format!("Event not found after update: {}", id)))?;
+        let updated = EventsRepo::find_by_id(&self.db, id).await?.ok_or_else(|| {
+            ToolError::ExecutionError(format!("Event not found after update: {}", id))
+        })?;
 
         Ok(ToolResult {
             success: true,

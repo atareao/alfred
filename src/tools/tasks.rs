@@ -55,7 +55,7 @@ impl TasksTool {
             id: Uuid::new_v4().to_string(),
             profile_id: profile_id.to_string(),
             content: content.to_string(),
-            status: "pending".to_string(),
+            status: "inbox".to_string(),
             priority: args
                 .get("priority")
                 .and_then(|v| v.as_str())
@@ -97,6 +97,7 @@ impl TasksTool {
             &self.db,
             id,
             args.get("content").and_then(|v| v.as_str()),
+            args.get("status").and_then(|v| v.as_str()),
             args.get("priority").and_then(|v| v.as_str()),
             args.get("project").and_then(|v| v.as_str()),
             args.get("due_date").and_then(|v| v.as_str()),
@@ -104,9 +105,13 @@ impl TasksTool {
         )
         .await?;
 
+        let updated = TasksRepo::find_by_id(&self.db, id).await?.ok_or_else(|| {
+            ToolError::ExecutionError(format!("Task not found after update: {}", id))
+        })?;
+
         Ok(ToolResult {
             success: true,
-            data: serde_json::json!({"id": id}),
+            data: serde_json::to_value(&updated).unwrap_or_default(),
             message: Some("Task updated successfully".into()),
         })
     }
@@ -119,10 +124,33 @@ impl TasksTool {
 
         TasksRepo::complete(&self.db, id).await?;
 
+        let updated = TasksRepo::find_by_id(&self.db, id).await?.ok_or_else(|| {
+            ToolError::ExecutionError(format!("Task not found after complete: {}", id))
+        })?;
+
         Ok(ToolResult {
             success: true,
-            data: serde_json::json!({"id": id}),
+            data: serde_json::to_value(&updated).unwrap_or_default(),
             message: Some("Task completed successfully".into()),
+        })
+    }
+
+    async fn delete_task(&self, args: Value) -> Result<ToolResult, ToolError> {
+        let id = args
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError::InvalidArguments("Missing id".into()))?;
+
+        let task = TasksRepo::find_by_id(&self.db, id)
+            .await?
+            .ok_or_else(|| ToolError::ExecutionError(format!("No task found with id: {}", id)))?;
+
+        TasksRepo::delete(&self.db, id).await?;
+
+        Ok(ToolResult {
+            success: true,
+            data: serde_json::to_value(&task).unwrap_or_default(),
+            message: Some("Task deleted successfully".into()),
         })
     }
 }
@@ -143,11 +171,11 @@ impl Tool for TasksTool {
             "properties": {
                 "operation": {
                     "type": "string",
-                    "enum": ["list_tasks", "add_task", "update_task", "complete_task"]
+                    "enum": ["list_tasks", "add_task", "update_task", "complete_task", "delete_task"]
                 },
                 "profile_id": { "type": "string" },
                 "content": { "type": "string" },
-                "status": { "type": "string", "enum": ["pending", "completed", "cancelled"] },
+                "status": { "type": "string", "enum": ["inbox", "todo", "doing", "waiting", "someday", "done"] },
                 "priority": { "type": "string", "enum": ["low", "medium", "high"] },
                 "project": { "type": "string" },
                 "due_date": { "type": "string" },
@@ -168,6 +196,7 @@ impl Tool for TasksTool {
             "add_task" => self.add_task(args).await,
             "update_task" => self.update_task(args).await,
             "complete_task" => self.complete_task(args).await,
+            "delete_task" => self.delete_task(args).await,
             op => Err(ToolError::InvalidArguments(format!(
                 "Unknown operation: {}",
                 op
@@ -229,19 +258,20 @@ mod tests {
         assert_eq!(result.data["content"], "Comprar leche");
         assert_eq!(result.data["priority"], "high");
         assert_eq!(result.data["project"], "Casa");
-        assert_eq!(result.data["status"], "pending");
+        assert_eq!(result.data["status"], "inbox");
         Ok(())
     }
 
     #[tokio::test]
-    async fn test_complete_task() -> Result<(), Box<dyn std::error::Error>> {
+    async fn test_complete_task_returns_full_object() -> Result<(), Box<dyn std::error::Error>> {
         let (_, tool) = setup().await?;
-        // Add a task first
+        // Create a task with specific content and priority
         let created = tool
             .execute(serde_json::json!({
                 "operation": "add_task",
                 "profile_id": "profile-1",
-                "content": "Tarea para completar"
+                "content": "Tarea para completar",
+                "priority": "high"
             }))
             .await
             .unwrap();
@@ -257,6 +287,9 @@ mod tests {
             .unwrap();
         assert!(result.success);
         assert_eq!(result.data["id"], task_id);
+        assert_eq!(result.data["content"], "Tarea para completar");
+        assert_eq!(result.data["status"], "done");
+        assert_eq!(result.data["priority"], "high");
         Ok(())
     }
 
@@ -311,6 +344,99 @@ mod tests {
         let updated = tasks.iter().find(|t| t["id"] == task_id).unwrap();
         assert_eq!(updated["content"], "Tarea actualizada");
         assert_eq!(updated["priority"], "high");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_update_task_returns_full_object() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
+        // Create a task first
+        let created = tool
+            .execute(serde_json::json!({
+                "operation": "add_task",
+                "profile_id": "profile-1",
+                "content": "Tarea original",
+                "priority": "low"
+            }))
+            .await
+            .unwrap();
+        let task_id = created.data["id"].as_str().unwrap().to_string();
+
+        // Update it
+        let result = tool
+            .execute(serde_json::json!({
+                "operation": "update_task",
+                "id": task_id,
+                "content": "Tarea actualizada",
+                "priority": "high"
+            }))
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(result.data["id"], task_id);
+        assert_eq!(result.data["content"], "Tarea actualizada");
+        assert_eq!(result.data["priority"], "high");
+        assert_eq!(result.data["status"], "inbox");
+        assert!(
+            result.data["project"].is_null() || result.data.get("project").is_none(),
+            "project should be null or missing"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_delete_task() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
+        // Create a task first
+        let created = tool
+            .execute(serde_json::json!({
+                "operation": "add_task",
+                "profile_id": "profile-1",
+                "content": "Tarea para eliminar"
+            }))
+            .await
+            .unwrap();
+        let task_id = created.data["id"].as_str().unwrap().to_string();
+        let original_content = created.data["content"].as_str().unwrap().to_string();
+
+        // Delete it
+        let result = tool
+            .execute(serde_json::json!({
+                "operation": "delete_task",
+                "id": task_id
+            }))
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(result.data["id"], task_id);
+        assert_eq!(result.data["content"], original_content);
+
+        // Verify it's gone from listing
+        let list_result = tool
+            .execute(serde_json::json!({
+                "operation": "list_tasks",
+                "profile_id": "profile-1"
+            }))
+            .await
+            .unwrap();
+        let tasks = list_result.data.as_array().unwrap();
+        assert!(!tasks.iter().any(|t| t["id"] == task_id));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_delete_task_not_found() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
+        let result = tool
+            .execute(serde_json::json!({
+                "operation": "delete_task",
+                "id": "nonexistent-id"
+            }))
+            .await;
+        assert!(matches!(
+            result,
+            Err(ToolError::ExecutionError(ref msg)) if msg.contains("No task found")
+        ));
         Ok(())
     }
 

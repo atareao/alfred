@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react';
-import { api } from '../api/client';
+import { useState, useEffect, useCallback } from "react";
+import { api } from "../api/client";
 
 interface UseSettingsReturn {
   settings: Record<string, string> | null;
@@ -23,13 +23,15 @@ export function useSettings(): UseSettingsReturn {
       setSettings(data);
       setError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Error loading settings');
+      setError(e instanceof Error ? e.message : "Error loading settings");
     } finally {
       setLoading(false);
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+  }, [load]);
 
   const updateSettings = useCallback(async (data: Record<string, string>) => {
     setSaving(true);
@@ -38,7 +40,7 @@ export function useSettings(): UseSettingsReturn {
       setSettings(result);
       setError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Error saving settings');
+      setError(e instanceof Error ? e.message : "Error saving settings");
       throw e;
     } finally {
       setSaving(false);
@@ -47,8 +49,8 @@ export function useSettings(): UseSettingsReturn {
 
   const resetToDefaults = useCallback(async () => {
     await updateSettings({
-      max_window_tokens: '10000',
-      system_prompt: '',
+      max_window_tokens: "10000",
+      system_prompt: "",
     });
   }, [updateSettings]);
 

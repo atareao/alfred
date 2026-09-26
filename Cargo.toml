@@ -93,5 +93,9 @@ name = "events"
 path = "tests/api/events.rs"
 
 [[test]]
+name = "tasks"
+path = "tests/api/tasks.rs"
+
+[[test]]
 name = "frontend-serving"
 path = "tests/api/frontend_serving.rs"

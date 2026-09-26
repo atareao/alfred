@@ -1,6 +1,6 @@
-import { useState, useCallback, useEffect } from 'react';
-import type { CalendarEvent } from '../types';
-import { api } from '../api/client';
+import { useState, useCallback, useEffect } from "react";
+import type { CalendarEvent } from "../types";
+import { api } from "../api/client";
 
 export function useEvents(start: string, end: string) {
   const [events, setEvents] = useState<CalendarEvent[]>([]);
@@ -10,9 +10,10 @@ export function useEvents(start: string, end: string) {
   const refetch = useCallback(() => {
     setLoading(true);
     setError(null);
-    api.listEvents(start, end)
-      .then(data => setEvents(data))
-      .catch(err => setError(err.message))
+    api
+      .listEvents(start, end)
+      .then((data) => setEvents(data))
+      .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
   }, [start, end]);
 
@@ -23,8 +24,8 @@ export function useEvents(start: string, end: string) {
   // Listen for custom event from useMainChat when LLM creates an event
   useEffect(() => {
     const handler = () => refetch();
-    window.addEventListener('events-changed', handler);
-    return () => window.removeEventListener('events-changed', handler);
+    window.addEventListener("events-changed", handler);
+    return () => window.removeEventListener("events-changed", handler);
   }, [refetch]);
 
   return { events, loading, error, refetch };
@@ -49,15 +50,18 @@ export function useCreateEvent() {
 export function useUpdateEvent() {
   const [loading, setLoading] = useState(false);
 
-  const update = useCallback(async (id: string, data: Partial<CalendarEvent>) => {
-    setLoading(true);
-    try {
-      const event = await api.updateEvent(id, data);
-      return event;
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const update = useCallback(
+    async (id: string, data: Partial<CalendarEvent>) => {
+      setLoading(true);
+      try {
+        const event = await api.updateEvent(id, data);
+        return event;
+      } finally {
+        setLoading(false);
+      }
+    },
+    [],
+  );
 
   return { update, loading };
 }

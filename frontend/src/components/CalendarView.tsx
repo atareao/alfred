@@ -1,88 +1,118 @@
-import React, { useState, useMemo, type ReactNode } from 'react';
-import { Calendar, Badge, Select, Button, Space, Typography, Spin, Alert } from 'antd';
-import { PlusOutlined } from '@ant-design/icons';
-import dayjs from 'dayjs';
-import type { Dayjs } from 'dayjs';
-import type { CalendarEvent } from '../types';
-import { useEvents } from '../hooks/useEvents';
-import { useMediaQuery } from '../hooks/useMediaQuery';
-import { EventModal } from './EventModal';
-import { EventDetail } from './EventDetail';
+import React, { useState, useMemo, type ReactNode } from "react";
+import {
+  Calendar,
+  Badge,
+  Select,
+  Button,
+  Space,
+  Typography,
+  Spin,
+  Alert,
+} from "antd";
+import { PlusOutlined } from "@ant-design/icons";
+import dayjs from "dayjs";
+import type { Dayjs } from "dayjs";
+import type { CalendarEvent } from "../types";
+import { useEvents } from "../hooks/useEvents";
+import { useMediaQuery } from "../hooks/useMediaQuery";
+import { EventModal } from "./EventModal";
+import { EventDetail } from "./EventDetail";
 
 const { Text, Title } = Typography;
 
 export const CATEGORY_COLORS: Record<string, string> = {
-  default: '#1677ff',
-  work: '#52c41a',
-  personal: '#fa8c16',
-  health: '#f5222d',
-  birthday: '#eb2f96',
-  holiday: '#722ed1',
+  default: "#1677ff",
+  work: "#52c41a",
+  personal: "#fa8c16",
+  health: "#f5222d",
+  birthday: "#eb2f96",
+  holiday: "#722ed1",
 };
 
 const CATEGORY_LABELS: Record<string, string> = {
-  default: 'Default',
-  work: 'Work',
-  personal: 'Personal',
-  health: 'Health',
-  birthday: 'Birthday',
-  holiday: 'Holiday',
+  default: "Default",
+  work: "Work",
+  personal: "Personal",
+  health: "Health",
+  birthday: "Birthday",
+  holiday: "Holiday",
 };
 
 interface CalendarViewProps {
   onClose?: () => void;
 }
 
-export const CalendarView: React.FC<CalendarViewProps> = ({ onClose: _onClose }) => {
+export const CalendarView: React.FC<CalendarViewProps> = ({
+  onClose: _onClose,
+}) => {
   const [currentDate, setCurrentDate] = useState(dayjs());
-  const [categoryFilter, setCategoryFilter] = useState<string | undefined>(undefined);
+  const [categoryFilter, setCategoryFilter] = useState<string | undefined>(
+    undefined,
+  );
   const [selectedDate, setSelectedDate] = useState<Dayjs | null>(null);
   const [eventModalOpen, setEventModalOpen] = useState(false);
   const [editingEvent, setEditingEvent] = useState<CalendarEvent | null>(null);
   const [detailEvent, setDetailEvent] = useState<CalendarEvent | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
 
-  const isMobile = useMediaQuery('(max-width: 767px)');
+  const isMobile = useMediaQuery("(max-width: 767px)");
 
   // Fetch events for the visible month (expand to full weeks around it)
-  const monthStart = currentDate.startOf('month').startOf('week').format('YYYY-MM-DD');
-  const monthEnd = currentDate.endOf('month').endOf('week').format('YYYY-MM-DD');
+  const monthStart = currentDate
+    .startOf("month")
+    .startOf("week")
+    .format("YYYY-MM-DD");
+  const monthEnd = currentDate
+    .endOf("month")
+    .endOf("week")
+    .format("YYYY-MM-DD");
 
   const { events, loading, error, refetch } = useEvents(monthStart, monthEnd);
 
   const filteredEvents = useMemo(() => {
     if (!categoryFilter) return events;
-    return events.filter(e => e.category === categoryFilter);
+    return events.filter((e) => e.category === categoryFilter);
   }, [events, categoryFilter]);
 
   const dayEvents = useMemo(() => {
     if (!selectedDate) return [];
-    const dateStr = selectedDate.format('YYYY-MM-DD');
-    return filteredEvents.filter(e =>
-      dayjs(e.start_time).format('YYYY-MM-DD') === dateStr
+    const dateStr = selectedDate.format("YYYY-MM-DD");
+    return filteredEvents.filter(
+      (e) => dayjs(e.start_time).format("YYYY-MM-DD") === dateStr,
     );
   }, [filteredEvents, selectedDate]);
 
   const getListData = (value: Dayjs) => {
-    const dateStr = value.format('YYYY-MM-DD');
-    return filteredEvents.filter(e =>
-      dayjs(e.start_time).format('YYYY-MM-DD') === dateStr
+    const dateStr = value.format("YYYY-MM-DD");
+    return filteredEvents.filter(
+      (e) => dayjs(e.start_time).format("YYYY-MM-DD") === dateStr,
     );
   };
 
-  const cellRender = (current: Dayjs, info: { type: string; originNode: ReactNode }): ReactNode => {
-    if (info.type !== 'date') return info.originNode;
+  const cellRender = (
+    current: Dayjs,
+    info: { type: string; originNode: ReactNode },
+  ): ReactNode => {
+    if (info.type !== "date") return info.originNode;
     const listData = getListData(current);
     return (
-      <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-        {listData.slice(0, 3).map(item => (
+      <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+        {listData.slice(0, 3).map((item) => (
           <li key={item.id} style={{ marginBottom: 1 }}>
             <Badge
               color={CATEGORY_COLORS[item.category] || CATEGORY_COLORS.default}
               text={
                 <Text
-                  style={{ fontSize: 11, cursor: 'pointer', color: 'rgba(255,255,255,0.85)' }}
-                  onClick={(e) => { e.stopPropagation(); setDetailEvent(item); setDetailOpen(true); }}
+                  style={{
+                    fontSize: 11,
+                    cursor: "pointer",
+                    color: "rgba(255,255,255,0.85)",
+                  }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setDetailEvent(item);
+                    setDetailOpen(true);
+                  }}
                 >
                   {item.title}
                 </Text>
@@ -91,7 +121,11 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onClose: _onClose })
           </li>
         ))}
         {listData.length > 3 && (
-          <li><Text style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)' }}>+{listData.length - 3} more</Text></li>
+          <li>
+            <Text style={{ fontSize: 11, color: "rgba(255,255,255,0.45)" }}>
+              +{listData.length - 3} more
+            </Text>
+          </li>
         )}
       </ul>
     );
@@ -125,38 +159,63 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onClose: _onClose })
   };
 
   if (error) {
-    return <Alert type="error" message={error} showIcon style={{ margin: 16 }} />;
+    return (
+      <Alert type="error" message={error} showIcon style={{ margin: 16 }} />
+    );
   }
 
   return (
     <div style={{ padding: 16, minHeight: 400 }}>
-      <Space direction="vertical" style={{ width: '100%' }} size="middle">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
-          <Title level={4} style={{ margin: 0, color: 'rgba(255,255,255,0.85)' }}>Calendar</Title>
-          <Space direction={isMobile ? 'vertical' : 'horizontal'} style={{ width: isMobile ? '100%' : undefined }}>
+      <Space direction="vertical" style={{ width: "100%" }} size="middle">
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            flexWrap: "wrap",
+            gap: 8,
+          }}
+        >
+          <Title
+            level={4}
+            style={{ margin: 0, color: "rgba(255,255,255,0.85)" }}
+          >
+            Calendar
+          </Title>
+          <Space
+            direction={isMobile ? "vertical" : "horizontal"}
+            style={{ width: isMobile ? "100%" : undefined }}
+          >
             <Select
               allowClear
               placeholder="Filter by category"
-              style={{ width: isMobile ? '100%' : 160 }}
+              style={{ width: isMobile ? "100%" : 160 }}
               value={categoryFilter}
               onChange={setCategoryFilter}
-              options={Object.entries(CATEGORY_LABELS).map(([value, label]) => ({
-                value,
-                label: (
-                  <span>
-                    <Badge color={CATEGORY_COLORS[value]} /> {label}
-                  </span>
-                ),
-              }))}
+              options={Object.entries(CATEGORY_LABELS).map(
+                ([value, label]) => ({
+                  value,
+                  label: (
+                    <span>
+                      <Badge color={CATEGORY_COLORS[value]} /> {label}
+                    </span>
+                  ),
+                }),
+              )}
             />
-            <Button type="primary" icon={<PlusOutlined />} onClick={handleCreateEvent} block={isMobile}>
+            <Button
+              type="primary"
+              icon={<PlusOutlined />}
+              onClick={handleCreateEvent}
+              block={isMobile}
+            >
               New Event
             </Button>
           </Space>
         </div>
 
         {loading ? (
-          <div style={{ textAlign: 'center', padding: 40 }}>
+          <div style={{ textAlign: "center", padding: 40 }}>
             <Spin size="large" />
           </div>
         ) : (
@@ -171,37 +230,65 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onClose: _onClose })
 
         {selectedDate && dayEvents.length > 0 && (
           <div>
-            <Title level={5} style={{ color: 'rgba(255,255,255,0.85)' }}>
-              Events for {selectedDate.format('dddd, MMMM D, YYYY')}
+            <Title level={5} style={{ color: "rgba(255,255,255,0.85)" }}>
+              Events for {selectedDate.format("dddd, MMMM D, YYYY")}
             </Title>
-            {dayEvents.map(event => (
+            {dayEvents.map((event) => (
               <div
                 key={event.id}
                 style={{
-                  padding: '8px 12px',
+                  padding: "8px 12px",
                   marginBottom: 6,
                   borderRadius: 6,
-                  background: '#1f1f1f',
+                  background: "#1f1f1f",
                   borderLeft: `4px solid ${CATEGORY_COLORS[event.category] || CATEGORY_COLORS.default}`,
-                  cursor: 'pointer',
+                  cursor: "pointer",
                 }}
-                onClick={() => { setDetailEvent(event); setDetailOpen(true); }}
+                onClick={() => {
+                  setDetailEvent(event);
+                  setDetailOpen(true);
+                }}
               >
                 {isMobile ? (
                   <div>
-                    <div style={{ color: 'rgba(255,255,255,0.85)', fontWeight: 600, marginBottom: 4 }}>
-                      <Badge color={CATEGORY_COLORS[event.category] || CATEGORY_COLORS.default} /> {event.title}
+                    <div
+                      style={{
+                        color: "rgba(255,255,255,0.85)",
+                        fontWeight: 600,
+                        marginBottom: 4,
+                      }}
+                    >
+                      <Badge
+                        color={
+                          CATEGORY_COLORS[event.category] ||
+                          CATEGORY_COLORS.default
+                        }
+                      />{" "}
+                      {event.title}
                     </div>
-                    <div style={{ color: 'rgba(255,255,255,0.45)', fontSize: 12 }}>
-                      {dayjs(event.start_time).format('HH:mm')} - {dayjs(event.end_time).format('HH:mm')}
+                    <div
+                      style={{ color: "rgba(255,255,255,0.45)", fontSize: 12 }}
+                    >
+                      {dayjs(event.start_time).format("HH:mm")} -{" "}
+                      {dayjs(event.end_time).format("HH:mm")}
                     </div>
                   </div>
                 ) : (
                   <Space>
-                    <Badge color={CATEGORY_COLORS[event.category] || CATEGORY_COLORS.default} />
-                    <Text strong style={{ color: 'rgba(255,255,255,0.85)' }}>{event.title}</Text>
-                    <Text style={{ color: 'rgba(255,255,255,0.45)', fontSize: 12 }}>
-                      {dayjs(event.start_time).format('HH:mm')} - {dayjs(event.end_time).format('HH:mm')}
+                    <Badge
+                      color={
+                        CATEGORY_COLORS[event.category] ||
+                        CATEGORY_COLORS.default
+                      }
+                    />
+                    <Text strong style={{ color: "rgba(255,255,255,0.85)" }}>
+                      {event.title}
+                    </Text>
+                    <Text
+                      style={{ color: "rgba(255,255,255,0.45)", fontSize: 12 }}
+                    >
+                      {dayjs(event.start_time).format("HH:mm")} -{" "}
+                      {dayjs(event.end_time).format("HH:mm")}
                     </Text>
                   </Space>
                 )}

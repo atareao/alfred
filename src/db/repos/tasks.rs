@@ -133,10 +133,12 @@ impl TasksRepo {
         Ok(tasks)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn update(
         pool: &SqlitePool,
         id: &str,
         content: Option<&str>,
+        status: Option<&str>,
         priority: Option<&str>,
         project: Option<&str>,
         due_date: Option<&str>,
@@ -146,14 +148,16 @@ impl TasksRepo {
         sqlx::query(
             "UPDATE tasks SET
                 content = COALESCE(?1, content),
-                priority = COALESCE(?2, priority),
-                project = COALESCE(?3, project),
-                due_date = COALESCE(?4, due_date),
-                scope = COALESCE(?5, scope),
-                updated_at = ?6
-             WHERE id = ?7",
+                status = COALESCE(?2, status),
+                priority = COALESCE(?3, priority),
+                project = COALESCE(?4, project),
+                due_date = COALESCE(?5, due_date),
+                scope = COALESCE(?6, scope),
+                updated_at = ?7
+             WHERE id = ?8",
         )
         .bind(content)
+        .bind(status)
         .bind(priority)
         .bind(project)
         .bind(due_date)
@@ -167,7 +171,7 @@ impl TasksRepo {
 
     pub async fn complete(pool: &SqlitePool, id: &str) -> Result<(), sqlx::Error> {
         let now = chrono::Utc::now().to_rfc3339();
-        sqlx::query("UPDATE tasks SET status = 'completed', updated_at = ?1 WHERE id = ?2")
+        sqlx::query("UPDATE tasks SET status = 'done', updated_at = ?1 WHERE id = ?2")
             .bind(&now)
             .bind(id)
             .execute(pool)
@@ -177,7 +181,7 @@ impl TasksRepo {
 
     pub async fn cancel(pool: &SqlitePool, id: &str) -> Result<(), sqlx::Error> {
         let now = chrono::Utc::now().to_rfc3339();
-        sqlx::query("UPDATE tasks SET status = 'cancelled', updated_at = ?1 WHERE id = ?2")
+        sqlx::query("UPDATE tasks SET status = 'done', updated_at = ?1 WHERE id = ?2")
             .bind(&now)
             .bind(id)
             .execute(pool)
@@ -222,11 +226,11 @@ mod tests {
                 id TEXT PRIMARY KEY,
                 profile_id TEXT NOT NULL REFERENCES profiles(id),
                 content TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'pending',
-                priority TEXT NOT NULL DEFAULT 'medium',
+                status TEXT NOT NULL DEFAULT 'inbox' CHECK(status IN ('inbox', 'todo', 'doing', 'waiting', 'someday', 'done')),
+                priority TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('low', 'medium', 'high')),
                 project TEXT,
                 due_date TEXT,
-                scope TEXT NOT NULL DEFAULT 'shared',
+                scope TEXT NOT NULL DEFAULT 'shared' CHECK(scope IN ('shared', 'personal')),
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )",
@@ -262,7 +266,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_task() -> Result<(), Box<dyn std::error::Error>> {
         let pool = setup().await?;
-        let task = sample_task("task-1", Some("Proyecto X"), "pending", "high");
+        let task = sample_task("task-1", Some("Proyecto X"), "inbox", "high");
         TasksRepo::create(&pool, &task).await.unwrap();
         let found = TasksRepo::find_by_id(&pool, "task-1").await?.unwrap();
         assert_eq!(found.content, "Task task-1");
@@ -274,13 +278,9 @@ mod tests {
     #[tokio::test]
     async fn test_list_by_project() -> Result<(), Box<dyn std::error::Error>> {
         let pool = setup().await?;
-        TasksRepo::create(&pool, &sample_task("t1", Some("Alpha"), "pending", "low")).await?;
-        TasksRepo::create(&pool, &sample_task("t2", Some("Beta"), "pending", "high")).await?;
-        TasksRepo::create(
-            &pool,
-            &sample_task("t3", Some("Alpha"), "completed", "medium"),
-        )
-        .await?;
+        TasksRepo::create(&pool, &sample_task("t1", Some("Alpha"), "inbox", "low")).await?;
+        TasksRepo::create(&pool, &sample_task("t2", Some("Beta"), "inbox", "high")).await?;
+        TasksRepo::create(&pool, &sample_task("t3", Some("Alpha"), "done", "medium")).await?;
 
         let alpha = TasksRepo::list(&pool, "profile-1", None, None, Some("Alpha"), None).await?;
         assert_eq!(alpha.len(), 2);
@@ -294,10 +294,10 @@ mod tests {
     #[tokio::test]
     async fn test_complete_task() -> Result<(), Box<dyn std::error::Error>> {
         let pool = setup().await?;
-        TasksRepo::create(&pool, &sample_task("t4", None, "pending", "medium")).await?;
+        TasksRepo::create(&pool, &sample_task("t4", None, "inbox", "medium")).await?;
         TasksRepo::complete(&pool, "t4").await.unwrap();
         let found = TasksRepo::find_by_id(&pool, "t4").await.unwrap().unwrap();
-        assert_eq!(found.status, "completed");
+        assert_eq!(found.status, "done");
 
         Ok(())
     }
@@ -305,10 +305,10 @@ mod tests {
     #[tokio::test]
     async fn test_cancel_task() -> Result<(), Box<dyn std::error::Error>> {
         let pool = setup().await?;
-        TasksRepo::create(&pool, &sample_task("t5", None, "pending", "medium")).await?;
+        TasksRepo::create(&pool, &sample_task("t5", None, "inbox", "medium")).await?;
         TasksRepo::cancel(&pool, "t5").await.unwrap();
         let found = TasksRepo::find_by_id(&pool, "t5").await.unwrap().unwrap();
-        assert_eq!(found.status, "cancelled");
+        assert_eq!(found.status, "done");
 
         Ok(())
     }
@@ -316,11 +316,12 @@ mod tests {
     #[tokio::test]
     async fn test_update_task() -> Result<(), Box<dyn std::error::Error>> {
         let pool = setup().await?;
-        TasksRepo::create(&pool, &sample_task("t6", None, "pending", "low")).await?;
+        TasksRepo::create(&pool, &sample_task("t6", None, "inbox", "low")).await?;
         TasksRepo::update(
             &pool,
             "t6",
             Some("Nuevo contenido"),
+            None,
             Some("high"),
             Some("Proyecto Z"),
             None,
@@ -338,7 +339,7 @@ mod tests {
     #[tokio::test]
     async fn test_delete_task() -> Result<(), Box<dyn std::error::Error>> {
         let pool = setup().await?;
-        TasksRepo::create(&pool, &sample_task("t7", None, "pending", "medium")).await?;
+        TasksRepo::create(&pool, &sample_task("t7", None, "inbox", "medium")).await?;
         TasksRepo::delete(&pool, "t7").await.unwrap();
         let found = TasksRepo::find_by_id(&pool, "t7").await.unwrap();
         assert!(found.is_none());
@@ -349,19 +350,12 @@ mod tests {
     #[tokio::test]
     async fn test_list_by_status_and_priority() -> Result<(), Box<dyn std::error::Error>> {
         let pool = setup().await?;
-        TasksRepo::create(&pool, &sample_task("t8", None, "pending", "high")).await?;
-        TasksRepo::create(&pool, &sample_task("t9", None, "completed", "low")).await?;
-        TasksRepo::create(&pool, &sample_task("t10", None, "pending", "low")).await?;
+        TasksRepo::create(&pool, &sample_task("t8", None, "inbox", "high")).await?;
+        TasksRepo::create(&pool, &sample_task("t9", None, "done", "low")).await?;
+        TasksRepo::create(&pool, &sample_task("t10", None, "inbox", "low")).await?;
 
-        let pending_high = TasksRepo::list(
-            &pool,
-            "profile-1",
-            Some("pending"),
-            Some("high"),
-            None,
-            None,
-        )
-        .await?;
+        let pending_high =
+            TasksRepo::list(&pool, "profile-1", Some("inbox"), Some("high"), None, None).await?;
         assert_eq!(pending_high.len(), 1);
         assert_eq!(pending_high[0].id, "t8");
 
