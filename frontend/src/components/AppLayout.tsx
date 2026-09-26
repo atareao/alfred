@@ -5,6 +5,7 @@ import {
   SettingOutlined,
   CalendarOutlined,
   CheckSquareOutlined,
+  BarChartOutlined,
 } from "@ant-design/icons";
 import { ChatView } from "./ChatView";
 import { ProfileEditor } from "./ProfileEditor";
@@ -14,6 +15,7 @@ import { TaskView } from "./TaskView";
 import { useMainChat } from "../hooks/useMainChat";
 import { useProfile } from "../hooks/useProfile";
 import { useSettings } from "../hooks/useSettings";
+import { useNavigate } from "react-router-dom";
 
 const { Header, Content } = Layout;
 const { Text } = Typography;
@@ -26,6 +28,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
   const mainChat = useMainChat();
   const profile = useProfile();
   const { settings } = useSettings();
+  const navigate = useNavigate();
 
   // Apply font-size as CSS variable on root element
   const fontSize = settings?.font_size ? parseInt(settings.font_size, 10) : 16;
@@ -66,6 +69,12 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
             type="text"
             icon={<CalendarOutlined />}
             onClick={() => setCalendarVisible(true)}
+            style={{ color: "rgba(255,255,255,0.65)" }}
+          />
+          <Button
+            type="text"
+            icon={<BarChartOutlined />}
+            onClick={() => navigate("/stats")}
             style={{ color: "rgba(255,255,255,0.65)" }}
           />
           <Button
