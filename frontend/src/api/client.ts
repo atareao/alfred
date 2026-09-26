@@ -1,4 +1,4 @@
-import type { ChatInitResponse, CreateMessage, Message, PaginatedResponse, Profile, UpdateProfile } from '../types';
+import type { CalendarEvent, ChatInitResponse, CreateMessage, Message, PaginatedResponse, Profile, UpdateProfile } from '../types';
 
 export const BASE_URL = '/api';
 
@@ -47,4 +47,16 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ approved }),
     }),
+
+  listEvents: (start: string, end: string) =>
+    request<CalendarEvent[]>(`/events?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`),
+
+  createEvent: (data: Partial<CalendarEvent>) =>
+    request<CalendarEvent>('/events', { method: 'POST', body: JSON.stringify(data) }),
+
+  updateEvent: (id: string, data: Partial<CalendarEvent>) =>
+    request<CalendarEvent>(`/events/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+
+  deleteEvent: (id: string) =>
+    request<void>(`/events/${id}`, { method: 'DELETE' }),
 };

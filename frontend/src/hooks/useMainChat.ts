@@ -121,6 +121,13 @@ export function useMainChat() {
         setActiveTools(prev => [...prev, name]);
         setUsedTools(prev => prev.includes(name) ? prev : [...prev, name]);
       },
+      onToolResult: (name: string, success: boolean) => {
+        console.log('[useMainChat] Tool result:', name, 'success:', success);
+        // Notify CalendarView when LLM finishes a calendar operation
+        if (name === 'calendar' && success) {
+          window.dispatchEvent(new CustomEvent('events-changed'));
+        }
+      },
       onDone: (messageId: string, userMessageId?: string) => {
         console.log('[useMainChat] Stream done. Total content length:', assistantContent.length);
         // Append tool usage footer to assistant content
