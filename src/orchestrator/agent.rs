@@ -926,7 +926,8 @@ impl Orchestrator {
                                 match guardrail {
                                     GuardrailResult::Allowed { .. } => {
                                         // Check per-tool retry limit (max 3 calls per tool per ReAct loop)
-                                        let op = tc.arguments.get("operation").and_then(|v| v.as_str());
+                                        let op =
+                                            tc.arguments.get("operation").and_then(|v| v.as_str());
                                         let op_key = match op {
                                             Some(op_val) => format!("{}::{}", tc.name, op_val),
                                             None => tc.name.clone(),

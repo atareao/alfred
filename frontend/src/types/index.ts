@@ -1,6 +1,6 @@
 export interface Message {
   id: string;
-  role: 'user' | 'assistant' | 'system' | 'tool';
+  role: "user" | "assistant" | "system" | "tool";
   content: string;
   tool_calls?: unknown;
   tool_results?: unknown;
@@ -60,7 +60,14 @@ export interface MessageQuery {
   override?: string;
 }
 
-export type SSEEventType = 'chunk' | 'tool_call' | 'tool_result' | 'done' | 'error' | 'approval_required' | 'approval_result';
+export type SSEEventType =
+  | "chunk"
+  | "tool_call"
+  | "tool_result"
+  | "done"
+  | "error"
+  | "approval_required"
+  | "approval_result";
 
 export interface SSEStreamEvent {
   type: SSEEventType;
@@ -82,16 +89,29 @@ export interface ChatInitResponse {
   settings: Record<string, string>;
 }
 
+export interface Task {
+  id: string;
+  profile_id: string;
+  content: string;
+  status: "inbox" | "todo" | "doing" | "waiting" | "someday" | "done";
+  priority: "low" | "medium" | "high";
+  project?: string;
+  due_date?: string;
+  scope: "shared" | "personal";
+  created_at: string;
+  updated_at: string;
+}
+
 export interface CalendarEvent {
   id: string;
   profile_id: string;
   title: string;
   description?: string;
-  start_time: string;  // ISO 8601
+  start_time: string; // ISO 8601
   end_time: string;
   location?: string;
-  scope: 'shared' | 'personal';
-  category: 'default' | 'work' | 'personal' | 'health' | 'birthday' | 'holiday';
+  scope: "shared" | "personal";
+  category: "default" | "work" | "personal" | "health" | "birthday" | "holiday";
   all_day: boolean;
   rrule?: string;
   reminder_minutes_before?: number;

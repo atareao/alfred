@@ -1,6 +1,6 @@
-import { useState, useCallback, useRef } from 'react';
-import { BASE_URL } from '../api/client';
-import type { SSEStreamEvent, BrowserContext } from '../types';
+import { useState, useCallback, useRef } from "react";
+import { BASE_URL } from "../api/client";
+import type { SSEStreamEvent, BrowserContext } from "../types";
 
 export interface UseSSEOptions {
   onChunk?: (content: string) => void;
@@ -8,123 +8,142 @@ export interface UseSSEOptions {
   onToolCall?: (name: string, args: unknown) => void;
   onToolResult?: (name: string, success: boolean) => void;
   onError?: (message: string) => void;
-  onApprovalRequired?: (requestId: string, toolName: string, reason: string) => void;
+  onApprovalRequired?: (
+    requestId: string,
+    toolName: string,
+    reason: string,
+  ) => void;
 }
 
 export function useSSE() {
   const [connected, setConnected] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
-  const connect = useCallback(async (
-    content: string,
-    options: UseSSEOptions = {},
-    browserContext?: BrowserContext,
-  ) => {
-    if (abortRef.current) {
-      abortRef.current.abort();
-    }
-    abortRef.current = new AbortController();
-
-    setConnected(true);
-    console.log('[useSSE] Connecting to:', `${BASE_URL}/chat/stream`, 'body content length:', content.length);
-
-    try {
-      const body: Record<string, unknown> = { content };
-      if (browserContext) {
-        body.browser_context = browserContext;
+  const connect = useCallback(
+    async (
+      content: string,
+      options: UseSSEOptions = {},
+      browserContext?: BrowserContext,
+    ) => {
+      if (abortRef.current) {
+        abortRef.current.abort();
       }
+      abortRef.current = new AbortController();
 
-      const response = await fetch(
+      setConnected(true);
+      console.log(
+        "[useSSE] Connecting to:",
         `${BASE_URL}/chat/stream`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-          signal: abortRef.current.signal,
-        },
+        "body content length:",
+        content.length,
       );
 
-      if (!response.ok) {
-        console.error('[useSSE] Response not OK:', response.status, response.statusText);
-        const errorBody = await response.json().catch(() => null);
-        options.onError?.(errorBody?.error || `HTTP ${response.status}`);
-        setConnected(false);
-        return;
-      }
+      try {
+        const body: Record<string, unknown> = { content };
+        if (browserContext) {
+          body.browser_context = browserContext;
+        }
 
-      const reader = response.body?.getReader();
-      if (!reader) {
-        console.error('[useSSE] No response body reader');
-        options.onError?.('No response body');
-        setConnected(false);
-        return;
-      }
+        const response = await fetch(`${BASE_URL}/chat/stream`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          signal: abortRef.current.signal,
+        });
 
-      const decoder = new TextDecoder();
-      let buffer = '';
+        if (!response.ok) {
+          console.error(
+            "[useSSE] Response not OK:",
+            response.status,
+            response.statusText,
+          );
+          const errorBody = await response.json().catch(() => null);
+          options.onError?.(errorBody?.error || `HTTP ${response.status}`);
+          setConnected(false);
+          return;
+        }
 
-      /* eslint-disable no-constant-condition */
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+        const reader = response.body?.getReader();
+        if (!reader) {
+          console.error("[useSSE] No response body reader");
+          options.onError?.("No response body");
+          setConnected(false);
+          return;
+        }
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
+        const decoder = new TextDecoder();
+        let buffer = "";
 
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            try {
-              const event: SSEStreamEvent = JSON.parse(line.slice(6));
+        /* eslint-disable no-constant-condition */
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
 
-              console.log('[useSSE] Event received:', event.type, event);
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
 
-              switch (event.type) {
-                case 'chunk':
-                  options.onChunk?.(event.content || '');
-                  break;
-                case 'done':
-                  options.onDone?.(event.message_id || '', event.user_message_id);
-                  break;
-                case 'error':
-                  options.onError?.(event.message || 'Unknown error');
-                  break;
-                case 'tool_call':
-                  options.onToolCall?.(event.name || '', event.args);
-                  break;
-                case 'tool_result':
-                  options.onToolResult?.(event.name || '', event.success ?? false);
-                  break;
-                case 'approval_required':
-                  options.onApprovalRequired?.(
-                    event.request_id || '',
-                    event.tool_name || '',
-                    event.reason || '',
-                  );
-                  break;
-                default:
-                  break;
+          for (const line of lines) {
+            if (line.startsWith("data: ")) {
+              try {
+                const event: SSEStreamEvent = JSON.parse(line.slice(6));
+
+                console.log("[useSSE] Event received:", event.type, event);
+
+                switch (event.type) {
+                  case "chunk":
+                    options.onChunk?.(event.content || "");
+                    break;
+                  case "done":
+                    options.onDone?.(
+                      event.message_id || "",
+                      event.user_message_id,
+                    );
+                    break;
+                  case "error":
+                    options.onError?.(event.message || "Unknown error");
+                    break;
+                  case "tool_call":
+                    options.onToolCall?.(event.name || "", event.args);
+                    break;
+                  case "tool_result":
+                    options.onToolResult?.(
+                      event.name || "",
+                      event.success ?? false,
+                    );
+                    break;
+                  case "approval_required":
+                    options.onApprovalRequired?.(
+                      event.request_id || "",
+                      event.tool_name || "",
+                      event.reason || "",
+                    );
+                    break;
+                  default:
+                    break;
+                }
+              } catch {
+                console.warn("[useSSE] Failed to parse SSE line:", line);
+                // Skip malformed JSON lines
               }
-            } catch {
-              console.warn('[useSSE] Failed to parse SSE line:', line);
-              // Skip malformed JSON lines
             }
           }
         }
+      } catch (err) {
+        console.error("[useSSE] Fetch error:", (err as Error).message);
+        if ((err as Error).name !== "AbortError") {
+          options.onError?.((err as Error).message);
+        }
+      } finally {
+        console.log("[useSSE] Connection closed");
+        setConnected(false);
       }
-    } catch (err) {
-      console.error('[useSSE] Fetch error:', (err as Error).message);
-      if ((err as Error).name !== 'AbortError') {
-        options.onError?.((err as Error).message);
-      }
-    } finally {
-      console.log('[useSSE] Connection closed');
-      setConnected(false);
-    }
-  }, []);
+    },
+    [],
+  );
 
   const disconnect = useCallback(() => {
-    console.log('[useSSE] Disconnecting');
+    console.log("[useSSE] Disconnecting");
     if (abortRef.current) {
       abortRef.current.abort();
       abortRef.current = null;
