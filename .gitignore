@@ -26,4 +26,5 @@ Thumbs.db
 *.db
 *.db-journal
 *.db-wal
-*.db-shm
+*.db-shm*.tsbuildinfo
+.codegraph/

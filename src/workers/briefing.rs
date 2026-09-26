@@ -139,6 +139,10 @@ mod tests {
             end_time: format!("{}T11:00:00Z", today),
             location: None,
             scope: "shared".into(),
+            category: "default".into(),
+            all_day: false,
+            rrule: None,
+            reminder_minutes_before: None,
             created_at: now.to_rfc3339(),
             updated_at: now.to_rfc3339(),
         };

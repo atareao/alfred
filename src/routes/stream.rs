@@ -71,11 +71,29 @@ pub async fn stream_message(
     let orchestrator = state.orchestrator.unwrap();
     let (tx, mut rx) = tokio::sync::mpsc::channel::<SSEEvent>(32);
 
+    // Resolve profile_id from the database instead of hardcoding "profile-1".
+    let profile = match crate::db::repos::profiles::ProfilesRepo::get_or_create(&state.db).await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to resolve profile");
+            let _ = tx
+                .send(SSEEvent::Error {
+                    message: format!("Failed to resolve profile: {}", e),
+                })
+                .await;
+            let stream =
+                futures::stream::once(
+                    async move { Ok::<_, Infallible>(Event::default().data("")) },
+                );
+            return Sse::new(Box::pin(stream));
+        }
+    };
+
     let content = query.content.clone();
     let browser_context = query.browser_context.clone();
     tokio::spawn(async move {
         if let Err(e) = orchestrator
-            .process_message_stream("profile-1", &content, browser_context, tx.clone())
+            .process_message_stream(&profile.id, &content, browser_context, tx.clone())
             .await
         {
             tracing::error!(error = %e, "❌ Orchestrator error, sending error to client");
@@ -157,6 +175,7 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::{Method, Request, StatusCode};
+    use std::sync::{Arc, Mutex};
     use tower::ServiceExt;
 
     // ------------------------------------------------------------------
@@ -290,6 +309,238 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    // ------------------------------------------------------------------
+    // Mock types for profile_id capture test
+    // ------------------------------------------------------------------
+
+    /// Spy tool that captures the profile_id received during execution.
+    struct ProfileIdCaptureTool {
+        captured_profile_id: Arc<Mutex<Option<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::tools::r#trait::Tool for ProfileIdCaptureTool {
+        fn name(&self) -> &'static str {
+            "capture_tool"
+        }
+
+        fn description(&self) -> &'static str {
+            "Tool that captures profile_id"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+
+        fn permission(&self) -> crate::tools::permission::Permission {
+            crate::tools::permission::Permission::NoConfirm
+        }
+
+        async fn execute(
+            &self,
+            args: serde_json::Value,
+        ) -> Result<crate::tools::r#trait::ToolResult, crate::tools::r#trait::ToolError> {
+            let pid = args
+                .get("profile_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            *self.captured_profile_id.lock().unwrap() = pid;
+            Ok(crate::tools::r#trait::ToolResult {
+                success: true,
+                data: serde_json::json!({"ok": true}),
+                message: None,
+            })
+        }
+    }
+
+    /// Mock LLM that returns a tool call on first invocation (without profile_id),
+    /// then plain text on subsequent calls.
+    struct MockLLMWithToolCallNoProfile {
+        call_count: Arc<Mutex<usize>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::llm::provider::LLMProvider for MockLLMWithToolCallNoProfile {
+        async fn chat(
+            &self,
+            _request: crate::llm::provider::ChatRequest,
+        ) -> Result<crate::llm::provider::ChatResponse, crate::llm::provider::LLMError> {
+            let mut count = self.call_count.lock().unwrap();
+            *count += 1;
+            if *count == 1 {
+                Ok(crate::llm::provider::ChatResponse {
+                    message: crate::llm::provider::ChatMessage {
+                        role: "assistant".into(),
+                        content: "Let me process that.".into(),
+                        tool_calls: Some(vec![crate::llm::provider::ToolCall {
+                            id: "call-1".into(),
+                            name: "capture_tool".into(),
+                            arguments: serde_json::json!({"some_arg": "value"}),
+                        }]),
+                        tool_result: None,
+                        tool_call_id: None,
+                    },
+                    usage: None,
+                })
+            } else {
+                Ok(crate::llm::provider::ChatResponse {
+                    message: crate::llm::provider::ChatMessage {
+                        role: "assistant".into(),
+                        content: "Done.".into(),
+                        tool_calls: None,
+                        tool_result: None,
+                        tool_call_id: None,
+                    },
+                    usage: None,
+                })
+            }
+        }
+
+        async fn chat_stream(
+            &self,
+            request: crate::llm::provider::ChatRequest,
+        ) -> Result<
+            Pin<
+                Box<
+                    dyn tokio_stream::Stream<
+                            Item = Result<
+                                crate::llm::provider::StreamEvent,
+                                crate::llm::provider::LLMError,
+                            >,
+                        > + Send,
+                >,
+            >,
+            crate::llm::provider::LLMError,
+        > {
+            let result = self.chat(request).await?;
+            let tool_calls = result.message.tool_calls.clone();
+            let mut events: Vec<
+                Result<crate::llm::provider::StreamEvent, crate::llm::provider::LLMError>,
+            > = Vec::new();
+            if let Some(tcs) = tool_calls {
+                for tc in tcs {
+                    events.push(Ok(crate::llm::provider::StreamEvent::ToolCall(tc)));
+                }
+            }
+            events.push(Ok(crate::llm::provider::StreamEvent::Done(result)));
+            let stream = futures::stream::iter(events);
+            Ok(Box::pin(stream))
+        }
+
+        async fn embed(&self, _input: &str) -> Result<Vec<f32>, crate::llm::provider::LLMError> {
+            Ok(vec![])
+        }
+    }
+
+    #[tokio::test]
+    async fn test_stream_profile_id_resolved_from_db() -> Result<(), Box<dyn std::error::Error>> {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+        // 1. Create in-memory DB and run migrations
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(":memory:")
+                    .create_if_missing(true),
+            )
+            .await?;
+        sqlx::migrate::Migrator::new(std::path::Path::new("migrations"))
+            .await
+            .unwrap()
+            .run(&pool)
+            .await
+            .unwrap();
+
+        // 2. INSERT a profile with known id that is NOT "profile-1"
+        let now = chrono::Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO profiles (id, name, avatar_url, preferences, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )
+        .bind("test-profile-real")
+        .bind("Test User")
+        .bind(Option::<String>::None)
+        .bind("{}")
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await?;
+
+        // 3. Create spy tool that captures profile_id
+        let captured_profile_id: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let mut registry = crate::tools::registry::ToolRegistry::new();
+        registry.register(Box::new(ProfileIdCaptureTool {
+            captured_profile_id: captured_profile_id.clone(),
+        }));
+        let registry = Arc::new(registry);
+
+        // 4. Create mock LLM and supporting components
+        let call_count = Arc::new(Mutex::new(0));
+        let llm = Arc::new(MockLLMWithToolCallNoProfile {
+            call_count: call_count.clone(),
+        });
+        let guardrails = Arc::new(crate::orchestrator::guardrails::Guardrails::new(
+            registry.clone(),
+        ));
+        let context_builder = Arc::new(crate::orchestrator::context_builder::ContextBuilder::new());
+        let config = crate::orchestrator::agent::OrchestratorConfig::default();
+
+        let orchestrator = Arc::new(crate::orchestrator::agent::Orchestrator::new(
+            llm,
+            registry.clone(),
+            guardrails.clone(),
+            context_builder,
+            config,
+            pool.clone(),
+            None,
+        ));
+
+        // 5. Build AppState
+        let state = crate::AppState {
+            db: pool,
+            orchestrator: Some(orchestrator),
+            guardrails: Some(guardrails),
+            tool_registry: Some(registry),
+            auth_config: None,
+            collapse_tx: None,
+        };
+
+        // 6. Build axum Router
+        let app = crate::app_with_state(state);
+
+        // 7. Send POST request to /api/chat/stream
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/chat/stream")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"content":"create an event for me"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // 8. Drain the SSE response body (this blocks until the stream ends)
+        let body = response.into_body();
+        let _bytes = axum::body::to_bytes(body, usize::MAX).await?;
+
+        // 9. Assert that the spy tool received "test-profile-real" as profile_id
+        //    — NOT "profile-1" (the hardcoded value).
+        let captured = captured_profile_id.lock().unwrap().clone();
+        assert_eq!(
+            captured.as_deref(),
+            Some("test-profile-real"),
+            "Profile_id should be 'test-profile-real' (from DB), not 'profile-1'. Got: {:?}",
+            captured
+        );
+
+        Ok(())
     }
 
     #[tokio::test]

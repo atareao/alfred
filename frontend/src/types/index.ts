@@ -81,3 +81,20 @@ export interface ChatInitResponse {
   messages: Message[];
   settings: Record<string, string>;
 }
+
+export interface CalendarEvent {
+  id: string;
+  profile_id: string;
+  title: string;
+  description?: string;
+  start_time: string;  // ISO 8601
+  end_time: string;
+  location?: string;
+  scope: 'shared' | 'personal';
+  category: 'default' | 'work' | 'personal' | 'health' | 'birthday' | 'holiday';
+  all_day: boolean;
+  rrule?: string;
+  reminder_minutes_before?: number;
+  created_at: string;
+  updated_at: string;
+}

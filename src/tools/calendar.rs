@@ -22,16 +22,28 @@ impl CalendarTool {
             .get("profile_id")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArguments("Missing profile_id".into()))?;
-        let start = args
-            .get("start")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidArguments("Missing start".into()))?;
-        let end = args
-            .get("end")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidArguments("Missing end".into()))?;
+        let (mut start, mut end) = match (
+            args.get("start").and_then(|v| v.as_str()),
+            args.get("end").and_then(|v| v.as_str()),
+        ) {
+            (Some(s), Some(e)) => (s.to_string(), e.to_string()),
+            _ => {
+                let date = args.get("date").and_then(|v| v.as_str()).ok_or_else(|| {
+                    ToolError::InvalidArguments("Missing date or start/end".into())
+                })?;
+                (format!("{}T00:00:00Z", date), format!("{}T23:59:59Z", date))
+            }
+        };
 
-        let events = EventsRepo::list_by_date_range(&self.db, profile_id, start, end).await?;
+        // Normalize bare dates (no time component) to full timestamps
+        if !start.contains('T') {
+            start = format!("{}T00:00:00Z", start);
+        }
+        if !end.contains('T') {
+            end = format!("{}T23:59:59Z", end);
+        }
+
+        let events = EventsRepo::list_by_date_range(&self.db, profile_id, &start, &end).await?;
 
         Ok(ToolResult {
             success: true,
@@ -106,6 +118,23 @@ impl CalendarTool {
                 .and_then(|v| v.as_str())
                 .unwrap_or("shared")
                 .to_string(),
+            category: args
+                .get("category")
+                .and_then(|v| v.as_str())
+                .unwrap_or("default")
+                .to_string(),
+            all_day: args
+                .get("all_day")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            rrule: args
+                .get("rrule")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            reminder_minutes_before: args
+                .get("reminder_minutes_before")
+                .and_then(|v| v.as_i64())
+                .map(|n| n as i32),
             created_at: now.clone(),
             updated_at: now,
         };
@@ -125,19 +154,73 @@ impl CalendarTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArguments("Missing id".into()))?;
 
-        EventsRepo::update(
+        if !EventsRepo::update(
             &self.db,
             id,
             args.get("title").and_then(|v| v.as_str()),
             args.get("description").and_then(|v| v.as_str()),
             args.get("location").and_then(|v| v.as_str()),
+            args.get("category").and_then(|v| v.as_str()),
+            args.get("all_day").and_then(|v| v.as_bool()),
+            args.get("rrule").and_then(|v| v.as_str()),
+            args.get("reminder_minutes_before")
+                .and_then(|v| v.as_i64())
+                .map(|n| n as i32),
+            args.get("start").and_then(|v| v.as_str()),
+            args.get("end").and_then(|v| v.as_str()),
         )
-        .await?;
+        .await?
+        {
+            return Err(ToolError::ExecutionError(format!(
+                "No event found with id: {}",
+                id
+            )));
+        }
+
+        let updated = EventsRepo::find_by_id(&self.db, id)
+            .await?
+            .ok_or_else(|| ToolError::ExecutionError(format!("Event not found after update: {}", id)))?;
 
         Ok(ToolResult {
             success: true,
-            data: serde_json::json!({"id": id}),
+            data: serde_json::to_value(&updated).unwrap_or_default(),
             message: Some("Event updated successfully".into()),
+        })
+    }
+
+    async fn delete_event(&self, args: Value) -> Result<ToolResult, ToolError> {
+        let id = args
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError::InvalidArguments("Missing id".into()))?;
+
+        let event = EventsRepo::find_by_id(&self.db, id)
+            .await?
+            .ok_or_else(|| ToolError::ExecutionError(format!("No event found with id: {}", id)))?;
+
+        EventsRepo::delete(&self.db, id).await?;
+
+        Ok(ToolResult {
+            success: true,
+            data: serde_json::to_value(&event).unwrap_or_default(),
+            message: Some("Event deleted successfully".into()),
+        })
+    }
+
+    async fn list_by_category(&self, args: Value) -> Result<ToolResult, ToolError> {
+        let profile_id = args
+            .get("profile_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError::InvalidArguments("Missing profile_id".into()))?;
+        let category = args
+            .get("category")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError::InvalidArguments("Missing category".into()))?;
+        let events = EventsRepo::list_by_category(&self.db, profile_id, category).await?;
+        Ok(ToolResult {
+            success: true,
+            data: serde_json::to_value(events).unwrap_or_default(),
+            message: None,
         })
     }
 }
@@ -149,7 +232,7 @@ impl Tool for CalendarTool {
     }
 
     fn description(&self) -> &'static str {
-        "Gestión de agenda: eventos, disponibilidad y calendario"
+        "Agenda y calendario — eventos, citas, reuniones, cumpleaños, disponibilidad y huecos libres"
     }
 
     fn parameters(&self) -> Value {
@@ -158,9 +241,15 @@ impl Tool for CalendarTool {
             "properties": {
                 "operation": {
                     "type": "string",
-                    "enum": ["get_events", "check_availability", "create_event", "update_event"]
+                    "enum": [
+                        "get_events",
+                        "check_availability",
+                        "create_event",
+                        "update_event",
+                        "delete_event",
+                        "list_by_category"
+                    ]
                 },
-                "profile_id": { "type": "string" },
                 "date": { "type": "string" },
                 "duration": { "type": "integer" },
                 "title": { "type": "string" },
@@ -169,7 +258,14 @@ impl Tool for CalendarTool {
                 "location": { "type": "string" },
                 "scope": { "type": "string", "enum": ["shared", "personal"] },
                 "id": { "type": "string" },
-                "description": { "type": "string" }
+                "description": { "type": "string" },
+                "category": {
+                    "type": "string",
+                    "enum": ["default", "work", "personal", "health", "birthday", "holiday"]
+                },
+                "all_day": { "type": "boolean" },
+                "rrule": { "type": "string" },
+                "reminder_minutes_before": { "type": "integer" }
             },
             "required": ["operation"]
         })
@@ -185,6 +281,8 @@ impl Tool for CalendarTool {
             "check_availability" => self.check_availability(args).await,
             "create_event" => self.create_event(args).await,
             "update_event" => self.update_event(args).await,
+            "delete_event" => self.delete_event(args).await,
+            "list_by_category" => self.list_by_category(args).await,
             op => Err(ToolError::InvalidArguments(format!(
                 "Unknown operation: {}",
                 op
@@ -215,6 +313,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_parameters_does_not_expose_profile_id() {
+        // Profile_id debe inyectarse desde el orquestador, NO desde el LLM
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let params = CalendarTool::parameters(&CalendarTool::new(pool));
+        let properties = params["properties"].as_object().unwrap();
+        assert!(
+            !properties.contains_key("profile_id"),
+            "profile_id NO debe estar en el schema expuesto al LLM"
+        );
+    }
+
+    #[tokio::test]
     async fn test_get_events_empty() -> Result<(), Box<dyn std::error::Error>> {
         let (_, tool) = setup().await?;
         let result = tool
@@ -228,6 +342,69 @@ mod tests {
             .unwrap();
         assert!(result.success);
         assert_eq!(result.data.as_array().unwrap().len(), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_events_with_date() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
+        // Create event
+        tool.execute(serde_json::json!({
+            "operation": "create_event",
+            "profile_id": "profile-1",
+            "title": "Test Event",
+            "start": "2026-09-24T10:00:00Z",
+            "end": "2026-09-24T11:00:00Z",
+            "scope": "shared"
+        }))
+        .await
+        .unwrap();
+
+        // Query with date (LLM-style) instead of start/end
+        let result = tool
+            .execute(serde_json::json!({
+                "operation": "get_events",
+                "profile_id": "profile-1",
+                "date": "2026-09-24"
+            }))
+            .await
+            .unwrap();
+        assert!(result.success);
+        let events = result.data.as_array().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["title"].as_str().unwrap(), "Test Event");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_events_with_bare_dates() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
+        // Create event at 10:00-11:00
+        tool.execute(serde_json::json!({
+            "operation": "create_event",
+            "profile_id": "profile-1",
+            "title": "Meeting",
+            "start": "2026-09-28T10:00:00Z",
+            "end": "2026-09-28T11:00:00Z",
+            "scope": "shared"
+        }))
+        .await
+        .unwrap();
+
+        // Query with bare dates (LLM-style: no time component)
+        let result = tool
+            .execute(serde_json::json!({
+                "operation": "get_events",
+                "profile_id": "profile-1",
+                "start": "2026-09-28",
+                "end": "2026-09-28"
+            }))
+            .await
+            .unwrap();
+        assert!(result.success);
+        let events = result.data.as_array().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["title"].as_str().unwrap(), "Meeting");
         Ok(())
     }
 
@@ -297,31 +474,62 @@ mod tests {
     #[tokio::test]
     async fn test_update_event() -> Result<(), Box<dyn std::error::Error>> {
         let (_, tool) = setup().await?;
-        // Create an event first
+        // Create an event on 2026-10-03
         let created = tool
             .execute(serde_json::json!({
                 "operation": "create_event",
                 "profile_id": "profile-1",
                 "title": "Original",
-                "start": "2026-09-24T10:00:00Z",
-                "end": "2026-09-24T11:00:00Z"
+                "start": "2026-10-03T10:00:00Z",
+                "end": "2026-10-03T11:00:00Z"
             }))
             .await
             .unwrap();
         let event_id = created.data["id"].as_str().unwrap().to_string();
 
-        // Update it
+        // Update it — move from 2026-10-03 to 2026-10-10
         let result = tool
             .execute(serde_json::json!({
                 "operation": "update_event",
                 "id": event_id,
-                "title": "Actualizado",
-                "location": "Oficina"
+                "title": "Moved",
+                "start": "2026-10-10T12:00:00Z",
+                "end": "2026-10-10T13:30:00Z"
             }))
             .await
             .unwrap();
         assert!(result.success);
         assert_eq!(result.data["id"], event_id);
+
+        // The old date should now have 0 events (the event was moved)
+        let old_date = tool
+            .execute(serde_json::json!({
+                "operation": "get_events",
+                "profile_id": "profile-1",
+                "date": "2026-10-03"
+            }))
+            .await
+            .unwrap();
+        let old_events = old_date.data.as_array().unwrap();
+        assert_eq!(
+            old_events.len(),
+            0,
+            "Event should have moved from 2026-10-03"
+        );
+
+        // The new date should have 1 event with the updated title
+        let new_date = tool
+            .execute(serde_json::json!({
+                "operation": "get_events",
+                "profile_id": "profile-1",
+                "date": "2026-10-10"
+            }))
+            .await
+            .unwrap();
+        let new_events = new_date.data.as_array().unwrap();
+        assert_eq!(new_events.len(), 1, "Event should now be on 2026-10-10");
+        assert_eq!(new_events[0]["title"], "Moved");
+
         Ok(())
     }
 
@@ -337,5 +545,355 @@ mod tests {
             .await;
         assert!(matches!(result, Err(ToolError::InvalidArguments(_))));
         Ok(())
+    }
+
+    // ── delete_event ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_delete_event() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
+        // Create an event
+        let created = tool
+            .execute(serde_json::json!({
+                "operation": "create_event",
+                "profile_id": "profile-1",
+                "title": "To Delete",
+                "start": "2026-09-24T10:00:00Z",
+                "end": "2026-09-24T11:00:00Z"
+            }))
+            .await
+            .unwrap();
+        let event_id = created.data["id"].as_str().unwrap().to_string();
+
+        // Delete it
+        let result = tool
+            .execute(serde_json::json!({
+                "operation": "delete_event",
+                "id": event_id
+            }))
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(result.data["id"], event_id);
+        assert_eq!(
+            result.message.as_deref(),
+            Some("Event deleted successfully")
+        );
+
+        // Verify it's gone
+        let events = tool
+            .execute(serde_json::json!({
+                "operation": "get_events",
+                "profile_id": "profile-1",
+                "start": "2026-09-24T00:00:00Z",
+                "end": "2026-09-24T23:59:59Z"
+            }))
+            .await
+            .unwrap();
+        assert_eq!(events.data.as_array().unwrap().len(), 0);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_delete_event_nonexistent() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
+        // Deleting a non-existent event should error
+        let result = tool
+            .execute(serde_json::json!({
+                "operation": "delete_event",
+                "id": "nonexistent-id"
+            }))
+            .await;
+        assert!(result.is_err());
+        Ok(())
+    }
+
+    // ── list_by_category ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_list_by_category() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
+
+        // Create work event
+        tool.execute(serde_json::json!({
+            "operation": "create_event",
+            "profile_id": "profile-1",
+            "title": "Work Meeting",
+            "start": "2026-09-24T10:00:00Z",
+            "end": "2026-09-24T11:00:00Z",
+            "category": "work"
+        }))
+        .await
+        .unwrap();
+
+        // Create personal event
+        tool.execute(serde_json::json!({
+            "operation": "create_event",
+            "profile_id": "profile-1",
+            "title": "Gym",
+            "start": "2026-09-24T18:00:00Z",
+            "end": "2026-09-24T19:00:00Z",
+            "category": "personal"
+        }))
+        .await
+        .unwrap();
+
+        // Create birthday event
+        tool.execute(serde_json::json!({
+            "operation": "create_event",
+            "profile_id": "profile-1",
+            "title": "Birthday Party",
+            "start": "2026-09-25T20:00:00Z",
+            "end": "2026-09-25T23:00:00Z",
+            "category": "birthday"
+        }))
+        .await
+        .unwrap();
+
+        // Filter by "work"
+        let result = tool
+            .execute(serde_json::json!({
+                "operation": "list_by_category",
+                "profile_id": "profile-1",
+                "category": "work"
+            }))
+            .await
+            .unwrap();
+        assert!(result.success);
+        let events = result.data.as_array().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["title"], "Work Meeting");
+
+        // Filter by "personal"
+        let result = tool
+            .execute(serde_json::json!({
+                "operation": "list_by_category",
+                "profile_id": "profile-1",
+                "category": "personal"
+            }))
+            .await
+            .unwrap();
+        assert!(result.success);
+        let events = result.data.as_array().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["title"], "Gym");
+
+        // Filter by "birthday"
+        let result = tool
+            .execute(serde_json::json!({
+                "operation": "list_by_category",
+                "profile_id": "profile-1",
+                "category": "birthday"
+            }))
+            .await
+            .unwrap();
+        assert!(result.success);
+        let events = result.data.as_array().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["title"], "Birthday Party");
+
+        // Filter by non-existent category returns empty
+        let result = tool
+            .execute(serde_json::json!({
+                "operation": "list_by_category",
+                "profile_id": "profile-1",
+                "category": "health"
+            }))
+            .await
+            .unwrap();
+        assert!(result.success);
+        let events = result.data.as_array().unwrap();
+        assert!(events.is_empty());
+
+        Ok(())
+    }
+
+    // ── create_event with all_day ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_create_event_with_all_day() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
+        let result = tool
+            .execute(serde_json::json!({
+                "operation": "create_event",
+                "profile_id": "profile-1",
+                "title": "All Day Event",
+                "start": "2026-09-24T00:00:00Z",
+                "end": "2026-09-24T23:59:59Z",
+                "all_day": true
+            }))
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(result.data["all_day"], true);
+        assert_eq!(result.data["title"], "All Day Event");
+        Ok(())
+    }
+
+    // ── create_event with rrule ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_create_event_with_rrule() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
+        let result = tool
+            .execute(serde_json::json!({
+                "operation": "create_event",
+                "profile_id": "profile-1",
+                "title": "Recurring Standup",
+                "start": "2026-09-24T09:00:00Z",
+                "end": "2026-09-24T09:30:00Z",
+                "rrule": "FREQ=DAILY"
+            }))
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(result.data["rrule"], "FREQ=DAILY");
+        assert_eq!(result.data["title"], "Recurring Standup");
+        Ok(())
+    }
+
+    // ── create_event with reminder_minutes_before ───────────────────────
+
+    #[tokio::test]
+    async fn test_create_event_with_reminder() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
+        let result = tool
+            .execute(serde_json::json!({
+                "operation": "create_event",
+                "profile_id": "profile-1",
+                "title": "With Reminder",
+                "start": "2026-09-24T15:00:00Z",
+                "end": "2026-09-24T16:00:00Z",
+                "reminder_minutes_before": 15
+            }))
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(result.data["reminder_minutes_before"], 15);
+        assert_eq!(result.data["title"], "With Reminder");
+        Ok(())
+    }
+
+    // ── create_event with specific category ─────────────────────────────
+
+    #[tokio::test]
+    async fn test_create_event_with_category() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
+        let result = tool
+            .execute(serde_json::json!({
+                "operation": "create_event",
+                "profile_id": "profile-1",
+                "title": "Health Checkup",
+                "start": "2026-09-25T09:00:00Z",
+                "end": "2026-09-25T10:00:00Z",
+                "category": "health"
+            }))
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(result.data["category"], "health");
+        assert_eq!(result.data["title"], "Health Checkup");
+
+        // Verify it appears in list_by_category
+        let list_result = tool
+            .execute(serde_json::json!({
+                "operation": "list_by_category",
+                "profile_id": "profile-1",
+                "category": "health"
+            }))
+            .await
+            .unwrap();
+        let events = list_result.data.as_array().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["title"], "Health Checkup");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_delete_event_missing_id() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
+        let result = tool
+            .execute(serde_json::json!({
+                "operation": "delete_event"
+                // missing id
+            }))
+            .await;
+        assert!(matches!(result, Err(ToolError::InvalidArguments(_))));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_list_by_category_missing_args() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
+        // Missing profile_id
+        let result = tool
+            .execute(serde_json::json!({
+                "operation": "list_by_category",
+                "category": "work"
+            }))
+            .await;
+        assert!(matches!(result, Err(ToolError::InvalidArguments(_))));
+
+        // Missing category
+        let result = tool
+            .execute(serde_json::json!({
+                "operation": "list_by_category",
+                "profile_id": "profile-1"
+            }))
+            .await;
+        assert!(matches!(result, Err(ToolError::InvalidArguments(_))));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_parameters_includes_new_operations() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let params = CalendarTool::parameters(&CalendarTool::new(pool));
+        let op_enum = params["properties"]["operation"]["enum"]
+            .as_array()
+            .unwrap();
+        let ops: Vec<&str> = op_enum.iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(ops.contains(&"delete_event"));
+        assert!(ops.contains(&"list_by_category"));
+    }
+
+    #[tokio::test]
+    async fn test_parameters_includes_new_fields() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let params = CalendarTool::parameters(&CalendarTool::new(pool));
+        let properties = params["properties"].as_object().unwrap();
+
+        // category field
+        let category = properties.get("category").unwrap();
+        assert_eq!(category["type"], "string");
+        let cat_enum = category["enum"].as_array().unwrap();
+        let cats: Vec<&str> = cat_enum.iter().map(|v| v.as_str().unwrap()).collect();
+        for expected in &[
+            "default", "work", "personal", "health", "birthday", "holiday",
+        ] {
+            assert!(cats.contains(expected), "missing category: {}", expected);
+        }
+
+        // all_day field
+        let all_day = properties.get("all_day").unwrap();
+        assert_eq!(all_day["type"], "boolean");
+
+        // rrule field
+        let rrule = properties.get("rrule").unwrap();
+        assert_eq!(rrule["type"], "string");
+
+        // reminder_minutes_before field
+        let reminder = properties.get("reminder_minutes_before").unwrap();
+        assert_eq!(reminder["type"], "integer");
     }
 }
