@@ -28,3 +28,4 @@ Thumbs.db
 *.db-wal
 *.db-shm*.tsbuildinfo
 .codegraph/
+*.tsbuildinfo

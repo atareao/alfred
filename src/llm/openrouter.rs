@@ -11,6 +11,11 @@ use super::provider::{
     ToolCall,
 };
 
+/// Application name sent to OpenRouter for identification.
+const APP_NAME: &str = "Alfred";
+/// Application URL sent to OpenRouter for identification.
+const APP_URL: &str = "https://github.com/atareao/alfred";
+
 /// Configuration for the OpenRouter LLM provider.
 #[derive(Debug, Clone)]
 pub struct OpenRouterConfig {
@@ -158,6 +163,8 @@ impl LLMProvider for OpenRouterProvider {
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.config.api_key))
             .header("Content-Type", "application/json")
+            .header("HTTP-Referer", APP_URL)
+            .header("X-Title", APP_NAME)
             .json(&body)
             .send()
             .await;
@@ -291,6 +298,8 @@ impl LLMProvider for OpenRouterProvider {
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.config.api_key))
             .header("Content-Type", "application/json")
+            .header("HTTP-Referer", APP_URL)
+            .header("X-Title", APP_NAME)
             .json(&body)
             .send()
             .await;
@@ -412,6 +421,8 @@ impl LLMProvider for OpenRouterProvider {
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.config.api_key))
             .header("Content-Type", "application/json")
+            .header("HTTP-Referer", APP_URL)
+            .header("X-Title", APP_NAME)
             .json(&body)
             .send()
             .await
@@ -617,6 +628,8 @@ pub fn parse_sse_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use wiremock::matchers::{any, method};
 
     fn make_response_body_with_tool_calls() -> Value {
         serde_json::json!({
@@ -1138,5 +1151,80 @@ mod tests {
             }
             other => panic!("Expected StreamEvent::Done, got {:?}", other),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // RED phase — OpenRouter application identification headers
+    //
+    // These tests will FAIL because the HTTP-Referer and X-Title headers are
+    // not yet being sent by OpenRouterProvider::chat(), chat_stream(), or
+    // embed().
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_chat_sends_app_headers() {
+        let mock_server = MockServer::start().await;
+
+        let config = OpenRouterConfig {
+            api_key: "test-key".into(),
+            model: "test-model".into(),
+            base_url: mock_server.uri(),
+            max_retries: 3,
+            timeout_secs: 60,
+        };
+        let provider = OpenRouterProvider::new(config);
+
+        let captured_headers = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let captured = captured_headers.clone();
+
+        Mock::given(any())
+            .and(method("POST"))
+            .respond_with(move |req: &wiremock::Request| {
+                let mut headers = captured.lock().unwrap();
+                *headers = Some(req.headers.clone());
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "choices": [{
+                        "message": {
+                            "content": "Hello"
+                        }
+                    }],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 5}
+                }))
+            })
+            .mount(&mock_server)
+            .await;
+
+        let request = ChatRequest {
+            model: "test-model".into(),
+            messages: vec![ChatMessage {
+                role: "user".into(),
+                content: "Hi".into(),
+                tool_calls: None,
+                tool_result: None,
+                tool_call_id: None,
+            }],
+            temperature: None,
+            max_tokens: None,
+            tools: None,
+            stream: false,
+        };
+
+        let _ = provider.chat(request).await;
+
+        let headers = captured_headers.lock().unwrap().take().expect("No headers captured");
+
+        // Check HTTP-Referer header
+        let referer = headers.get("HTTP-Referer")
+            .or_else(|| headers.get("http-referer"))
+            .or_else(|| headers.get("Http-Referer"))
+            .and_then(|v| v.to_str().ok());
+        assert_eq!(referer, Some("https://github.com/atareao/alfred"), "Missing or incorrect HTTP-Referer header");
+
+        // Check X-Title header
+        let title = headers.get("X-Title")
+            .or_else(|| headers.get("x-title"))
+            .or_else(|| headers.get("X-title"))
+            .and_then(|v| v.to_str().ok());
+        assert_eq!(title, Some("Alfred"), "Missing or incorrect X-Title header");
     }
 }

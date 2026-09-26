@@ -21,6 +21,15 @@ impl StreamAccumulator {
 }
 ```
 
+### Application Identification Headers
+
+```rust
+const APP_NAME: &str = "Alfred";
+const APP_URL: &str = "https://github.com/atareao/alfred";
+```
+
+Los métodos `chat()`, `chat_stream()` y `embed()` de `OpenRouterProvider` (en `src/llm/openrouter.rs`), así como `embed()` de `embeddings::OpenRouterProvider` (en `src/embeddings/openrouter.rs`), añaden los headers `HTTP-Referer` y `X-Title` a todas las peticiones HTTP a OpenRouter.
+
 ## Scenarios
 
 ### Scenario 1: finish_reason "tool_calls" without tool_calls in delta
@@ -54,3 +63,27 @@ impl StreamAccumulator {
 **Then** it returns `Ok(Some(StreamEvent::Done(...)))`  
 **And** the Done response contains usage information  
 **And** this is unchanged from current behavior
+
+### Scenario 5: chat() sends application identification headers
+
+**Given** un `OpenRouterProvider` configurado  
+**When** se llama a `chat()` con un `ChatRequest` válido  
+**Then** la petición HTTP incluye los headers `HTTP-Referer: https://github.com/atareao/alfred` y `X-Title: Alfred`
+
+### Scenario 6: chat_stream() sends application identification headers
+
+**Given** un `OpenRouterProvider` configurado  
+**When** se llama a `chat_stream()` con un `ChatRequest` válido  
+**Then** la petición HTTP incluye los headers `HTTP-Referer` y `X-Title`
+
+### Scenario 7: embed() (LLMProvider) sends application identification headers
+
+**Given** un `OpenRouterProvider` configurado  
+**When** se llama a `embed()` con un texto  
+**Then** la petición HTTP incluye los headers `HTTP-Referer` y `X-Title`
+
+### Scenario 8: embed() (EmbeddingProvider) sends application identification headers
+
+**Given** un `embeddings::OpenRouterProvider` configurado  
+**When** se llama a `embed()` con un texto  
+**Then** la petición HTTP incluye los headers `HTTP-Referer` y `X-Title`

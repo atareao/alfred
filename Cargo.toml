@@ -43,6 +43,7 @@ axum-test-helper = "0.4"
 futures = "0.3"
 serial_test = "3"
 tower = { version = "0.4", features = ["util"] }
+wiremock = "0.6"
 
 [[test]]
 name = "health"
