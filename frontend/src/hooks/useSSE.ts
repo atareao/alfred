@@ -6,6 +6,7 @@ export interface UseSSEOptions {
   onChunk?: (content: string) => void;
   onDone?: (messageId: string, userMessageId?: string) => void;
   onToolCall?: (name: string, args: unknown) => void;
+  onToolResult?: (name: string, success: boolean) => void;
   onError?: (message: string) => void;
   onApprovalRequired?: (requestId: string, toolName: string, reason: string) => void;
 }
@@ -90,6 +91,9 @@ export function useSSE() {
                   break;
                 case 'tool_call':
                   options.onToolCall?.(event.name || '', event.args);
+                  break;
+                case 'tool_result':
+                  options.onToolResult?.(event.name || '', event.success ?? false);
                   break;
                 case 'approval_required':
                   options.onApprovalRequired?.(

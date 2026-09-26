@@ -14,11 +14,9 @@ interface ChatViewProps {
 }
 
 export const ChatView: React.FC<ChatViewProps> = (props) => {
-  const { messages, loading, onSendMessage, streaming, streamingContent, activeTools, settings } = props;
+  const { messages, loading, onSendMessage, streaming, streamingContent, activeTools } = props;
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<MessageInputHandle>(null);
-
-  const fontSize = settings?.font_size ? parseInt(settings.font_size, 10) : 16;
 
   const allMessages = streaming && streamingContent
     ? [...messages, {
@@ -42,7 +40,7 @@ export const ChatView: React.FC<ChatViewProps> = (props) => {
   }, [streaming]);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 64px)', fontSize }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 64px)' }}>
       <div style={{ flex: 1, overflow: 'auto', padding: '16px 0', scrollBehavior: 'smooth' }}>
         {loading && <div>Cargando...</div>}
         {allMessages.map(msg => (

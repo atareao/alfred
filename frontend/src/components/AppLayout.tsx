@@ -1,9 +1,10 @@
-import React, { useState } from 'react';
-import { Layout, Typography, Button, Space } from 'antd';
-import { UserOutlined, SettingOutlined } from '@ant-design/icons';
+import React, { useState, useEffect } from 'react';
+import { Layout, Typography, Button, Space, Modal } from 'antd';
+import { UserOutlined, SettingOutlined, CalendarOutlined } from '@ant-design/icons';
 import { ChatView } from './ChatView';
 import { ProfileEditor } from './ProfileEditor';
 import { SettingsEditor } from './SettingsEditor';
+import { CalendarView } from './CalendarView';
 import { useMainChat } from '../hooks/useMainChat';
 import { useProfile } from '../hooks/useProfile';
 import { useSettings } from '../hooks/useSettings';
@@ -15,8 +16,15 @@ export const AppLayout: React.FC = () => {
   const mainChat = useMainChat();
   const profile = useProfile();
   const { settings } = useSettings();
+
+  // Apply font-size as CSS variable on root element
+  const fontSize = settings?.font_size ? parseInt(settings.font_size, 10) : 16;
+  useEffect(() => {
+    document.documentElement.style.setProperty('--font-size-base', `${fontSize}px`);
+  }, [fontSize]);
   const [profileVisible, setProfileVisible] = useState(false);
   const [settingsVisible, setSettingsVisible] = useState(false);
+  const [calendarVisible, setCalendarVisible] = useState(false);
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
@@ -26,6 +34,7 @@ export const AppLayout: React.FC = () => {
       }}>
         <Text strong style={{ color: '#fff', fontSize: 18 }}>💬 Alfred</Text>
         <Space>
+          <Button type="text" icon={<CalendarOutlined />} onClick={() => setCalendarVisible(true)} style={{ color: 'rgba(255,255,255,0.65)' }} />
           <Button type="text" icon={<UserOutlined />} onClick={() => setProfileVisible(true)} style={{ color: 'rgba(255,255,255,0.65)' }} />
           <Button type="text" icon={<SettingOutlined />} onClick={() => setSettingsVisible(true)} style={{ color: 'rgba(255,255,255,0.65)' }} />
         </Space>
@@ -41,6 +50,9 @@ export const AppLayout: React.FC = () => {
           settings={settings}
         />
       </Content>
+      <Modal title="📅 Agenda" open={calendarVisible} onCancel={() => setCalendarVisible(false)} footer={null} width={900}>
+        <CalendarView />
+      </Modal>
       <ProfileEditor profile={profile.profile} onUpdate={profile.updateProfile} visible={profileVisible} onClose={() => setProfileVisible(false)} />
       <SettingsEditor visible={settingsVisible} onClose={() => setSettingsVisible(false)} />
     </Layout>

@@ -21,11 +21,12 @@ vi.mock('../api/client', () => ({
 
 vi.mock('../hooks/useSSE', () => ({
   useSSE: vi.fn(() => ({
-    connect: vi.fn((_content: string, options: { onChunk?: (c: string) => void; onDone?: (...args: string[]) => void; onError?: (m: string) => void; onToolCall?: (name: string, args: unknown) => void }, browserContext?: unknown) => {
+    connect: vi.fn((_content: string, options: { onChunk?: (c: string) => void; onDone?: (...args: string[]) => void; onError?: (m: string) => void; onToolCall?: (name: string, args: unknown) => void; onToolResult?: (name: string, success: boolean) => void }, browserContext?: unknown) => {
       sseCallbacks.onChunk = options.onChunk;
       sseCallbacks.onDone = options.onDone;
       sseCallbacks.onError = options.onError;
       sseCallbacks.onToolCall = options.onToolCall;
+      sseCallbacks.onToolResult = options.onToolResult;
       capturedBrowserContext.current = browserContext;
     }),
     disconnect: vi.fn(),
@@ -197,5 +198,91 @@ describe('useMainChat', () => {
     });
 
     expect(result.current.activeTools).toContain('search');
+  });
+
+  // -----------------------------------------------------------------------
+  // dispatches events-changed on calendar tool result (not tool call)
+  // -----------------------------------------------------------------------
+  it('dispatches events-changed custom event on calendar tool result', async () => {
+    const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
+
+    const { result } = renderHook(() => useMainChat());
+
+    await vi.waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    }, { timeout: 3000 });
+
+    await act(async () => {
+      result.current.sendMessage('Hola');
+    });
+
+    // Simulate calendar tool result (success)
+    await act(async () => {
+      const toolResultFn = sseCallbacks.onToolResult as ((name: string, success: boolean) => void);
+      if (toolResultFn) toolResultFn('calendar', true);
+    });
+
+    expect(dispatchSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'events-changed',
+      })
+    );
+
+    dispatchSpy.mockRestore();
+  });
+
+  it('does NOT dispatch events-changed on failed calendar tool result', async () => {
+    const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
+
+    const { result } = renderHook(() => useMainChat());
+
+    await vi.waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    }, { timeout: 3000 });
+
+    await act(async () => {
+      result.current.sendMessage('Hola');
+    });
+
+    // Simulate calendar tool result with failure
+    await act(async () => {
+      const toolResultFn = sseCallbacks.onToolResult as ((name: string, success: boolean) => void);
+      if (toolResultFn) toolResultFn('calendar', false);
+    });
+
+    const eventsChangedCalls = dispatchSpy.mock.calls.filter(
+      (args) => (args[0] as CustomEvent).type === 'events-changed'
+    );
+    expect(eventsChangedCalls).toHaveLength(0);
+
+    dispatchSpy.mockRestore();
+  });
+
+  it('does NOT dispatch events-changed on non-calendar tool results', async () => {
+    const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
+
+    const { result } = renderHook(() => useMainChat());
+
+    await vi.waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    }, { timeout: 3000 });
+
+    await act(async () => {
+      result.current.sendMessage('Hola');
+    });
+
+    // Simulate a non-calendar tool result
+    await act(async () => {
+      const toolResultFn = sseCallbacks.onToolResult as ((name: string, success: boolean) => void);
+      if (toolResultFn) toolResultFn('search', true);
+    });
+
+    // dispatchEvent may have been called for other reasons, but never with 'events-changed'
+    const eventsChangedCalls = dispatchSpy.mock.calls.filter(
+      (args) => (args[0] as CustomEvent).type === 'events-changed'
+    );
+    expect(eventsChangedCalls).toHaveLength(0);
+
+    dispatchSpy.mockRestore();
   });
 });
