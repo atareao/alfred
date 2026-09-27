@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use serde_json::Value;
 use sqlx::SqlitePool;
 use uuid::Uuid;
@@ -22,28 +22,24 @@ impl CalendarTool {
             .get("profile_id")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArguments("Missing profile_id".into()))?;
-        let (mut start, mut end) = match (
-            args.get("start").and_then(|v| v.as_str()),
-            args.get("end").and_then(|v| v.as_str()),
-        ) {
-            (Some(s), Some(e)) => (s.to_string(), e.to_string()),
-            _ => {
-                let date = args.get("date").and_then(|v| v.as_str()).ok_or_else(|| {
-                    ToolError::InvalidArguments("Missing date or start/end".into())
-                })?;
-                (format!("{}T00:00:00Z", date), format!("{}T23:59:59Z", date))
-            }
-        };
+        let start = args
+            .get("start")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError::InvalidArguments("Missing start".into()))?;
+        let duration = args
+            .get("duration")
+            .and_then(|v| v.as_i64())
+            .ok_or_else(|| ToolError::InvalidArguments("Missing duration".into()))?;
 
-        // Normalize bare dates (no time component) to full timestamps
-        if !start.contains('T') {
-            start = format!("{}T00:00:00Z", start);
-        }
-        if !end.contains('T') {
-            end = format!("{}T23:59:59Z", end);
-        }
+        // Compute end = start + duration minutes
+        let start_dt = DateTime::parse_from_rfc3339(start)
+            .map_err(|_| ToolError::InvalidArguments("Invalid start format".into()))?
+            .with_timezone(&Utc);
+        let end_dt = start_dt + Duration::minutes(duration);
+        let end = end_dt.to_rfc3339_opts(SecondsFormat::Secs, true);
 
-        let events = EventsRepo::list_by_date_range(&self.db, profile_id, &start, &end).await?;
+        // Use start directly (no normalization needed since it's ISO 8601)
+        let events = EventsRepo::list_by_date_range(&self.db, profile_id, start, &end).await?;
 
         Ok(ToolResult {
             success: true,
@@ -57,14 +53,17 @@ impl CalendarTool {
             .get("profile_id")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArguments("Missing profile_id".into()))?;
-        let date = args
-            .get("date")
+        let start = args
+            .get("start")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidArguments("Missing date".into()))?;
+            .ok_or_else(|| ToolError::InvalidArguments("Missing start".into()))?;
         let duration = args
             .get("duration")
             .and_then(|v| v.as_i64())
             .ok_or_else(|| ToolError::InvalidArguments("Missing duration".into()))?;
+
+        // Extract date from start ISO 8601 string (first 10 chars: YYYY-MM-DD)
+        let date = &start[..10.min(start.len())];
 
         let slots = EventsRepo::find_free_slots(&self.db, profile_id, date, duration).await?;
 
@@ -93,10 +92,15 @@ impl CalendarTool {
             .get("start")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArguments("Missing start".into()))?;
-        let end = args
-            .get("end")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidArguments("Missing end".into()))?;
+        let duration = args
+            .get("duration")
+            .and_then(|v| v.as_i64())
+            .ok_or_else(|| ToolError::InvalidArguments("Missing duration".into()))?;
+        let start_dt = DateTime::parse_from_rfc3339(start)
+            .map_err(|_| ToolError::InvalidArguments("Invalid start format".into()))?
+            .with_timezone(&Utc);
+        let end_dt = start_dt + Duration::minutes(duration);
+        let end = end_dt.to_rfc3339_opts(SecondsFormat::Secs, true);
 
         let now = Utc::now().to_rfc3339();
         let event = Event {
@@ -154,6 +158,28 @@ impl CalendarTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArguments("Missing id".into()))?;
 
+        // Resolve end from duration only (end parameter removed)
+        let end_str: Option<String> = if let Some(dur) =
+            args.get("duration").and_then(|v| v.as_i64())
+        {
+            let effective_start = match args.get("start").and_then(|v| v.as_str()) {
+                Some(s) => s.to_string(),
+                None => {
+                    let current = EventsRepo::find_by_id(&self.db, id).await?.ok_or_else(|| {
+                        ToolError::ExecutionError(format!("No event found with id: {}", id))
+                    })?;
+                    current.start_time
+                }
+            };
+            let start_dt = DateTime::parse_from_rfc3339(&effective_start)
+                .map_err(|_| ToolError::InvalidArguments("Invalid start format".into()))?
+                .with_timezone(&Utc);
+            let end_dt = start_dt + Duration::minutes(dur);
+            Some(end_dt.to_rfc3339_opts(SecondsFormat::Secs, true))
+        } else {
+            None // No end change — EventsRepo::update handles None
+        };
+
         if !EventsRepo::update(
             &self.db,
             id,
@@ -167,7 +193,7 @@ impl CalendarTool {
                 .and_then(|v| v.as_i64())
                 .map(|n| n as i32),
             args.get("start").and_then(|v| v.as_str()),
-            args.get("end").and_then(|v| v.as_str()),
+            end_str.as_deref(),
         )
         .await?
         {
@@ -250,19 +276,14 @@ impl Tool for CalendarTool {
                         "list_by_category"
                     ]
                 },
-                "date": { "type": "string" },
-                "duration": { "type": "integer" },
-                "title": { "type": "string" },
-                "start": { "type": "string" },
-                "end": { "type": "string" },
-                "location": { "type": "string" },
+                "title": { "type": "string", "description": "Título del evento — obligatorio en create_event" },
+                "start": { "type": "string", "description": "ISO 8601. Inicio del evento/rango. Ej: 2026-09-26T21:00:00Z" },
+                "duration": { "type": "integer", "description": "Duración en minutos. Ej: 60 = 1h, 1440 = 1 día" },
+                "id": { "type": "string", "description": "ID del evento — obligatorio en update_event y delete_event" },
+                "category": { "type": "string", "enum": ["default", "work", "personal", "health", "birthday", "holiday"] },
                 "scope": { "type": "string", "enum": ["shared", "personal"] },
-                "id": { "type": "string" },
+                "location": { "type": "string" },
                 "description": { "type": "string" },
-                "category": {
-                    "type": "string",
-                    "enum": ["default", "work", "personal", "health", "birthday", "holiday"]
-                },
                 "all_day": { "type": "boolean" },
                 "rrule": { "type": "string" },
                 "reminder_minutes_before": { "type": "integer" }
@@ -336,7 +357,7 @@ mod tests {
                 "operation": "get_events",
                 "profile_id": "profile-1",
                 "start": "2026-09-24T00:00:00Z",
-                "end": "2026-09-24T23:59:59Z"
+                "duration": 1440
             }))
             .await
             .unwrap();
@@ -354,18 +375,19 @@ mod tests {
             "profile_id": "profile-1",
             "title": "Test Event",
             "start": "2026-09-24T10:00:00Z",
-            "end": "2026-09-24T11:00:00Z",
+            "duration": 60,
             "scope": "shared"
         }))
         .await
         .unwrap();
 
-        // Query with date (LLM-style) instead of start/end
+        // Query with start + duration instead of date
         let result = tool
             .execute(serde_json::json!({
                 "operation": "get_events",
                 "profile_id": "profile-1",
-                "date": "2026-09-24"
+                "start": "2026-09-24T00:00:00Z",
+                "duration": 1440
             }))
             .await
             .unwrap();
@@ -385,19 +407,19 @@ mod tests {
             "profile_id": "profile-1",
             "title": "Meeting",
             "start": "2026-09-28T10:00:00Z",
-            "end": "2026-09-28T11:00:00Z",
+            "duration": 60,
             "scope": "shared"
         }))
         .await
         .unwrap();
 
-        // Query with bare dates (LLM-style: no time component)
+        // Query with start + duration (was bare dates before)
         let result = tool
             .execute(serde_json::json!({
                 "operation": "get_events",
                 "profile_id": "profile-1",
-                "start": "2026-09-28",
-                "end": "2026-09-28"
+                "start": "2026-09-28T00:00:00Z",
+                "duration": 1440
             }))
             .await
             .unwrap();
@@ -416,9 +438,9 @@ mod tests {
                 "operation": "create_event",
                 "profile_id": "profile-1",
                 "title": "Reunión",
-                "start": "2026-09-24T10:00:00Z",
-                "end": "2026-09-24T11:00:00Z",
-                "scope": "shared"
+            "start": "2026-09-24T10:00:00Z",
+            "duration": 60,
+            "scope": "shared"
             }))
             .await
             .unwrap();
@@ -437,7 +459,7 @@ mod tests {
             "profile_id": "profile-1",
             "title": "Ocupado",
             "start": "2026-09-24T10:00:00Z",
-            "end": "2026-09-24T11:00:00Z"
+            "duration": 60
         }))
         .await
         .unwrap();
@@ -446,7 +468,7 @@ mod tests {
             .execute(serde_json::json!({
                 "operation": "check_availability",
                 "profile_id": "profile-1",
-                "date": "2026-09-24",
+                "start": "2026-09-24T00:00:00Z",
                 "duration": 30
             }))
             .await
@@ -481,20 +503,20 @@ mod tests {
                 "profile_id": "profile-1",
                 "title": "Original",
                 "start": "2026-10-03T10:00:00Z",
-                "end": "2026-10-03T11:00:00Z"
+                "duration": 60
             }))
             .await
             .unwrap();
         let event_id = created.data["id"].as_str().unwrap().to_string();
 
-        // Update it — move from 2026-10-03 to 2026-10-10
+        // Update it — move from 2026-10-03 to 2026-10-10, with 90min duration
         let result = tool
             .execute(serde_json::json!({
                 "operation": "update_event",
                 "id": event_id,
                 "title": "Moved",
                 "start": "2026-10-10T12:00:00Z",
-                "end": "2026-10-10T13:30:00Z"
+                "duration": 90
             }))
             .await
             .unwrap();
@@ -506,7 +528,8 @@ mod tests {
             .execute(serde_json::json!({
                 "operation": "get_events",
                 "profile_id": "profile-1",
-                "date": "2026-10-03"
+                "start": "2026-10-03T00:00:00Z",
+                "duration": 1440
             }))
             .await
             .unwrap();
@@ -522,7 +545,8 @@ mod tests {
             .execute(serde_json::json!({
                 "operation": "get_events",
                 "profile_id": "profile-1",
-                "date": "2026-10-10"
+                "start": "2026-10-10T00:00:00Z",
+                "duration": 1440
             }))
             .await
             .unwrap();
@@ -540,7 +564,7 @@ mod tests {
             .execute(serde_json::json!({
                 "operation": "create_event",
                 "profile_id": "profile-1"
-                // missing title, start, end
+                // missing title, start, duration
             }))
             .await;
         assert!(matches!(result, Err(ToolError::InvalidArguments(_))));
@@ -559,7 +583,7 @@ mod tests {
                 "profile_id": "profile-1",
                 "title": "To Delete",
                 "start": "2026-09-24T10:00:00Z",
-                "end": "2026-09-24T11:00:00Z"
+                "duration": 60
             }))
             .await
             .unwrap();
@@ -586,7 +610,7 @@ mod tests {
                 "operation": "get_events",
                 "profile_id": "profile-1",
                 "start": "2026-09-24T00:00:00Z",
-                "end": "2026-09-24T23:59:59Z"
+                "duration": 1440
             }))
             .await
             .unwrap();
@@ -621,7 +645,7 @@ mod tests {
             "profile_id": "profile-1",
             "title": "Work Meeting",
             "start": "2026-09-24T10:00:00Z",
-            "end": "2026-09-24T11:00:00Z",
+            "duration": 60,
             "category": "work"
         }))
         .await
@@ -633,7 +657,7 @@ mod tests {
             "profile_id": "profile-1",
             "title": "Gym",
             "start": "2026-09-24T18:00:00Z",
-            "end": "2026-09-24T19:00:00Z",
+            "duration": 60,
             "category": "personal"
         }))
         .await
@@ -645,7 +669,7 @@ mod tests {
             "profile_id": "profile-1",
             "title": "Birthday Party",
             "start": "2026-09-25T20:00:00Z",
-            "end": "2026-09-25T23:00:00Z",
+            "duration": 180,
             "category": "birthday"
         }))
         .await
@@ -720,7 +744,7 @@ mod tests {
                 "profile_id": "profile-1",
                 "title": "All Day Event",
                 "start": "2026-09-24T00:00:00Z",
-                "end": "2026-09-24T23:59:59Z",
+                "duration": 1439,
                 "all_day": true
             }))
             .await
@@ -742,7 +766,7 @@ mod tests {
                 "profile_id": "profile-1",
                 "title": "Recurring Standup",
                 "start": "2026-09-24T09:00:00Z",
-                "end": "2026-09-24T09:30:00Z",
+                "duration": 30,
                 "rrule": "FREQ=DAILY"
             }))
             .await
@@ -764,7 +788,7 @@ mod tests {
                 "profile_id": "profile-1",
                 "title": "With Reminder",
                 "start": "2026-09-24T15:00:00Z",
-                "end": "2026-09-24T16:00:00Z",
+                "duration": 60,
                 "reminder_minutes_before": 15
             }))
             .await
@@ -786,7 +810,7 @@ mod tests {
                 "profile_id": "profile-1",
                 "title": "Health Checkup",
                 "start": "2026-09-25T09:00:00Z",
-                "end": "2026-09-25T10:00:00Z",
+                "duration": 60,
                 "category": "health"
             }))
             .await
@@ -895,5 +919,79 @@ mod tests {
         // reminder_minutes_before field
         let reminder = properties.get("reminder_minutes_before").unwrap();
         assert_eq!(reminder["type"], "integer");
+    }
+
+    #[tokio::test]
+    async fn test_create_event_with_duration() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
+        let result = tool
+            .execute(serde_json::json!({
+                "operation": "create_event",
+                "profile_id": "profile-1",
+                "title": "Cena",
+                "start": "2026-09-26T21:00:00Z",
+                "duration": 120
+            }))
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(result.data["title"], "Cena");
+        assert_eq!(result.data["start_time"], "2026-09-26T21:00:00Z");
+        assert_eq!(result.data["end_time"], "2026-09-26T23:00:00Z");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_create_event_end_not_accepted() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
+        // end is no longer accepted in create_event
+        let result = tool
+            .execute(serde_json::json!({
+                "operation": "create_event",
+                "profile_id": "profile-1",
+                "title": "Test",
+                "start": "2026-09-27T10:00:00Z",
+                "end": "2026-09-27T11:00:00Z"
+            }))
+            .await;
+        assert!(matches!(result, Err(ToolError::InvalidArguments(_))));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_create_event_missing_duration() {
+        let (_, tool) = setup().await.unwrap();
+        let result = tool
+            .execute(serde_json::json!({
+                "operation": "create_event",
+                "profile_id": "profile-1",
+                "title": "Sin duración",
+                "start": "2026-09-26T21:00:00Z"
+            }))
+            .await;
+        assert!(result.is_err());
+        match result {
+            Err(ToolError::InvalidArguments(_)) => {}
+            _ => panic!("Expected InvalidArguments error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_event_duration_midnight_boundary() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (_, tool) = setup().await?;
+        let result = tool
+            .execute(serde_json::json!({
+                "operation": "create_event",
+                "profile_id": "profile-1",
+                "title": "Late night",
+                "start": "2026-09-26T23:00:00Z",
+                "duration": 90
+            }))
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(result.data["end_time"], "2026-09-27T00:30:00Z");
+        Ok(())
     }
 }
