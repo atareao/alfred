@@ -37,6 +37,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
   const [calendarVisible, setCalendarVisible] = useState(false);
   const [tasksVisible, setTasksVisible] = useState(false);
   const [statsVisible, setStatsVisible] = useState(false);
+  const [statsOpenKey, setStatsOpenKey] = useState(0);
 
   return (
     <Layout style={{ minHeight: "100vh" }}>
@@ -124,8 +125,11 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
         onCancel={() => setStatsVisible(false)}
         footer={null}
         width={1000}
+        afterOpenChange={(open) => {
+          if (open) setStatsOpenKey((k) => k + 1);
+        }}
       >
-        <StatsDashboard />
+        <StatsDashboard key={statsOpenKey} />
       </Modal>
       <SettingsDialog
         visible={settingsVisible}
