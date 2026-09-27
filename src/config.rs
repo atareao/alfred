@@ -103,7 +103,7 @@ impl Config {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(2000),
             collapse_model: env::var("COLLAPSE_MODEL")
-                .unwrap_or_else(|_| "mistralai/mistral-small".into()),
+                .unwrap_or_else(|_| "mistralai/mistral-small-24b-instruct-2501".into()),
 
             memory_batch_tokens: env::var("MEMORY_BATCH_TOKENS")
                 .ok()
@@ -122,7 +122,7 @@ impl Config {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(30),
             memory_model: env::var("MEMORY_MODEL")
-                .unwrap_or_else(|_| "mistralai/mistral-small".into()),
+                .unwrap_or_else(|_| "mistralai/mistral-small-24b-instruct-2501".into()),
             rag_budget_tokens: env::var("RAG_BUDGET_TOKENS")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -205,13 +205,19 @@ mod tests {
         assert_eq!(cfg.consolidation_time, "23:00");
         assert_eq!(cfg.travel_prep_days_before, 3);
         assert_eq!(cfg.collapse_threshold_tokens, 2000);
-        assert_eq!(cfg.collapse_model, "mistralai/mistral-small");
+        assert_eq!(
+            cfg.collapse_model,
+            "mistralai/mistral-small-24b-instruct-2501"
+        );
 
         assert_eq!(cfg.memory_batch_tokens, 2000);
         assert_eq!(cfg.memory_inactivity_minutes, 30);
         assert_eq!(cfg.memory_overlap, 2);
         assert_eq!(cfg.memory_poll_interval_minutes, 30);
-        assert_eq!(cfg.memory_model, "mistralai/mistral-small");
+        assert_eq!(
+            cfg.memory_model,
+            "mistralai/mistral-small-24b-instruct-2501"
+        );
         assert_eq!(cfg.rag_budget_tokens, 2000);
     }
 
@@ -371,7 +377,7 @@ mod tests {
         assert_eq!(cfg.collapse_threshold_tokens, 2000);
     }
 
-    /// When COLLAPSE_MODEL is not set, the default must be "mistralai/mistral-small".
+    /// When COLLAPSE_MODEL is not set, the default must be "mistralai/mistral-small-24b-instruct-2501".
     #[test]
     #[serial]
     fn test_config_collapse_model_default() {
@@ -410,6 +416,9 @@ mod tests {
         }
 
         let cfg = Config::from_env();
-        assert_eq!(cfg.collapse_model, "mistralai/mistral-small");
+        assert_eq!(
+            cfg.collapse_model,
+            "mistralai/mistral-small-24b-instruct-2501"
+        );
     }
 }

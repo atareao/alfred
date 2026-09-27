@@ -30,6 +30,18 @@ const APP_URL: &str = "https://github.com/atareao/alfred";
 
 Los métodos `chat()`, `chat_stream()` y `embed()` de `OpenRouterProvider` (en `src/llm/openrouter.rs`), así como `embed()` de `embeddings::OpenRouterProvider` (en `src/embeddings/openrouter.rs`), añaden los headers `HTTP-Referer` y `X-Title` a todas las peticiones HTTP a OpenRouter.
 
+### `parse_response` content extraction
+
+`OpenRouterProvider::parse_response()` extrae `content` del mensaje con la siguiente lógica:
+1. Si `message["content"]` es un string → se usa directamente.
+2. Si `message["content"]` es un array de partes (formato OpenAI multi-modal) → se concatenan todos los campos `text`.
+3. Si `message["content"]` es `null` → se usa string vacío.
+
+
+### `ChatRequest.model` SHALL be respected
+
+`OpenRouterProvider::chat()` y `chat_stream()` SHALL usar `request.model` cuando no esté vacío, y caer en `self.config.model` solo como fallback.
+
 ## Scenarios
 
 ### Scenario 1: finish_reason "tool_calls" without tool_calls in delta
@@ -87,3 +99,22 @@ Los métodos `chat()`, `chat_stream()` y `embed()` de `OpenRouterProvider` (en `
 **Given** un `embeddings::OpenRouterProvider` configurado  
 **When** se llama a `embed()` con un texto  
 **Then** la petición HTTP incluye los headers `HTTP-Referer` y `X-Title`
+
+### Scenario 9: parse_response handles content as array of parts
+
+**Given** a response body where `choices[0].message.content` is `[{"type":"text","text":"Part 1 "},{"type":"text","text":"part 2"}]`  
+**When** `parse_response()` processes it  
+**Then** the resulting `ChatResponse.message.content` SHALL be `"Part 1 part 2"`
+
+### Scenario 10: parse_response handles content as plain string
+
+**Given** a response body where `choices[0].message.content` is `"Hello"`  
+**When** `parse_response()` processes it  
+**Then** the resulting `ChatResponse.message.content` SHALL be `"Hello"`
+
+### Scenario 11: parse_response handles content as null
+
+**Given** a response body where `choices[0].message.content` is `null` and `tool_calls` is present  
+**When** `parse_response()` processes it  
+**Then** the resulting `ChatResponse.message.content` SHALL be `""`  
+**And** `tool_calls` SHALL be `Some(...)`
