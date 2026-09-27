@@ -29,7 +29,7 @@ impl CalendarTool {
         let duration = args
             .get("duration")
             .and_then(|v| v.as_i64())
-            .ok_or_else(|| ToolError::InvalidArguments("Missing duration".into()))?;
+            .unwrap_or(1440);
 
         // Compute end = start + duration minutes
         let start_dt = DateTime::parse_from_rfc3339(start)
@@ -278,7 +278,7 @@ impl Tool for CalendarTool {
                 },
                 "title": { "type": "string", "description": "Título del evento — obligatorio en create_event" },
                 "start": { "type": "string", "description": "ISO 8601. Inicio del evento/rango. Ej: 2026-09-26T21:00:00Z" },
-                "duration": { "type": "integer", "description": "Duración en minutos. Ej: 60 = 1h, 1440 = 1 día" },
+                "duration": { "type": "integer", "description": "Duración en minutos. Ej: 60 = 1h, 1440 = 1 día. Opcional en get_events (default: 1440)" },
                 "id": { "type": "string", "description": "ID del evento — obligatorio en update_event y delete_event" },
                 "category": { "type": "string", "enum": ["default", "work", "personal", "health", "birthday", "holiday"] },
                 "scope": { "type": "string", "enum": ["shared", "personal"] },
@@ -363,6 +363,27 @@ mod tests {
             .unwrap();
         assert!(result.success);
         assert_eq!(result.data.as_array().unwrap().len(), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_events_without_duration_defaults_to_1440min(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // LLM calls get_events with just start, no duration — should default to 1440min
+        let (_, tool) = setup().await?;
+        let result = tool
+            .execute(serde_json::json!({
+                "operation": "get_events",
+                "profile_id": "profile-1",
+                "start": "2026-09-27T00:00:00+02:00"
+                // no duration — should default to 1440
+            }))
+            .await;
+        assert!(
+            result.is_ok(),
+            "get_events sin duration debería funcionar con default 1440"
+        );
+        assert!(result.unwrap().success);
         Ok(())
     }
 
