@@ -140,6 +140,9 @@ mod tests {
                 usage: Some(TokenUsage {
                     prompt_tokens: 100,
                     completion_tokens: 50,
+                    cached_tokens: 0,
+                    reasoning_tokens: 0,
+                    cost: 0.0,
                 }),
             })
         }

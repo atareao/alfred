@@ -97,6 +97,9 @@ impl OpenRouterProvider {
 
         let prompt_tokens = body["usage"]["prompt_tokens"].as_u64().unwrap_or(0) as u32;
         let completion_tokens = body["usage"]["completion_tokens"].as_u64().unwrap_or(0) as u32;
+        let cached_tokens = body["usage"]["cached_tokens"].as_u64().unwrap_or(0) as u32;
+        let reasoning_tokens = body["usage"]["reasoning_tokens"].as_u64().unwrap_or(0) as u32;
+        let cost = body["usage"]["total_cost"].as_f64().unwrap_or(0.0);
 
         Ok(ChatResponse {
             message: ChatMessage {
@@ -109,6 +112,9 @@ impl OpenRouterProvider {
             usage: Some(super::provider::TokenUsage {
                 prompt_tokens,
                 completion_tokens,
+                cached_tokens,
+                reasoning_tokens,
+                cost,
             }),
         })
     }
@@ -664,9 +670,15 @@ pub fn parse_sse_event(
             if let Some(usage) = body.get("usage") {
                 let prompt_tokens = usage["prompt_tokens"].as_u64().unwrap_or(0) as u32;
                 let completion_tokens = usage["completion_tokens"].as_u64().unwrap_or(0) as u32;
+                let cached_tokens = usage["cached_tokens"].as_u64().unwrap_or(0) as u32;
+                let reasoning_tokens = usage["reasoning_tokens"].as_u64().unwrap_or(0) as u32;
+                let cost = usage["total_cost"].as_f64().unwrap_or(0.0);
                 acc.usage = Some(TokenUsage {
                     prompt_tokens,
                     completion_tokens,
+                    cached_tokens,
+                    reasoning_tokens,
+                    cost,
                 });
             }
 

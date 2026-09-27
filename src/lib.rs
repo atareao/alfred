@@ -189,7 +189,12 @@ impl AppState {
             .and_then(|v| v.parse().ok())
             .unwrap_or(2000);
         let context_builder = Arc::new(context_builder);
-        let orchestrator_config = crate::orchestrator::agent::OrchestratorConfig::default();
+        let model = std::env::var("OPENROUTER_MODEL")
+            .unwrap_or_else(|_| "anthropic/claude-sonnet-20241022".into());
+        let orchestrator_config = crate::orchestrator::agent::OrchestratorConfig {
+            model,
+            ..Default::default()
+        };
 
         let orchestrator = Arc::new(Orchestrator::new(
             llm_provider,

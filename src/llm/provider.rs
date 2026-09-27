@@ -57,6 +57,9 @@ pub struct ChatResponse {
 pub struct TokenUsage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
+    pub cached_tokens: u32,
+    pub reasoning_tokens: u32,
+    pub cost: f64,
 }
 
 /// Events emitted during streaming chat completions.

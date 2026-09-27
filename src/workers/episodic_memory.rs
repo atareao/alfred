@@ -652,6 +652,9 @@ mod tests {
                 usage: Some(TokenUsage {
                     prompt_tokens: 500,
                     completion_tokens: 200,
+                    cached_tokens: 0,
+                    reasoning_tokens: 0,
+                    cost: 0.0,
                 }),
             })
         }

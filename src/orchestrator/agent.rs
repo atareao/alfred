@@ -24,6 +24,7 @@ use uuid::Uuid;
 pub struct OrchestratorConfig {
     pub max_iterations: usize,
     pub max_tokens_per_turn: u32,
+    pub model: String,
     pub enable_reflection: bool,
     pub system_prompt_template: String,
 }
@@ -33,6 +34,7 @@ impl Default for OrchestratorConfig {
         Self {
             max_iterations: 10,
             max_tokens_per_turn: 4096,
+            model: "default".into(),
             enable_reflection: true,
             system_prompt_template:
                 "Eres Alfred, un mayordomo británico al servicio del caballero. \
@@ -352,7 +354,7 @@ impl Orchestrator {
             }
 
             let request = ChatRequest {
-                model: "default".into(),
+                model: self.config.model.clone(),
                 messages: messages.clone(),
                 tools: Some(self.registry.definitions()),
                 temperature: None,
@@ -368,7 +370,7 @@ impl Orchestrator {
                     let _ = StatsRepo::record_request(
                         &self.db,
                         &Uuid::new_v4().to_string(),
-                        "default",
+                        &self.config.model,
                         profile_id,
                         0,
                         0,
@@ -403,14 +405,22 @@ impl Orchestrator {
             let _ = StatsRepo::record_request(
                 &self.db,
                 &Uuid::new_v4().to_string(),
-                "default",
+                &self.config.model,
                 profile_id,
                 prompt_tokens,
                 completion_tokens,
                 total_tokens,
-                0,
-                0,
-                0.0,
+                response
+                    .usage
+                    .as_ref()
+                    .map(|u| u.cached_tokens as i64)
+                    .unwrap_or(0),
+                response
+                    .usage
+                    .as_ref()
+                    .map(|u| u.reasoning_tokens as i64)
+                    .unwrap_or(0),
+                response.usage.as_ref().map(|u| u.cost).unwrap_or(0.0),
                 Some(duration_ms),
                 "success",
                 None,
@@ -772,7 +782,7 @@ impl Orchestrator {
             tracing::debug!(iteration = %iterations, "ReAct loop iteration");
 
             let request = ChatRequest {
-                model: "default".into(),
+                model: self.config.model.clone(),
                 messages: messages.clone(),
                 tools: Some(self.registry.definitions()),
                 temperature: None,
@@ -827,14 +837,22 @@ impl Orchestrator {
                         let _ = StatsRepo::record_request(
                             &self.db,
                             &Uuid::new_v4().to_string(),
-                            "default",
+                            &self.config.model,
                             profile_id,
                             prompt_tokens,
                             completion_tokens,
                             total_tokens,
-                            0,
-                            0,
-                            0.0,
+                            response
+                                .usage
+                                .as_ref()
+                                .map(|u| u.cached_tokens as i64)
+                                .unwrap_or(0),
+                            response
+                                .usage
+                                .as_ref()
+                                .map(|u| u.reasoning_tokens as i64)
+                                .unwrap_or(0),
+                            response.usage.as_ref().map(|u| u.cost).unwrap_or(0.0),
                             None, // duration_ms
                             "success",
                             None,
@@ -2948,6 +2966,9 @@ mod tests {
                 usage: Some(TokenUsage {
                     prompt_tokens: 10,
                     completion_tokens: 5,
+                    cached_tokens: 0,
+                    reasoning_tokens: 0,
+                    cost: 0.0,
                 }),
             })
         }
