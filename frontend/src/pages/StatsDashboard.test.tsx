@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { StatsDashboard } from "./StatsDashboard";
 import { api } from "../api/client";
 
@@ -35,6 +35,13 @@ const mockDbSizes = [
   { table: "users", rows: 100 },
 ];
 
+const mockMemory = {
+  total_memories: 120,
+  total_tokens: 50000,
+  messages_total: 1000,
+  messages_indexed: 800,
+};
+
 vi.mock("../api/client", () => ({
   api: {
     getStatsSummary: vi.fn(),
@@ -50,7 +57,7 @@ vi.mock("../api/client", () => ({
 
 describe("StatsDashboard", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     Object.defineProperty(window, "matchMedia", {
       writable: true,
       value: vi.fn().mockImplementation((query: string) => ({
@@ -85,13 +92,21 @@ describe("StatsDashboard", () => {
     vi.mocked(api.getStatsTools).mockResolvedValue(mockTools);
     vi.mocked(api.getDbSizes).mockResolvedValue(mockDbSizes);
     vi.mocked(api.getRetention).mockResolvedValue({ days: 30 });
+    vi.mocked(api.getMemoryStats).mockResolvedValue(mockMemory);
 
     render(<StatsDashboard />);
 
-    // Wait for data to load
+    // Wait for data to load — Resumen tab is default active
     expect(await screen.findByText("LLM Usage Summary")).toBeInTheDocument();
+    expect(await screen.findByText("🧠 Memory")).toBeInTheDocument();
+
+    // Click "Modelos" tab and verify its content
+    fireEvent.click(screen.getByText("🤖 Modelos"));
     expect(await screen.findByText("Cost by Model")).toBeInTheDocument();
     expect(await screen.findByText("Daily Activity")).toBeInTheDocument();
+
+    // Click "Sistema" tab and verify its content
+    fireEvent.click(screen.getByText("⚙️ Sistema"));
     expect(await screen.findByText("Tool Usage")).toBeInTheDocument();
     expect(await screen.findByText("Database Sizes")).toBeInTheDocument();
     expect(await screen.findByText("Data Retention")).toBeInTheDocument();

@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Row, Col, Spin, Alert, Empty } from "antd";
+import { Row, Col, Spin, Alert, Empty, Tabs } from "antd";
 import { api } from "../api/client";
 import type { StatsSummary, ModelStats, DayStats, ToolStats, TableSize, MemoryStats } from "../types";
 import { SummaryCard } from "../components/stats/SummaryCard";
@@ -106,34 +106,60 @@ export const StatsDashboard: React.FC = () => {
 
   return (
     <div style={{ padding: 24 }}>
-      <Row gutter={[16, 16]}>
-        <Col span={24}>
-          <SummaryCard data={summary} loading={loading} />
-        </Col>
-        <Col span={24}>
-          <MemoryCard data={memory} loading={loading} />
-        </Col>
-        <Col xs={24} lg={12}>
-          <ModelChart data={byModel} loading={loading} />
-        </Col>
-        <Col xs={24} lg={12}>
-          <DailyChart
-            data={byDay}
-            loading={loading}
-            onRangeChange={handleRangeChange}
-            selectedDays={selectedDays}
-          />
-        </Col>
-        <Col xs={24} lg={8}>
-          <ToolsChart data={tools} loading={loading} />
-        </Col>
-        <Col xs={24} lg={8}>
-          <DbSizesTable data={dbSizes} loading={loading} />
-        </Col>
-        <Col xs={24} lg={8}>
-          <RetentionConfig />
-        </Col>
-      </Row>
+      <Tabs
+        items={[
+          {
+            key: "resumen",
+            label: "📊 Resumen",
+            children: (
+              <Row gutter={[16, 16]}>
+                <Col span={24}>
+                  <SummaryCard data={summary} loading={loading} />
+                </Col>
+                <Col span={24}>
+                  <MemoryCard data={memory} loading={loading} />
+                </Col>
+              </Row>
+            ),
+          },
+          {
+            key: "modelos",
+            label: "🤖 Modelos",
+            children: (
+              <Row gutter={[16, 16]}>
+                <Col xs={24} lg={12}>
+                  <ModelChart data={byModel} loading={loading} />
+                </Col>
+                <Col xs={24} lg={12}>
+                  <DailyChart
+                    data={byDay}
+                    loading={loading}
+                    onRangeChange={handleRangeChange}
+                    selectedDays={selectedDays}
+                  />
+                </Col>
+              </Row>
+            ),
+          },
+          {
+            key: "sistema",
+            label: "⚙️ Sistema",
+            children: (
+              <Row gutter={[16, 16]}>
+                <Col xs={24} lg={8}>
+                  <ToolsChart data={tools} loading={loading} />
+                </Col>
+                <Col xs={24} lg={8}>
+                  <DbSizesTable data={dbSizes} loading={loading} />
+                </Col>
+                <Col xs={24} lg={8}>
+                  <RetentionConfig />
+                </Col>
+              </Row>
+            ),
+          },
+        ]}
+      />
     </div>
   );
 };
