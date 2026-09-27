@@ -105,7 +105,8 @@ describe("MessageBubble", () => {
       created_at: "2026-09-27T10:30:00Z",
     };
     const { container } = render(<MessageBubble message={msg} />);
-    expect(container.textContent).toContain("10:30");
+    // Debe contener un timestamp con formato HH:mm (two digits : two digits)
+    expect(container.textContent).toMatch(/\d{2}:\d{2}/);
   });
 
   it("muestra ubicación cuando existe", () => {

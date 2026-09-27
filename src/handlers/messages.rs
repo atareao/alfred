@@ -43,10 +43,31 @@ pub async fn create_message(
         }) as Box<dyn Fn(String) + Send>
     });
 
-    let location = crate::db::repos::settings::SettingsRepo::get(&state.db, "location_name")
-        .await
-        .ok()
-        .flatten();
+    let location = if let Some(name) =
+        crate::db::repos::settings::SettingsRepo::get(&state.db, "location_name")
+            .await
+            .ok()
+            .flatten()
+    {
+        Some(name)
+    } else {
+        // Fall back to reverse geocoding from stored lat/lon
+        let lat = crate::db::repos::settings::SettingsRepo::get(&state.db, "latitude")
+            .await
+            .ok()
+            .flatten()
+            .and_then(|v| v.parse::<f64>().ok());
+        let lon = crate::db::repos::settings::SettingsRepo::get(&state.db, "longitude")
+            .await
+            .ok()
+            .flatten()
+            .and_then(|v| v.parse::<f64>().ok());
+        if let (Some(lat), Some(lon)) = (lat, lon) {
+            crate::tools::geo_utils::reverse_geocode(lat, lon).await
+        } else {
+            None
+        }
+    };
 
     let msg = crate::db::repos::messages::MessagesRepo::create(
         &state.db,

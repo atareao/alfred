@@ -107,6 +107,10 @@ pub async fn stream_message(
             }
             if let Some(ref loc) = ctx_clone.location_name {
                 let _ = SettingsRepo::set(&pool, "location_name", loc).await;
+            } else if let (Some(lat), Some(lon)) = (ctx_clone.latitude, ctx_clone.longitude) {
+                if let Some(address) = crate::tools::geo_utils::reverse_geocode(lat, lon).await {
+                    let _ = SettingsRepo::set(&pool, "location_name", &address).await;
+                }
             }
         });
     }
