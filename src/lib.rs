@@ -22,10 +22,12 @@ use tokio::sync::mpsc;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
+use crate::config::Config;
 use crate::orchestrator::agent::Orchestrator;
 use crate::orchestrator::context_builder::ContextBuilder;
 use crate::orchestrator::guardrails::Guardrails;
 use crate::tools::registry::ToolRegistry;
+use crate::workers::pool::WorkerPool;
 
 /// Shared application state with an async SQLite connection pool.
 #[derive(Clone)]
@@ -36,6 +38,7 @@ pub struct AppState {
     pub tool_registry: Option<Arc<ToolRegistry>>,
     pub auth_config: Option<crate::auth::AuthConfig>,
     pub collapse_tx: Option<mpsc::Sender<String>>,
+    pub memory_tx: Option<mpsc::Sender<()>>,
 }
 
 impl AppState {
@@ -64,6 +67,7 @@ impl AppState {
             tool_registry: None,
             auth_config: None,
             collapse_tx: None,
+            memory_tx: None,
         }
     }
 
@@ -94,6 +98,7 @@ impl AppState {
             tool_registry: None,
             auth_config: None,
             collapse_tx: None,
+            memory_tx: None,
         }
     }
 
@@ -101,9 +106,9 @@ impl AppState {
     /// initialised orchestrator, tool registry, guardrails, and auth config.
     ///
     /// This is the production entry point used by `main.rs`.
-    pub async fn new_with_orchestrator(db_path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    pub async fn new_with_orchestrator(config: &Config) -> Result<Self, Box<dyn std::error::Error>> {
         // 1. Open database connection pool
-        let pool = db::init_db(db_path).await?;
+        let pool = db::init_db(&config.database_url).await?;
 
         // 2. Create tool registry
         let mut tool_registry = ToolRegistry::new();
@@ -160,21 +165,32 @@ impl AppState {
                 Arc::new(crate::llm::ollama::OllamaProvider::new(config))
             };
 
-        // 5. Create orchestrator
-        let context_builder = Arc::new(ContextBuilder::new());
-        let config = crate::orchestrator::agent::OrchestratorConfig::default();
+        // 5.5 Create worker pool (collapse + memory workers)
+        let worker_pool = WorkerPool::start(pool.clone(), config, llm_provider.clone());
+        let collapse_tx = worker_pool.collapse_tx;
+        let memory_tx = worker_pool.memory_tx;
+
+        // 6. Create orchestrator
+        let mut context_builder = ContextBuilder::new();
+        context_builder.rag_budget_tokens = std::env::var("RAG_BUDGET_TOKENS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(2000);
+        let context_builder = Arc::new(context_builder);
+        let orchestrator_config = crate::orchestrator::agent::OrchestratorConfig::default();
 
         let orchestrator = Arc::new(Orchestrator::new(
             llm_provider,
             tool_registry.clone(),
             guardrails.clone(),
             context_builder,
-            config,
+            orchestrator_config,
             pool.clone(),
-            None,
+            collapse_tx.clone(),
+            memory_tx.clone(),
         ));
 
-        // 6. Create auth config from environment
+        // 7. Create auth config from environment
         let auth_config = crate::auth::AuthConfig {
             enabled: std::env::var("AUTH_ENABLED")
                 .map(|v| v == "true" || v == "1")
@@ -194,7 +210,8 @@ impl AppState {
             guardrails: Some(guardrails),
             tool_registry: Some(tool_registry),
             auth_config: Some(auth_config),
-            collapse_tx: None,
+            collapse_tx,
+            memory_tx,
         })
     }
 
@@ -232,15 +249,14 @@ impl AppState {
 
         // Memory used by delete_memory tests
         sqlx::query(
-            "INSERT OR IGNORE INTO memories (id, profile_id, content, category, source, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT OR IGNORE INTO memory (id, content, tokens_count, created_at, metadata)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
         )
         .bind("memory-id")
-        .bind("profile-id")
         .bind("Seeded memory")
-        .bind("general")
-        .bind("manual")
+        .bind(0i64)
         .bind(&now)
+        .bind("{}")
         .execute(pool)
         .await?;
 
@@ -352,6 +368,7 @@ pub async fn app() -> Router {
         tool_registry: None,
         auth_config: None,
         collapse_tx: None,
+        memory_tx: None,
     };
     app_with_state(state)
 }

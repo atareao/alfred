@@ -391,9 +391,11 @@ pub struct Orchestrator {
     pub config: OrchestratorConfig,
     pub db: SqlitePool,
     pub collapse_tx: Option<mpsc::Sender<String>>,
+    pub memory_tx: Option<mpsc::Sender<()>>,
 }
 
 impl Orchestrator {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         llm: Arc<dyn LLMProvider>,
         registry: Arc<ToolRegistry>,
@@ -402,6 +404,7 @@ impl Orchestrator {
         config: OrchestratorConfig,
         db: SqlitePool,
         collapse_tx: Option<mpsc::Sender<String>>,
+        memory_tx: Option<mpsc::Sender<()>>,
     ) -> Self {
         Self {
             llm,
@@ -412,6 +415,7 @@ impl Orchestrator {
             config,
             db,
             collapse_tx,
+            memory_tx,
         }
     }
 
@@ -829,6 +833,11 @@ impl Orchestrator {
             msg.id
         };
 
+        // Notify the episodic memory worker about the new user message
+        if let Some(ref tx) = self.memory_tx {
+            let _ = tx.send(()).await;
+        }
+
         'react_loop: loop {
             if iterations >= self.config.max_iterations {
                 tracing::error!(error = %AgentError::MaxIterationsExceeded, "❌ Orchestrator error");
@@ -1107,6 +1116,11 @@ impl Orchestrator {
                                 .await?;
                                 msg.id
                             };
+
+                            // Notify the episodic memory worker about the new assistant message
+                            if let Some(ref tx) = self.memory_tx {
+                                let _ = tx.send(()).await;
+                            }
 
                             let _ = tx
                                 .send(SSEEvent::Done {
@@ -1633,6 +1647,7 @@ mod tests {
             config,
             pool.clone(),
             None,
+            None,
         );
 
         // 4. Call process_message_stream (no conversation_id needed)
@@ -1772,6 +1787,7 @@ mod tests {
             config,
             pool.clone(),
             Some(collapse_tx),
+            None,
         );
 
         // 5. Call process_message_stream with a very long message (2000+ words for ~2660 tokens)
@@ -1791,6 +1807,241 @@ mod tests {
             }
             _ => {
                 panic!("Should have received message_id via collapse channel for long message");
+            }
+        }
+        Ok(())
+    }
+
+    /// Given an Orchestrator with memory_tx wired,
+    /// when process_message_stream persists a user message,
+    /// then a signal (()) SHOULD be sent on memory_tx.
+    ///
+    /// RED: This test will fail because the orchestrator does not yet
+    /// send signals through memory_tx after persisting messages.
+    #[tokio::test]
+    async fn test_orchestrator_sends_memory_signal_on_user_message(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // 1. Create in-memory SQLite pool and run migrations
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(":memory:")
+                    .create_if_missing(true),
+            )
+            .await?;
+        sqlx::migrate::Migrator::new(std::path::Path::new("migrations"))
+            .await
+            .unwrap()
+            .run(&pool)
+            .await
+            .unwrap();
+
+        // 2. Create a local mock LLM that returns plain text immediately
+        struct MemoryMockLLM;
+
+        #[async_trait::async_trait]
+        impl LLMProvider for MemoryMockLLM {
+            async fn chat(&self, _request: ChatRequest) -> Result<ChatResponse, LLMError> {
+                Ok(ChatResponse {
+                    message: ChatMessage {
+                        role: "assistant".into(),
+                        content: "Simple response for memory test.".into(),
+                        tool_calls: None,
+                        tool_result: None,
+                        tool_call_id: None,
+                    },
+                    usage: None,
+                })
+            }
+
+            async fn chat_stream(
+                &self,
+                request: ChatRequest,
+            ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, LLMError>> + Send>>, LLMError>
+            {
+                let result = self.chat(request).await?;
+                let content = result.message.content.clone();
+
+                let mut events: Vec<Result<StreamEvent, LLMError>> = Vec::new();
+                for chunk in content
+                    .chars()
+                    .collect::<Vec<_>>()
+                    .chunks(10)
+                    .map(|c| c.iter().collect::<String>())
+                {
+                    events.push(Ok(StreamEvent::Chunk(chunk)));
+                }
+                events.push(Ok(StreamEvent::Done(result)));
+
+                let stream = futures::stream::iter(events);
+                Ok(Box::pin(stream))
+            }
+
+            async fn embed(&self, _input: &str) -> Result<Vec<f32>, LLMError> {
+                Ok(vec![])
+            }
+        }
+
+        let llm = Arc::new(MemoryMockLLM);
+        let registry = Arc::new(ToolRegistry::new());
+        let guardrails = Arc::new(Guardrails::new(registry.clone()));
+        let context_builder = Arc::new(ContextBuilder::new());
+        let config = OrchestratorConfig::default();
+
+        // 3. Create memory_tx channel
+        let (memory_tx, mut memory_rx) = mpsc::channel::<()>(16);
+
+        let orchestrator = Orchestrator::new(
+            llm,
+            registry,
+            guardrails,
+            context_builder,
+            config,
+            pool.clone(),
+            None,
+            Some(memory_tx),
+        );
+
+        // 4. Call process_message_stream
+        let (tx, _rx) = mpsc::channel(100);
+        orchestrator
+            .process_message_stream("test-profile", "Hello", None, tx)
+            .await?;
+
+        // 5. Verify that memory_rx receives at least one signal
+        let received =
+            tokio::time::timeout(std::time::Duration::from_millis(500), memory_rx.recv()).await;
+
+        match received {
+            Ok(Some(())) => { /* expected: received signal */ }
+            _ => {
+                panic!(
+                    "Should have received () via memory_tx after persisting user message"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Given an Orchestrator with memory_tx wired,
+    /// when process_message_stream persists both user and assistant messages,
+    /// then TWO signals SHOULD be sent on memory_tx
+    /// (one for the user message, one for the assistant response).
+    ///
+    /// RED: This test will fail because the orchestrator does not yet
+    /// send signals through memory_tx after persisting messages.
+    #[tokio::test]
+    async fn test_orchestrator_sends_memory_signal_on_assistant_message(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // 1. Create in-memory SQLite pool and run migrations
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(":memory:")
+                    .create_if_missing(true),
+            )
+            .await?;
+        sqlx::migrate::Migrator::new(std::path::Path::new("migrations"))
+            .await
+            .unwrap()
+            .run(&pool)
+            .await
+            .unwrap();
+
+        // 2. Create a local mock LLM that returns plain text immediately
+        struct MemoryMockLLM;
+
+        #[async_trait::async_trait]
+        impl LLMProvider for MemoryMockLLM {
+            async fn chat(&self, _request: ChatRequest) -> Result<ChatResponse, LLMError> {
+                Ok(ChatResponse {
+                    message: ChatMessage {
+                        role: "assistant".into(),
+                        content: "Simple response for memory test.".into(),
+                        tool_calls: None,
+                        tool_result: None,
+                        tool_call_id: None,
+                    },
+                    usage: None,
+                })
+            }
+
+            async fn chat_stream(
+                &self,
+                request: ChatRequest,
+            ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, LLMError>> + Send>>, LLMError>
+            {
+                let result = self.chat(request).await?;
+                let content = result.message.content.clone();
+
+                let mut events: Vec<Result<StreamEvent, LLMError>> = Vec::new();
+                for chunk in content
+                    .chars()
+                    .collect::<Vec<_>>()
+                    .chunks(10)
+                    .map(|c| c.iter().collect::<String>())
+                {
+                    events.push(Ok(StreamEvent::Chunk(chunk)));
+                }
+                events.push(Ok(StreamEvent::Done(result)));
+
+                let stream = futures::stream::iter(events);
+                Ok(Box::pin(stream))
+            }
+
+            async fn embed(&self, _input: &str) -> Result<Vec<f32>, LLMError> {
+                Ok(vec![])
+            }
+        }
+
+        let llm = Arc::new(MemoryMockLLM);
+        let registry = Arc::new(ToolRegistry::new());
+        let guardrails = Arc::new(Guardrails::new(registry.clone()));
+        let context_builder = Arc::new(ContextBuilder::new());
+        let config = OrchestratorConfig::default();
+
+        // 3. Create memory_tx channel
+        let (memory_tx, mut memory_rx) = mpsc::channel::<()>(16);
+
+        let orchestrator = Orchestrator::new(
+            llm,
+            registry,
+            guardrails,
+            context_builder,
+            config,
+            pool.clone(),
+            None,
+            Some(memory_tx),
+        );
+
+        // 4. Call process_message_stream
+        let (tx, _rx) = mpsc::channel(100);
+        orchestrator
+            .process_message_stream("test-profile", "Hello", None, tx)
+            .await?;
+
+        // 5. Verify that memory_rx receives at least TWO signals
+        //    (user message + assistant response)
+        let signal1 =
+            tokio::time::timeout(std::time::Duration::from_millis(500), memory_rx.recv()).await;
+        let signal2 =
+            tokio::time::timeout(std::time::Duration::from_millis(500), memory_rx.recv()).await;
+
+        match signal1 {
+            Ok(Some(())) => { /* first signal received */ }
+            _ => {
+                panic!("Should have received first () via memory_tx (user message)");
+            }
+        }
+
+        match signal2 {
+            Ok(Some(())) => { /* second signal received */ }
+            _ => {
+                panic!(
+                    "Should have received second () via memory_tx (assistant response)"
+                );
             }
         }
         Ok(())
@@ -1961,6 +2212,7 @@ mod tests {
             context_builder,
             config,
             pool.clone(),
+            None,
             None,
         );
 
@@ -2215,6 +2467,7 @@ mod tests {
             config,
             pool.clone(),
             None,
+            None,
         );
 
         let (tx, mut rx) = mpsc::channel(100);
@@ -2401,6 +2654,7 @@ mod tests {
             config,
             pool.clone(),
             None,
+            None,
         );
 
         // 4. Call process_message (non-streaming) with profile-id
@@ -2467,6 +2721,7 @@ mod tests {
             context_builder,
             config,
             pool.clone(),
+            None,
             None,
         );
 
@@ -2636,6 +2891,7 @@ mod tests {
             context_builder,
             config.clone(),
             pool.clone(),
+            None,
             None,
         );
 
