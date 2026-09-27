@@ -92,8 +92,7 @@ pub async fn stream_message(
     let content = query.content.clone();
     let browser_context = query.browser_context.clone();
 
-    // Persist browser_context into settings: save fast fields inline,
-    // reverse geocode in background (HTTP call, potentially slow).
+    // Persist browser_context into settings (inline — reverse_geocode has internal cache)
     if let Some(ref ctx) = query.browser_context {
         use crate::db::repos::settings::SettingsRepo;
         let _ = SettingsRepo::set(&state.db, "timezone", &ctx.timezone).await;
@@ -103,19 +102,13 @@ pub async fn stream_message(
         if let Some(lon) = ctx.longitude {
             let _ = SettingsRepo::set(&state.db, "longitude", &lon.to_string()).await;
         }
-        // Reverse geocode in background if location_name not provided
-        let pool = state.db.clone();
-        let ctx_clone = ctx.clone();
-        tokio::spawn(async move {
-            if ctx_clone.location_name.is_none() {
-                if let (Some(lat), Some(lon)) = (ctx_clone.latitude, ctx_clone.longitude) {
-                    if let Some(address) = crate::tools::geo_utils::reverse_geocode(lat, lon).await
-                    {
-                        let _ = SettingsRepo::set(&pool, "location_name", &address).await;
-                    }
-                }
+        if let Some(ref loc) = ctx.location_name {
+            let _ = SettingsRepo::set(&state.db, "location_name", loc).await;
+        } else if let (Some(lat), Some(lon)) = (ctx.latitude, ctx.longitude) {
+            if let Some(address) = crate::tools::geo_utils::reverse_geocode(lat, lon).await {
+                let _ = SettingsRepo::set(&state.db, "location_name", &address).await;
             }
-        });
+        }
     }
 
     tokio::spawn(async move {
