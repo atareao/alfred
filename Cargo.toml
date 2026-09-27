@@ -27,6 +27,9 @@ futures = "0.3"
 async-stream = "0.3"
 url = "2"
 
+# Optional: sqlite-vec for vector search virtual table
+sqlite-vec = { version = "0.1", optional = true }
+
 [[bin]]
 name = "alfred"
 path = "src/main.rs"
@@ -36,7 +39,7 @@ name = "seed"
 path = "src/bin/seed.rs"
 
 [features]
-vec0 = []
+vec0 = ["sqlite-vec"]
 
 [dev-dependencies]
 axum-test-helper = "0.4"
