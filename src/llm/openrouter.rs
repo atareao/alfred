@@ -51,8 +51,24 @@ impl OpenRouterProvider {
     fn parse_response(body: &Value) -> Result<ChatResponse, LLMError> {
         let message = &body["choices"][0]["message"];
 
-        // `content` may be `null` when tool_calls are present → fall back to empty string.
-        let content = message["content"].as_str().unwrap_or("").to_string();
+        // `content` may be:
+        // - a plain string (most common),
+        // - an array of {type, text} parts (OpenAI multi-modal format), or
+        // - `null` when tool_calls are present.
+        // Handle all three cases robustly.
+        let content = message["content"]
+            .as_str()
+            .map(|s| s.to_string())
+            .or_else(|| {
+                message["content"].as_array().map(|parts| {
+                    parts
+                        .iter()
+                        .filter_map(|part| part["text"].as_str())
+                        .collect::<Vec<&str>>()
+                        .concat()
+                })
+            })
+            .unwrap_or_default();
 
         // Parse tool_calls if present.
         let tool_calls = message["tool_calls"].as_array().map(|calls| {
@@ -103,8 +119,15 @@ impl LLMProvider for OpenRouterProvider {
     async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, LLMError> {
         let url = format!("{}/chat/completions", self.config.base_url);
 
+        // Use request.model if it specifies a concrete model, otherwise fall back to provider config
+        // The orchestrator sends model: "default" as a placeholder meaning "use provider default"
+        let model = if request.model.is_empty() || request.model == "default" {
+            &self.config.model
+        } else {
+            &request.model
+        };
         let mut body = serde_json::json!({
-            "model": self.config.model,
+            "model": model,
             "messages": request.messages.iter().map(|m| {
                 let mut msg = serde_json::json!({
                     "role": m.role,
@@ -156,6 +179,25 @@ impl LLMProvider for OpenRouterProvider {
             model = %self.config.model,
             message_count = %request.messages.len(),
             "Sending request to OpenRouter"
+        );
+
+        // Log request content preview for debugging
+        let messages_preview: String = body["messages"]
+            .as_array()
+            .map(|msgs| {
+                msgs.iter()
+                    .filter_map(|m| m["content"].as_str())
+                    .collect::<Vec<&str>>()
+                    .join(" | ")
+                    .chars()
+                    .take(200)
+                    .collect()
+            })
+            .unwrap_or_default();
+        tracing::debug!(
+            model = %body["model"],
+            messages_preview = %messages_preview,
+            "OpenRouter request body preview"
         );
 
         let response = self
@@ -218,9 +260,24 @@ impl LLMProvider for OpenRouterProvider {
             .await
             .map_err(|e| LLMError::HttpError(format!("Failed to parse response: {}", e)))?;
 
+        // Log raw response body at trace level for debugging
+        let raw_json = serde_json::to_string(&response_body).unwrap_or_default();
+        tracing::trace!(
+            raw_response = %raw_json.chars().take(800).collect::<String>(),
+            "OpenRouter raw response body"
+        );
+
         let chat_response = Self::parse_response(&response_body)?;
 
+        // Log response content preview for debugging
+        let content_preview = chat_response
+            .message
+            .content
+            .chars()
+            .take(300)
+            .collect::<String>();
         tracing::debug!(
+            content_preview = %content_preview,
             content_len = %chat_response.message.content.len(),
             tool_calls = ?chat_response.message.tool_calls.as_ref().map(|t| t.len()),
             prompt_tokens = %chat_response.usage.as_ref().map(|u| u.prompt_tokens).unwrap_or(0),
@@ -237,9 +294,17 @@ impl LLMProvider for OpenRouterProvider {
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, LLMError>> + Send>>, LLMError> {
         let url = format!("{}/chat/completions", self.config.base_url);
 
+        // Use request.model if it specifies a concrete model, otherwise fall back to provider config
+        // The orchestrator sends model: "default" as a placeholder meaning "use provider default"
+        let model = if request.model.is_empty() || request.model == "default" {
+            &self.config.model
+        } else {
+            &request.model
+        };
+
         // Build request body with stream: true
         let mut body = serde_json::json!({
-            "model": self.config.model,
+            "model": model,
             "messages": request.messages.iter().map(|m| {
                 let mut msg = serde_json::json!({
                     "role": m.role,
@@ -1236,5 +1301,48 @@ mod tests {
             .or_else(|| headers.get("X-title"))
             .and_then(|v| v.to_str().ok());
         assert_eq!(title, Some("Alfred"), "Missing or incorrect X-Title header");
+    }
+
+    // -----------------------------------------------------------------------
+    // RED phase — content as array of content parts (OpenAI multi-modal format)
+    //
+    // These tests will FAIL because parse_response() uses
+    // message["content"].as_str() which returns None for arrays.
+    // -----------------------------------------------------------------------
+
+    fn make_response_body_with_content_array() -> Value {
+        serde_json::json!({
+            "choices": [{
+                "message": {
+                    "content": [
+                        {"type": "text", "text": "First part "},
+                        {"type": "text", "text": "second part"}
+                    ]
+                }
+            }],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 5
+            }
+        })
+    }
+
+    #[test]
+    fn test_openrouter_parses_content_array() {
+        let body = make_response_body_with_content_array();
+        let response = OpenRouterProvider::parse_response(&body)
+            .expect("parse_response should succeed with content array");
+
+        assert_eq!(
+            response.message.content, "First part second part",
+            "Content array parts should be concatenated into a single string. \
+             BUG: parse_response uses as_str() which returns None for arrays, \
+             so unwrap_or(\"\") produces empty string."
+        );
+
+        assert!(
+            response.usage.is_some(),
+            "Usage should be present when the response body has usage"
+        );
     }
 }

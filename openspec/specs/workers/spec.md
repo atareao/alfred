@@ -41,12 +41,12 @@ TBD - created by archiving change collapse-worker. Update Purpose after archive.
 **Given** `COLLAPSE_MODEL` env var  
 **When** `Config::from_env()` is called  
 **Then** `collapse_model` SHALL take the env var value  
-**And** SHALL default to `mistralai/mistral-small`
+**And** SHALL default to `mistralai/mistral-small-24b-instruct-2501`
 
 #### Scenario: Default collapse model
 **Given** no `COLLAPSE_MODEL` env var  
 **When** `Config::from_env()` is called  
-**Then** `collapse_model` SHALL be `"mistralai/mistral-small"`
+**Then** `collapse_model` SHALL be `"mistralai/mistral-small-24b-instruct-2501"`
 
 #### Scenario: Custom collapse model
 **Given** `COLLAPSE_MODEL` = `"google/gemini-2.0-flash-lite"`  
@@ -82,7 +82,7 @@ TBD - created by archiving change collapse-worker. Update Purpose after archive.
 **Given** `CollapseWorker::start()`
 **When** se invoca
 **Then** SHALL aceptar un parámetro `model: String`
-**And** SHALL usar ese modelo en `ChatRequest.model` en lugar del hardcodeado `"mistralai/mistral-small"`
+**And** SHALL usar ese modelo en `ChatRequest.model` en lugar del hardcodeado `"mistralai/mistral-small-24b-instruct-2501"`
 
 #### Scenario: Worker usa el modelo pasado como parámetro
 **Given** `model = "google/gemini-2.0-flash-lite"`
@@ -116,3 +116,83 @@ TBD - created by archiving change collapse-worker. Update Purpose after archive.
 **Given** un mensaje de asistente con 8000 chars
 **When** el orquestador lo persiste
 **Then** el message_id SHALL enviarse por el canal de collapse
+
+### Requirement: WorkerPool shutdown_tx SHALL be retained for application lifetime
+
+**Given** a `WorkerPool` is created in `new_with_orchestrator()`  
+**When** the pool finishes starting all workers  
+**Then** the `shutdown_tx` broadcast sender SHALL NOT be dropped  
+**And** all workers SHALL continue running until the application exits
+
+#### Scenario: Workers survive beyond scope of new_with_orchestrator
+**Given** `WorkerPool::start()` is called in `new_with_orchestrator`  
+**When** the function returns the `AppState`  
+**Then** all workers SHALL still be running (no "shutting down" log emitted)  
+**And** `shutdown_tx` SHALL be retained in `AppState`
+
+#### Scenario: Worker pool runs on startup
+**Given** Alfred is started  
+**When** the server begins listening  
+**Then** the Briefing worker SHALL still be running  
+**And** the Conflict-detector worker SHALL still be running  
+**And** the Travel-prep worker SHALL still be running  
+**And** the Memory-consolidator worker SHALL still be running  
+**And** the Collapse worker SHALL still be running  
+**And** the EpisodicMemoryWorker SHALL still be running
+
+### Requirement: Briefing worker SHALL generate daily briefing on each tick
+
+**Given** the `WorkerPool` is started  
+**When** the briefing worker ticks (every 60s)  
+**Then** it SHALL instantiate `BriefingWorker::new(db, None)`  
+**And** SHALL call `generate()`  
+**And** SHALL log the generated briefing at `info` level  
+**And** SHALL log any error at `error` level
+
+#### Scenario: Briefing worker generates briefing on tick
+**Given** a running WorkerPool  
+**When** the briefing interval fires  
+**Then** `BriefingWorker::generate()` is called  
+**And** the result is logged
+
+### Requirement: Conflict-detector worker SHALL check for scheduling conflicts
+
+**Given** the `WorkerPool` is started  
+**When** the conflict-detector worker ticks (every 120s)  
+**Then** it SHALL query the first available profile from the database  
+**And** SHALL call `ConflictDetector::check_date(profile_id, today)`  
+**And** SHALL log any alerts found (Critical or Warning)
+
+#### Scenario: Conflict-detector logs alerts on tick
+**Given** a running WorkerPool with events in the database  
+**When** the conflict-detector interval fires  
+**Then** `ConflictDetector::check_date()` is called  
+**And** any conflict alerts are logged
+
+### Requirement: Travel-prep worker SHALL prepare trip suggestions
+
+**Given** the `WorkerPool` is started  
+**When** the travel-prep worker ticks (every 300s)  
+**Then** it SHALL query events with non-empty locations in the next 3 days  
+**And** SHALL call `TravelPrepWorker::prepare_for_trip(title, location)` for each  
+**And** SHALL log the preparation suggestions
+
+#### Scenario: Travel-prep worker processes upcoming trips
+**Given** a running WorkerPool with events that have locations  
+**When** the travel-prep interval fires  
+**Then** events with locations in the next 3 days are found  
+**And** `prepare_for_trip()` is called for each  
+**And** the suggestions are logged
+
+### Requirement: EpisodicMemoryWorker SHALL rate-limit LLM retries after parse failure
+
+**Given** the worker calls `call_llm()` and receives `None` (unparseable response)  
+**When** `evaluate()` is called again within the cooldown window (half of poll_interval, min 30s)  
+**Then** the worker SHALL skip the LLM call  
+**And** SHALL log a warning that the unindexed messages are still pending
+
+#### Scenario: Consecutive evaluations skip LLM after failure
+**Given** a batch of unindexed messages that failed LLM parsing  
+**When** `evaluate()` is called again within the cooldown window  
+**Then** the LLM call SHALL be skipped  
+**And** a warning is logged with the unindexed count

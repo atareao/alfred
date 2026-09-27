@@ -1,6 +1,10 @@
 use crate::config::Config;
+use crate::db::repos::events::EventsRepo;
 use crate::db::DbPool;
+use crate::workers::briefing::BriefingWorker;
+use crate::workers::conflict_detector::ConflictDetector;
 use crate::workers::episodic_memory::{EpisodicMemoryConfig, EpisodicMemoryWorker};
+use crate::workers::travel_prep::TravelPrepWorker;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
@@ -21,7 +25,7 @@ pub struct WorkerPool {
     pub collapse_tx: Option<mpsc::Sender<String>>,
     pub memory: Option<JoinHandle<()>>,
     pub memory_tx: Option<mpsc::Sender<()>>,
-    shutdown_tx: Option<broadcast::Sender<()>>,
+    pub shutdown_tx: Option<broadcast::Sender<()>>,
 }
 
 impl WorkerPool {
@@ -42,8 +46,15 @@ impl WorkerPool {
                 loop {
                     tokio::select! {
                         _ = interval.tick() => {
-                            tracing::info!("[WorkerPool] Briefing worker tick");
-                            let _ = &db;
+                            let worker = BriefingWorker::new(db.clone(), None);
+                            match worker.generate().await {
+                                Ok(briefing) => {
+                                    tracing::info!("[BriefingWorker] Daily briefing:\n{}", briefing);
+                                }
+                                Err(e) => {
+                                    tracing::error!("[BriefingWorker] Failed to generate briefing: {}", e);
+                                }
+                            }
                         }
                         _ = shutdown_rx.recv() => {
                             tracing::info!("[WorkerPool] Briefing worker shutting down");
@@ -63,8 +74,41 @@ impl WorkerPool {
                 loop {
                     tokio::select! {
                         _ = interval.tick() => {
-                            tracing::info!("[WorkerPool] Conflict-detector worker tick");
-                            let _ = &db;
+                            // Get first available profile
+                            let profile_id = match sqlx::query_scalar::<_, String>("SELECT id FROM profiles LIMIT 1")
+                                .fetch_optional(&db)
+                                .await
+                            {
+                                Ok(Some(id)) => id,
+                                Ok(None) => {
+                                    tracing::warn!("[ConflictDetector] No profiles found");
+                                    return;
+                                }
+                                Err(e) => {
+                                    tracing::error!("[ConflictDetector] Failed to query profile: {}", e);
+                                    return;
+                                }
+                            };
+
+                            let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+                            let detector = ConflictDetector::new(db.clone());
+                            match detector.check_date(&profile_id, &today).await {
+                                Ok(alerts) => {
+                                    if alerts.is_empty() {
+                                        tracing::info!("[ConflictDetector] No conflicts found for today");
+                                    } else {
+                                        for alert in &alerts {
+                                            tracing::info!(
+                                                "[ConflictDetector] Conflict: {:?} between '{}' and '{}' (gap: {} min)",
+                                                alert.severity, alert.event_a.title, alert.event_b.title, alert.gap_minutes
+                                            );
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::error!("[ConflictDetector] Error: {}", e);
+                                }
+                            }
                         }
                         _ = shutdown_rx.recv() => {
                             tracing::info!("[WorkerPool] Conflict-detector worker shutting down");
@@ -84,8 +128,53 @@ impl WorkerPool {
                 loop {
                     tokio::select! {
                         _ = interval.tick() => {
-                            tracing::info!("[WorkerPool] Travel-prep worker tick");
-                            let _ = &db;
+                            let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+                            let three_days = (chrono::Utc::now() + chrono::Duration::days(3))
+                                .format("%Y-%m-%d")
+                                .to_string();
+
+                            let profile_id = match sqlx::query_scalar::<_, String>("SELECT id FROM profiles LIMIT 1")
+                                .fetch_optional(&db)
+                                .await
+                            {
+                                Ok(Some(id)) => id,
+                                Ok(None) => {
+                                    tracing::warn!("[TravelPrep] No profiles found");
+                                    return;
+                                }
+                                Err(e) => {
+                                    tracing::error!("[TravelPrep] Failed to query profile: {}", e);
+                                    return;
+                                }
+                            };
+
+                            match EventsRepo::list_by_date_range(&db, &profile_id, &today, &three_days).await {
+                                Ok(events) => {
+                                    let trip_events: Vec<_> = events.into_iter()
+                                        .filter(|e| e.location.as_deref().map(|l| !l.is_empty()).unwrap_or(false))
+                                        .collect();
+
+                                    if trip_events.is_empty() {
+                                        tracing::info!("[TravelPrep] No upcoming trips found in next 3 days");
+                                    } else {
+                                        let prep_worker = TravelPrepWorker::new(db.clone(), 3);
+                                        for event in &trip_events {
+                                            let location = event.location.as_deref().unwrap_or("");
+                                            match prep_worker.prepare_for_trip(&event.title, location) {
+                                                Ok(prep) => {
+                                                    tracing::info!("[TravelPrep] Trip preparation for '{}':\n{}", event.title, prep);
+                                                }
+                                                Err(e) => {
+                                                    tracing::error!("[TravelPrep] Error preparing trip '{}': {}", event.title, e);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::error!("[TravelPrep] Error querying events: {}", e);
+                                }
+                            }
                         }
                         _ = shutdown_rx.recv() => {
                             tracing::info!("[WorkerPool] Travel-prep worker shutting down");
@@ -446,5 +535,154 @@ mod tests {
         );
 
         pool_workers.shutdown().await;
+    }
+
+    /// Sanity check: `shutdown_tx` is publicly accessible and is `Some`
+    /// immediately after `WorkerPool::start()`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_worker_pool_shutdown_tx_accessible() {
+        let db = test_db().await;
+        let config = test_config();
+        let mut pool = WorkerPool::start(db, &config, test_llm_provider());
+
+        assert!(
+            pool.shutdown_tx.is_some(),
+            "shutdown_tx should be Some after WorkerPool::start()"
+        );
+
+        pool.shutdown().await;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // RED tests — prove placeholders do NOT call real worker impls
+    // ═══════════════════════════════════════════════════════════════════
+    //
+    // These tests will FAIL to compile (RED) because `BriefingWorker`,
+    // `ConflictDetector`, and `TravelPrepWorker` are not imported anywhere
+    // in `pool.rs`. The GREEN phase will add the imports AND wire the real
+    // workers into the tick handlers.
+
+    /// [RED] Prove BriefingWorker is not wired into the pool.
+    ///
+    /// References `BriefingWorker::new()` and `generate()` directly.
+    /// This will fail to compile because `BriefingWorker` is not imported
+    /// in pool.rs — the placeholder only logs "tick".
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_pool_briefing_worker_accessible() {
+        let db = test_db().await;
+
+        // Seed a profile so BriefingWorker::generate() can query the DB
+        sqlx::query(
+            "INSERT INTO profiles (id, name, preferences) VALUES ('profile-id', 'Test', '{}')",
+        )
+        .execute(&db)
+        .await
+        .expect("Failed to seed profile");
+
+        // This line will fail to compile: `BriefingWorker` is not in scope.
+        // The pool's briefing placeholder calls `let _ = &db;` instead of
+        // instantiating BriefingWorker and calling generate().
+        let worker = BriefingWorker::new(db, None);
+        let result = worker.generate().await;
+        assert!(result.is_ok(), "BriefingWorker::generate() should succeed");
+    }
+
+    /// [RED] Prove ConflictDetector is not wired into the pool.
+    ///
+    /// References `ConflictDetector::new()` and `check_date()` directly.
+    /// Will fail to compile because `ConflictDetector` is not imported.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_pool_conflict_detector_accessible() {
+        let db = test_db().await;
+
+        // Seed a profile so ConflictDetector::check_date() can query events
+        sqlx::query(
+            "INSERT INTO profiles (id, name, preferences, created_at, updated_at)
+             VALUES ('profile-1', 'Test', '{}', '2026-09-24T00:00:00Z', '2026-09-24T00:00:00Z')",
+        )
+        .execute(&db)
+        .await
+        .expect("Failed to seed profile");
+
+        // Insert two overlapping events so check_date() returns a Critical alert
+        sqlx::query(
+            "INSERT INTO events (id, profile_id, title, description, start_time, end_time,
+                                 location, scope, category, all_day, rrule,
+                                 reminder_minutes_before, created_at, updated_at)
+             VALUES ('evt-a', 'profile-1', 'Event A', '', '2026-09-24T09:00:00', '2026-09-24T10:30:00',
+                     NULL, 'personal', 'default', 0, NULL, NULL,
+                     '2026-09-24T00:00:00Z', '2026-09-24T00:00:00Z')",
+        )
+        .execute(&db)
+        .await
+        .expect("Failed to seed event A");
+
+        sqlx::query(
+            "INSERT INTO events (id, profile_id, title, description, start_time, end_time,
+                                 location, scope, category, all_day, rrule,
+                                 reminder_minutes_before, created_at, updated_at)
+             VALUES ('evt-b', 'profile-1', 'Event B', '', '2026-09-24T10:00:00', '2026-09-24T11:00:00',
+                     NULL, 'personal', 'default', 0, NULL, NULL,
+                     '2026-09-24T00:00:00Z', '2026-09-24T00:00:00Z')",
+        )
+        .execute(&db)
+        .await
+        .expect("Failed to seed event B");
+
+        // This line will fail to compile: `ConflictDetector` is not in scope.
+        // The pool's conflict-detector placeholder calls `let _ = &db;` instead.
+        let detector = ConflictDetector::new(db);
+        let alerts = detector.check_date("profile-1", "2026-09-24").await;
+        assert!(
+            alerts.is_ok(),
+            "ConflictDetector::check_date() should succeed"
+        );
+        let alerts = alerts.unwrap();
+        assert!(
+            !alerts.is_empty(),
+            "Overlapping events should produce alerts"
+        );
+    }
+
+    /// [RED] Prove TravelPrepWorker is not wired into the pool.
+    ///
+    /// References `TravelPrepWorker::new()` and `find_upcoming_trips()` directly.
+    /// Will fail to compile because `TravelPrepWorker` is not imported.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_pool_travel_prep_accessible() {
+        let db = test_db().await;
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+
+        // Seed a profile
+        sqlx::query(
+            "INSERT INTO profiles (id, name, preferences) VALUES ('profile-1', 'Test', '{}')",
+        )
+        .execute(&db)
+        .await
+        .expect("Failed to seed profile");
+
+        // Insert an event WITH a location in the next 3 days — the real worker
+        // should find it via find_upcoming_trips().
+        sqlx::query(
+            "INSERT INTO events (id, profile_id, title, description, start_time, end_time,
+                                 location, scope, category, all_day, rrule,
+                                 reminder_minutes_before, created_at, updated_at)
+             VALUES ($1, 'profile-1', 'Viaje a Paris', '', $2 || 'T10:00:00Z', $2 || 'T11:00:00Z',
+                     'Paris, Francia', 'shared', 'default', 0, NULL, NULL,
+                     $2 || 'T00:00:00Z', $2 || 'T00:00:00Z')",
+        )
+        .bind("evt-trip-1")
+        .bind(&today)
+        .execute(&db)
+        .await
+        .expect("Failed to seed event with location");
+
+        // This line will fail to compile: `TravelPrepWorker` is not in scope.
+        // The pool's travel-prep placeholder calls `let _ = &db;` instead.
+        let worker = TravelPrepWorker::new(db, 3);
+        let trips = worker.find_upcoming_trips("profile-1").await;
+        assert!(trips.is_ok(), "find_upcoming_trips() should succeed");
+        let trips = trips.unwrap();
+        assert!(!trips.is_empty(), "Should find at least one trip");
     }
 }

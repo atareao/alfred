@@ -84,7 +84,10 @@ mod tests {
 
         // Create a Config with test values
         let mut test_config = Config::from_env();
-        test_config.database_url = db_path.to_str().expect("temp path must be valid UTF-8").to_string();
+        test_config.database_url = db_path
+            .to_str()
+            .expect("temp path must be valid UTF-8")
+            .to_string();
         // Override env vars are already set above (OPENROUTER_API_KEY, AUTH_*, etc.)
         let state = AppState::new_with_orchestrator(&test_config)
             .await

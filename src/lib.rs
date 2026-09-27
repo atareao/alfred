@@ -18,7 +18,7 @@ use axum::{extract::State, Json, Router};
 use serde_json::Value;
 use sqlx::SqlitePool;
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
@@ -39,6 +39,7 @@ pub struct AppState {
     pub auth_config: Option<crate::auth::AuthConfig>,
     pub collapse_tx: Option<mpsc::Sender<String>>,
     pub memory_tx: Option<mpsc::Sender<()>>,
+    pub shutdown_tx: Option<broadcast::Sender<()>>,
 }
 
 impl AppState {
@@ -68,6 +69,7 @@ impl AppState {
             auth_config: None,
             collapse_tx: None,
             memory_tx: None,
+            shutdown_tx: None,
         }
     }
 
@@ -99,6 +101,7 @@ impl AppState {
             auth_config: None,
             collapse_tx: None,
             memory_tx: None,
+            shutdown_tx: None,
         }
     }
 
@@ -106,7 +109,9 @@ impl AppState {
     /// initialised orchestrator, tool registry, guardrails, and auth config.
     ///
     /// This is the production entry point used by `main.rs`.
-    pub async fn new_with_orchestrator(config: &Config) -> Result<Self, Box<dyn std::error::Error>> {
+    pub async fn new_with_orchestrator(
+        config: &Config,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         // 1. Open database connection pool
         let pool = db::init_db(&config.database_url).await?;
 
@@ -136,6 +141,12 @@ impl AppState {
         tool_registry.register(Box::new(crate::tools::reminders::RemindersTool::new(
             pool.clone(),
         )));
+        tool_registry.register(Box::new(crate::tools::current_time::CurrentTimeTool::new(
+            pool.clone(),
+        )));
+        tool_registry.register(Box::new(
+            crate::tools::current_location::CurrentLocationTool::new(pool.clone()),
+        ));
         let tool_registry = Arc::new(tool_registry);
 
         // 3. Create guardrails
@@ -169,6 +180,7 @@ impl AppState {
         let worker_pool = WorkerPool::start(pool.clone(), config, llm_provider.clone());
         let collapse_tx = worker_pool.collapse_tx;
         let memory_tx = worker_pool.memory_tx;
+        let shutdown_tx = worker_pool.shutdown_tx;
 
         // 6. Create orchestrator
         let mut context_builder = ContextBuilder::new();
@@ -212,6 +224,7 @@ impl AppState {
             auth_config: Some(auth_config),
             collapse_tx,
             memory_tx,
+            shutdown_tx,
         })
     }
 
@@ -369,6 +382,55 @@ pub async fn app() -> Router {
         auth_config: None,
         collapse_tx: None,
         memory_tx: None,
+        shutdown_tx: None,
     };
     app_with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+    use std::env;
+
+    /// After `new_with_orchestrator`, the `shutdown_tx` field must be `Some`
+    /// so that all worker tasks stay alive. Currently it is `None`, which
+    /// causes workers to shut down immediately — this test enforces the fix.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn test_app_state_retains_shutdown_tx() {
+        env::set_var("OPENROUTER_API_KEY", "sk-test-key-for-unit-test");
+        env::set_var("OPENROUTER_MODEL", "test/model");
+
+        let tmp_dir = env::temp_dir();
+        let db_filename = "alfred_test_shutdown_tx.db";
+        let db_path = tmp_dir.join(db_filename);
+        let _ = std::fs::remove_file(&db_path);
+
+        use crate::config::Config;
+        let mut test_config = Config::from_env();
+        test_config.database_url = db_path
+            .to_str()
+            .expect("temp path must be valid UTF-8")
+            .to_string();
+
+        let state = AppState::new_with_orchestrator(&test_config)
+            .await
+            .expect("new_with_orchestrator should succeed with minimal env vars");
+
+        // RED: This assertion will FAIL because shutdown_tx is None.
+        // After the GREEN fix (moving sender from WorkerPool), it will pass.
+        assert!(
+            state.shutdown_tx.is_some(),
+            "shutdown_tx is None — WorkerPool sender was dropped at function return"
+        );
+
+        // Teardown
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(tmp_dir.join("alfred_test_shutdown_tx.db-wal"));
+        let _ = std::fs::remove_file(tmp_dir.join("alfred_test_shutdown_tx.db-shm"));
+
+        env::remove_var("OPENROUTER_API_KEY");
+        env::remove_var("OPENROUTER_MODEL");
+    }
 }
