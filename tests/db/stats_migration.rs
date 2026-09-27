@@ -54,25 +54,37 @@ async fn test_migrations_creates_llm_requests_table() {
             .await
             .unwrap();
 
-    let col_map: std::collections::HashMap<&str, &ColumnInfo> = columns
-        .iter()
-        .map(|c| (c.name.as_str(), c))
-        .collect();
+    let col_map: std::collections::HashMap<&str, &ColumnInfo> =
+        columns.iter().map(|c| (c.name.as_str(), c)).collect();
 
     // -- Primary key --
     assert!(col_map.contains_key("id"), "Column 'id' missing");
     assert!(col_map["id"].pk, "'id' should be PRIMARY KEY");
 
     // -- NOT NULL columns --
-    for col in &["model", "prompt_tokens", "completion_tokens", "total_tokens",
-                 "cached_tokens", "reasoning_tokens", "is_byok", "cache_hit", "status"]
-    {
+    for col in &[
+        "model",
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "cached_tokens",
+        "reasoning_tokens",
+        "is_byok",
+        "cache_hit",
+        "status",
+    ] {
         assert!(col_map.contains_key(col), "Column '{col}' missing");
         assert!(col_map[col].notnull, "Column '{col}' should be NOT NULL");
     }
 
     // -- Nullable columns --
-    for col in &["provider", "profile_id", "duration_ms", "error_message", "tool_calls"] {
+    for col in &[
+        "provider",
+        "profile_id",
+        "duration_ms",
+        "error_message",
+        "tool_calls",
+    ] {
         assert!(col_map.contains_key(col), "Column '{col}' missing");
         assert!(!col_map[col].notnull, "Column '{col}' should be nullable");
     }
@@ -189,7 +201,10 @@ async fn test_migration_is_idempotent_for_llm_requests() {
         .await
         .unwrap();
 
-    assert_eq!(count, 0, "Table should be empty and readable after idempotent migration");
+    assert_eq!(
+        count, 0,
+        "Table should be empty and readable after idempotent migration"
+    );
 }
 
 // ── Tests that depend on StatsRepo ─────────────────────────────────────────
@@ -200,7 +215,9 @@ async fn test_stats_repo_inserts_llm_request() {
     let pool = setup().await;
 
     // 1. Verify the repo summary handles an empty table
-    let summary = alfred::db::repos::stats::StatsRepo::summary(&pool).await.unwrap();
+    let summary = alfred::db::repos::stats::StatsRepo::summary(&pool)
+        .await
+        .unwrap();
     assert_eq!(summary.total_calls, 0, "empty table should report 0 calls");
 
     // 2. Insert a row with explicit values via raw query (StatsRepo is
@@ -217,7 +234,9 @@ async fn test_stats_repo_inserts_llm_request() {
     .unwrap();
 
     // 3. Verify the row is readable via summary
-    let summary = alfred::db::repos::stats::StatsRepo::summary(&pool).await.unwrap();
+    let summary = alfred::db::repos::stats::StatsRepo::summary(&pool)
+        .await
+        .unwrap();
     assert_eq!(summary.total_calls, 1);
     assert_eq!(summary.total_prompt_tokens, 100);
     assert_eq!(summary.total_completion_tokens, 50);
@@ -228,13 +247,17 @@ async fn test_stats_repo_inserts_llm_request() {
     assert_eq!(summary.total_errors, 0);
 
     // 4. Verify by_model returns one row
-    let models = alfred::db::repos::stats::StatsRepo::by_model(&pool).await.unwrap();
+    let models = alfred::db::repos::stats::StatsRepo::by_model(&pool)
+        .await
+        .unwrap();
     assert_eq!(models.len(), 1);
     assert_eq!(models[0].model, "gpt-4o");
     assert_eq!(models[0].calls, 1);
 
     // 5. Verify export_csv includes the row
-    let csv = alfred::db::repos::stats::StatsRepo::export_csv(&pool).await.unwrap();
+    let csv = alfred::db::repos::stats::StatsRepo::export_csv(&pool)
+        .await
+        .unwrap();
     assert!(csv.contains(&id), "CSV should contain the inserted row id");
     assert!(csv.contains("gpt-4o"), "CSV should contain the model name");
 }

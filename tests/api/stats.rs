@@ -389,7 +389,7 @@ async fn test_db_sizes() {
         .await
         .unwrap();
     sqlx::query(
-        "INSERT INTO memories (id, profile_id, content) VALUES ('smem1', 'prof-stats', 'A memory')",
+        "INSERT INTO memory (id, content, tokens_count, created_at, metadata) VALUES ('smem1', 'A memory', 0, datetime('now'), '{}')",
     )
     .execute(&db)
     .await
@@ -402,22 +402,13 @@ async fn test_db_sizes() {
     let tables = body.as_array().unwrap();
 
     // Should include all domain tables
-    let messages_size = tables
-        .iter()
-        .find(|t| t["table"] == "messages")
-        .unwrap();
+    let messages_size = tables.iter().find(|t| t["table"] == "messages").unwrap();
     assert_eq!(messages_size["rows"], 2);
 
-    let memories_size = tables
-        .iter()
-        .find(|t| t["table"] == "memories")
-        .unwrap();
-    assert_eq!(memories_size["rows"], 1);
+    let memory_size = tables.iter().find(|t| t["table"] == "memory").unwrap();
+    assert_eq!(memory_size["rows"], 1);
 
-    let profiles_size = tables
-        .iter()
-        .find(|t| t["table"] == "profiles")
-        .unwrap();
+    let profiles_size = tables.iter().find(|t| t["table"] == "profiles").unwrap();
     assert_eq!(profiles_size["rows"], 1);
 }
 
@@ -488,7 +479,10 @@ async fn test_export_csv() {
 
     // Check content-disposition header
     let disposition = resp.headers().get("content-disposition").unwrap();
-    assert!(disposition.to_str().unwrap().contains("alfred-llm-requests.csv"));
+    assert!(disposition
+        .to_str()
+        .unwrap()
+        .contains("alfred-llm-requests.csv"));
 
     // Read the body as text (CSV)
     let csv_text = resp.text().await;

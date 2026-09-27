@@ -1,7 +1,7 @@
 use sqlx::Row;
 use sqlx::SqlitePool;
 
-use crate::models::stats::{DayStats, ModelStats, StatsSummary, TableSize, ToolStats};
+use crate::models::stats::{DayStats, MemoryStats, ModelStats, StatsSummary, TableSize, ToolStats};
 
 /// Repository for LLM usage statistics and administrative operations.
 pub struct StatsRepo;
@@ -157,9 +157,8 @@ impl StatsRepo {
             "habits",
             "llm_requests",
             "meal_plans",
-            "memories",
+            "memory",
             "message_embeddings",
-            "memory_embeddings",
             "messages",
             "notes",
             "profiles",
@@ -204,11 +203,9 @@ impl StatsRepo {
         .await?;
 
         let mut csv = String::from(
-            "id,model,provider,profile_id,prompt_tokens,completion_tokens,total_tokens,"
+            "id,model,provider,profile_id,prompt_tokens,completion_tokens,total_tokens,",
         );
-        csv.push_str(
-            "cached_tokens,reasoning_tokens,cost,is_byok,duration_ms,cache_hit,"
-        );
+        csv.push_str("cached_tokens,reasoning_tokens,cost,is_byok,duration_ms,cache_hit,");
         csv.push_str("status,error_message,tool_calls,created_at\n");
 
         for r in &rows {
@@ -305,6 +302,31 @@ impl StatsRepo {
         .await?;
         Ok(())
     }
+
+    /// Aggregate statistics over episodic memory.
+    pub async fn memory_summary(pool: &SqlitePool) -> Result<MemoryStats, sqlx::Error> {
+        let total_memories: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM memory")
+            .fetch_one(pool)
+            .await?;
+        let total_tokens: i64 =
+            sqlx::query_scalar("SELECT COALESCE(SUM(tokens_count), 0) FROM memory")
+                .fetch_one(pool)
+                .await?;
+        let messages_indexed: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE is_indexed = 1")
+                .fetch_one(pool)
+                .await?;
+        let messages_total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages")
+            .fetch_one(pool)
+            .await?;
+
+        Ok(MemoryStats {
+            total_memories: total_memories as u64,
+            total_tokens: total_tokens as u64,
+            messages_indexed: messages_indexed as u64,
+            messages_total: messages_total as u64,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -391,19 +413,55 @@ mod tests {
 
         // Two successful requests
         insert_request(
-            &pool, "req-1", "gpt-4o", 100, 50, 150, 10, 10, 0.01, Some(200),
-            "success", None, None, None,
+            &pool,
+            "req-1",
+            "gpt-4o",
+            100,
+            50,
+            150,
+            10,
+            10,
+            0.01,
+            Some(200),
+            "success",
+            None,
+            None,
+            None,
         )
         .await;
         insert_request(
-            &pool, "req-2", "gpt-4o", 200, 100, 300, 20, 10, 0.02, Some(300),
-            "success", None, None, None,
+            &pool,
+            "req-2",
+            "gpt-4o",
+            200,
+            100,
+            300,
+            20,
+            10,
+            0.02,
+            Some(300),
+            "success",
+            None,
+            None,
+            None,
         )
         .await;
         // One error
         insert_request(
-            &pool, "req-3", "claude-3", 0, 0, 0, 0, 0, 0.0, None,
-            "error", Some("timeout"), None, None,
+            &pool,
+            "req-3",
+            "claude-3",
+            0,
+            0,
+            0,
+            0,
+            0,
+            0.0,
+            None,
+            "error",
+            Some("timeout"),
+            None,
+            None,
         )
         .await;
 
@@ -444,18 +502,54 @@ mod tests {
 
         // 2 calls gpt-4o (cost 0.02 + 0.01 = 0.03), 1 call claude-3 (cost 0.04)
         insert_request(
-            &pool, "r1", "gpt-4o", 100, 50, 150, 10, 5, 0.02, Some(200),
-            "success", None, None, None,
+            &pool,
+            "r1",
+            "gpt-4o",
+            100,
+            50,
+            150,
+            10,
+            5,
+            0.02,
+            Some(200),
+            "success",
+            None,
+            None,
+            None,
         )
         .await;
         insert_request(
-            &pool, "r2", "gpt-4o", 50, 25, 75, 5, 3, 0.01, Some(100),
-            "success", None, None, None,
+            &pool,
+            "r2",
+            "gpt-4o",
+            50,
+            25,
+            75,
+            5,
+            3,
+            0.01,
+            Some(100),
+            "success",
+            None,
+            None,
+            None,
         )
         .await;
         insert_request(
-            &pool, "r3", "claude-3", 200, 100, 300, 20, 10, 0.04, Some(400),
-            "success", None, None, None,
+            &pool,
+            "r3",
+            "claude-3",
+            200,
+            100,
+            300,
+            20,
+            10,
+            0.04,
+            Some(400),
+            "success",
+            None,
+            None,
+            None,
         )
         .await;
 
@@ -482,8 +576,20 @@ mod tests {
             let date = format!("2026-09-{:02}T10:00:00", 18 + i); // Sep 19..Sep 25
             let id = format!("day-req-{i}");
             insert_request(
-                &pool, &id, "gpt-4o", 100, 50, 150, 10, 5, 0.01, Some(100),
-                "success", None, None, Some(&date),
+                &pool,
+                &id,
+                "gpt-4o",
+                100,
+                50,
+                150,
+                10,
+                5,
+                0.01,
+                Some(100),
+                "success",
+                None,
+                None,
+                Some(&date),
             )
             .await;
         }
@@ -506,23 +612,46 @@ mod tests {
         // 3 calls with get_weather
         for i in 0..3 {
             insert_request(
-                &pool, &format!("tw-{i}"), "gpt-4o", 100, 50, 150, 0, 0, 0.01, None,
-                "success", None, Some(r#"[{"name":"get_weather"}]"#), None,
+                &pool,
+                &format!("tw-{i}"),
+                "gpt-4o",
+                100,
+                50,
+                150,
+                0,
+                0,
+                0.01,
+                None,
+                "success",
+                None,
+                Some(r#"[{"name":"get_weather"}]"#),
+                None,
             )
             .await;
         }
         // 2 calls with search_web
         for i in 0..2 {
             insert_request(
-                &pool, &format!("ts-{i}"), "gpt-4o", 100, 50, 150, 0, 0, 0.01, None,
-                "success", None, Some(r#"[{"name":"search_web"}]"#), None,
+                &pool,
+                &format!("ts-{i}"),
+                "gpt-4o",
+                100,
+                50,
+                150,
+                0,
+                0,
+                0.01,
+                None,
+                "success",
+                None,
+                Some(r#"[{"name":"search_web"}]"#),
+                None,
             )
             .await;
         }
         // 1 null tool_calls (should be ignored)
         insert_request(
-            &pool, "t-null", "gpt-4o", 100, 50, 150, 0, 0, 0.01, None,
-            "success", None, None, None,
+            &pool, "t-null", "gpt-4o", 100, 50, 150, 0, 0, 0.01, None, "success", None, None, None,
         )
         .await;
 
@@ -552,20 +681,10 @@ mod tests {
             .await
             .unwrap();
 
-        sqlx::query(
-            "INSERT INTO memories (id, profile_id, content) VALUES ('mem1', 'profile-1', 'Memory')",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
         let sizes = StatsRepo::db_sizes(&pool).await.unwrap();
 
         let messages_size = sizes.iter().find(|t| t.table == "messages").unwrap();
         assert_eq!(messages_size.rows, 2);
-
-        let memories_size = sizes.iter().find(|t| t.table == "memories").unwrap();
-        assert_eq!(memories_size.rows, 1);
 
         let profiles_size = sizes.iter().find(|t| t.table == "profiles").unwrap();
         assert_eq!(profiles_size.rows, 1);
@@ -578,14 +697,36 @@ mod tests {
         let pool = setup().await;
 
         insert_request(
-            &pool, "csv-1", "gpt-4o", 100, 50, 150, 10, 5, 0.01, Some(200),
-            "success", None, Some(r#"[{"name":"get_weather"}]"#),
+            &pool,
+            "csv-1",
+            "gpt-4o",
+            100,
+            50,
+            150,
+            10,
+            5,
+            0.01,
+            Some(200),
+            "success",
+            None,
+            Some(r#"[{"name":"get_weather"}]"#),
             Some("2026-09-24T10:00:00"),
         )
         .await;
         insert_request(
-            &pool, "csv-2", "claude-3", 200, 100, 300, 20, 10, 0.02, None,
-            "error", Some("timeout"), None,
+            &pool,
+            "csv-2",
+            "claude-3",
+            200,
+            100,
+            300,
+            20,
+            10,
+            0.02,
+            None,
+            "error",
+            Some("timeout"),
+            None,
             Some("2026-09-25T12:00:00"),
         )
         .await;
@@ -594,7 +735,11 @@ mod tests {
 
         // Should have a header and 2 data lines
         let lines: Vec<&str> = csv.trim().lines().collect();
-        assert!(lines.len() >= 3, "expected header + 2 rows, got {}", lines.len());
+        assert!(
+            lines.len() >= 3,
+            "expected header + 2 rows, got {}",
+            lines.len()
+        );
 
         let header = lines[0];
         assert!(header.starts_with("id,"));
@@ -623,8 +768,20 @@ mod tests {
         for i in 0..10 {
             let id = format!("old-{i}");
             insert_request(
-                &pool, &id, "gpt-4o", 10, 5, 15, 0, 0, 0.001, None,
-                "success", None, None, Some("2026-07-01T00:00:00"),
+                &pool,
+                &id,
+                "gpt-4o",
+                10,
+                5,
+                15,
+                0,
+                0,
+                0.001,
+                None,
+                "success",
+                None,
+                None,
+                Some("2026-07-01T00:00:00"),
             )
             .await;
         }
@@ -633,28 +790,25 @@ mod tests {
         for i in 0..10 {
             let id = format!("new-{i}");
             insert_request(
-                &pool, &id, "gpt-4o", 10, 5, 15, 0, 0, 0.001, None,
-                "success", None, None, None,
+                &pool, &id, "gpt-4o", 10, 5, 15, 0, 0, 0.001, None, "success", None, None, None,
             )
             .await;
         }
 
-        let count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM llm_requests")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM llm_requests")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         assert_eq!(count, 20);
 
         // Purge records older than 30 days → should remove the 10 old ones
         let deleted = StatsRepo::purge_old(&pool, 30).await.unwrap();
         assert_eq!(deleted, 10);
 
-        let remaining: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM llm_requests")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM llm_requests")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         assert_eq!(remaining, 10);
     }
 
@@ -665,12 +819,10 @@ mod tests {
         let pool = setup().await;
 
         // Insert setting
-        sqlx::query(
-            "INSERT INTO settings (key, value) VALUES ('stats_retention_days', '45')",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
+        sqlx::query("INSERT INTO settings (key, value) VALUES ('stats_retention_days', '45')")
+            .execute(&pool)
+            .await
+            .unwrap();
 
         let days = StatsRepo::get_retention_days(&pool).await.unwrap();
         assert_eq!(days, 45);
@@ -700,5 +852,59 @@ mod tests {
         StatsRepo::set_retention_days(&pool, 90).await.unwrap();
         let days = StatsRepo::get_retention_days(&pool).await.unwrap();
         assert_eq!(days, 90);
+    }
+
+    // ── 11. memory_summary ─────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_memory_summary_empty() {
+        let pool = setup().await;
+
+        let s = StatsRepo::memory_summary(&pool).await.unwrap();
+        assert_eq!(s.total_memories, 0);
+        assert_eq!(s.total_tokens, 0);
+        assert_eq!(s.messages_indexed, 0);
+        assert_eq!(s.messages_total, 0);
+    }
+
+    #[tokio::test]
+    async fn test_memory_summary_with_data() {
+        let pool = setup().await;
+
+        // Insert memories
+        sqlx::query("INSERT INTO memory (id, content, tokens_count) VALUES ('m1', 'mem1', 100)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO memory (id, content, tokens_count) VALUES ('m2', 'mem2', 200)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // Insert messages (one indexed)
+        sqlx::query(
+            "INSERT INTO messages (id, role, content, is_indexed) VALUES ('msg1', 'user', 'hello', 1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO messages (id, role, content, is_indexed) VALUES ('msg2', 'assistant', 'hi', 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO messages (id, role, content, is_indexed) VALUES ('msg3', 'user', 'howdy', 1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let s = StatsRepo::memory_summary(&pool).await.unwrap();
+        assert_eq!(s.total_memories, 2);
+        assert_eq!(s.total_tokens, 300);
+        assert_eq!(s.messages_indexed, 2);
+        assert_eq!(s.messages_total, 3);
     }
 }
