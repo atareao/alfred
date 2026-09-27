@@ -92,4 +92,54 @@ describe("MessageBubble", () => {
     // User messages should remain plain text even if they contain markdown characters.
     expect(container.textContent).toContain("**world**");
   });
+
+  // ════════════════════════════════════════════════════════════════
+  // RED phase tests — expected to FAIL until timestamp/location added
+  // ════════════════════════════════════════════════════════════════
+
+  it("muestra timestamp formateado (HH:mm) para mensaje normal", () => {
+    const msg: Message = {
+      id: "5",
+      role: "user",
+      content: "Hola",
+      created_at: "2026-09-27T10:30:00Z",
+    };
+    const { container } = render(<MessageBubble message={msg} />);
+    expect(container.textContent).toContain("10:30");
+  });
+
+  it("muestra ubicación cuando existe", () => {
+    const msg: Message = {
+      id: "6",
+      role: "user",
+      content: "Hola",
+      location: "Silla, Valencia, España",
+      created_at: "2026-09-27T10:30:00Z",
+    };
+    const { container } = render(<MessageBubble message={msg} />);
+    expect(container.textContent).toContain("📍");
+  });
+
+  it("NO muestra ubicación cuando es null", () => {
+    const msg: Message = {
+      id: "7",
+      role: "user",
+      content: "Hola",
+      location: null,
+      created_at: "2026-09-27T10:30:00Z",
+    };
+    const { container } = render(<MessageBubble message={msg} />);
+    expect(container.textContent).not.toContain("📍");
+  });
+
+  it("NO muestra timestamp para mensajes streaming", () => {
+    const msg: Message = {
+      id: "streaming",
+      role: "assistant",
+      content: "Escribiendo...",
+      created_at: new Date().toISOString(),
+    };
+    const { container } = render(<MessageBubble message={msg} />);
+    expect(container.textContent).not.toContain(":");
+  });
 });

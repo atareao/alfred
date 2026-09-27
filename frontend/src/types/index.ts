@@ -9,6 +9,7 @@ export interface Message {
   collapsed_tokens_count?: number;
   is_indexed?: boolean;
   summary_ref?: string | null;
+  location?: string | null;
   created_at: string;
 }
 

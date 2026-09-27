@@ -504,7 +504,7 @@ mod tests {
         let pool = test_db().await;
 
         let long_content = "x".repeat(8000);
-        let msg = MessagesRepo::create(&pool, "user", &long_content, None, None, 2000, None)
+        let msg = MessagesRepo::create(&pool, "user", &long_content, None, None, None, 2000, None)
             .await
             .unwrap();
         let msg_id = msg.id.clone();
