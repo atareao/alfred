@@ -26,7 +26,7 @@ async fn export_all_tables(pool: &SqlitePool) -> Value {
         "shopping_list": export_table(pool, "shopping_list").await,
         "habits": export_table(pool, "habits").await,
         "habit_logs": export_table(pool, "habit_logs").await,
-        "memories": export_table(pool, "memories").await,
+        "memory": export_table(pool, "memory").await,
         "tools": export_table(pool, "tools").await,
     })
 }

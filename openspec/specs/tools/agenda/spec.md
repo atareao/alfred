@@ -35,11 +35,9 @@ async fn list_by_category(&self, args: Value) -> Result<ToolResult, ToolError>;
       ]
     },
     "profile_id": { "type": "string" },
-    "date": { "type": "string" },
     "duration": { "type": "integer" },
     "title": { "type": "string" },
     "start": { "type": "string" },
-    "end": { "type": "string" },
     "location": { "type": "string" },
     "scope": { "type": "string", "enum": ["shared", "personal"] },
     "id": { "type": "string" },
@@ -165,3 +163,62 @@ Given an existing event
 When PUT /events/:id is called with start_time and end_time in the JSON body
 Then the event's start_time and end_time are updated
 And the response includes the updated event
+
+### Requirement: Calendar tool — unified schema: remove `end` and `date`
+
+Todas las operaciones usan `start` + `duration` (minutos) para definir rangos temporales.
+Se eliminan `end` y `date` del schema.
+
+**Contracts:**
+
+```rust
+// get_events: start + duration definen el rango de búsqueda
+//   start = "2026-09-26T00:00:00Z", duration = 1440 → 1 día completo
+
+// check_availability: start + duration definen la duración del slot buscado
+//   start = "2026-09-26T09:00:00Z", duration = 60 → slots libres de 1h desde las 9
+
+// update_event: duration recalcula end. Si solo start, mantiene duración original.
+//   Si solo duration, mantiene start original y recalcula end.
+```
+
+**Parameter schema:**
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "operation": { "type": "string", "enum": ["get_events", "check_availability", "create_event", "update_event", "delete_event", "list_by_category"] },
+    "title": { "type": "string", "description": "Título del evento — obligatorio en create_event" },
+    "start": { "type": "string", "description": "ISO 8601. Inicio del evento/rango. Ej: 2026-09-26T21:00:00Z" },
+    "duration": { "type": "integer", "description": "Duración en minutos. Ej: 60 = 1h, 1440 = 1 día" },
+    "id": { "type": "string", "description": "ID del evento — obligatorio en update_event y delete_event" },
+    "category": { "type": "string", "enum": ["default", "work", "personal", "health", "birthday", "holiday"] },
+    "scope": { "type": "string", "enum": ["shared", "personal"] },
+    "location": { "type": "string" },
+    "description": { "type": "string" },
+    "all_day": { "type": "boolean" },
+    "rrule": { "type": "string" },
+    "reminder_minutes_before": { "type": "integer" }
+  },
+  "required": ["operation"]
+}
+```
+
+**Scenarios:**
+
+#### Scenario: create_event with start + duration
+When `create_event` is called with `start: "2026-09-26T21:00:00Z"`, `duration: 120`
+Then the event is created with `end_time = "2026-09-26T23:00:00Z"`
+
+#### Scenario: get_events with start + duration
+When `get_events` is called with `start: "2026-09-26T00:00:00Z"`, `duration: 1440`
+Then events on 2026-09-26 are returned
+
+#### Scenario: update_event with duration
+When `update_event` is called with `id`, `duration: 90`
+Then the event's end_time is recomputed as start_time + 90 minutes
+
+#### Scenario: check_availability with start + duration
+When `check_availability` is called with `start: "2026-09-26T09:00:00Z"`, `duration: 60`
+Then free slots of 60 minutes are returned

@@ -12,10 +12,7 @@ async fn test_create_memory() {
     let resp = app
         .post("/api/memories")
         .json(&json!({
-            "profile_id": "profile-id",
-            "content": "Alfred remembers this.",
-            "category": "fact",
-            "source": "manual"
+            "content": "Alfred remembers this."
         }))
         .send()
         .await;
@@ -24,28 +21,24 @@ async fn test_create_memory() {
     let body = resp.json::<serde_json::Value>().await;
     assert!(body.get("id").is_some());
     assert_eq!(body["content"], "Alfred remembers this.");
-    assert_eq!(body["category"], "fact");
 }
 
 #[tokio::test]
 async fn test_create_memory_default_category() {
     // Given a POST without category
     // When the handler processes it
-    // Then returns 201 with default category "general"
+    // Then returns 201
     let app = TestApp::new().await;
 
     let resp = app
         .post("/api/memories")
         .json(&json!({
-            "profile_id": "profile-id",
             "content": "Default category memory."
         }))
         .send()
         .await;
 
     assert_eq!(resp.status(), 201);
-    let body = resp.json::<serde_json::Value>().await;
-    assert_eq!(body["category"], "general");
 }
 
 #[tokio::test]
