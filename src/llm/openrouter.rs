@@ -97,9 +97,15 @@ impl OpenRouterProvider {
 
         let prompt_tokens = body["usage"]["prompt_tokens"].as_u64().unwrap_or(0) as u32;
         let completion_tokens = body["usage"]["completion_tokens"].as_u64().unwrap_or(0) as u32;
-        let cached_tokens = body["usage"]["cached_tokens"].as_u64().unwrap_or(0) as u32;
-        let reasoning_tokens = body["usage"]["reasoning_tokens"].as_u64().unwrap_or(0) as u32;
-        let cost = body["usage"]["total_cost"].as_f64().unwrap_or(0.0);
+        let cached_tokens = body["usage"]["prompt_tokens_details"]
+            ["cached_tokens"]
+            .as_u64()
+            .unwrap_or(0) as u32;
+        let reasoning_tokens = body["usage"]["completion_tokens_details"]
+            ["reasoning_tokens"]
+            .as_u64()
+            .unwrap_or(0) as u32;
+        let cost = body["usage"]["cost"].as_f64().unwrap_or(0.0);
 
         Ok(ChatResponse {
             message: ChatMessage {
@@ -677,9 +683,15 @@ pub fn parse_sse_event(
             let usage = body.get("usage").map(|u| TokenUsage {
                 prompt_tokens: u["prompt_tokens"].as_u64().unwrap_or(0) as u32,
                 completion_tokens: u["completion_tokens"].as_u64().unwrap_or(0) as u32,
-                cached_tokens: u["cached_tokens"].as_u64().unwrap_or(0) as u32,
-                reasoning_tokens: u["reasoning_tokens"].as_u64().unwrap_or(0) as u32,
-                cost: u["total_cost"].as_f64().unwrap_or(0.0),
+                cached_tokens: u["prompt_tokens_details"]
+                    ["cached_tokens"]
+                    .as_u64()
+                    .unwrap_or(0) as u32,
+                reasoning_tokens: u["completion_tokens_details"]
+                    ["reasoning_tokens"]
+                    .as_u64()
+                    .unwrap_or(0) as u32,
+                cost: u["cost"].as_f64().unwrap_or(0.0),
             });
 
             // Only emit Done when usage is present. Without usage this is the
@@ -951,7 +963,7 @@ mod tests {
 
     #[test]
     fn test_parse_sse_done() {
-        let json = r#"{"choices":[{"delta":{},"finish_reason":"stop","index":0}],"usage":{"prompt_tokens":10,"completion_tokens":5,"cached_tokens":2,"reasoning_tokens":1,"total_cost":0.0015}}"#;
+        let json = r#"{"choices":[{"delta":{},"finish_reason":"stop","index":0}],"usage":{"prompt_tokens":10,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":2},"completion_tokens_details":{"reasoning_tokens":1},"cost":0.0015}}"#;
         let mut acc = StreamAccumulator::default();
 
         let event = parse_sse_event(json, &mut acc)
@@ -1055,7 +1067,7 @@ mod tests {
         let _ = parse_sse_event(c2, &mut acc).expect("chunk 2 should not error");
 
         // Final event with usage
-        let done = r#"{"choices":[{"delta":{},"finish_reason":"stop","index":0}],"usage":{"prompt_tokens":42,"completion_tokens":7,"cached_tokens":3,"reasoning_tokens":2,"total_cost":0.003}}"#;
+        let done = r#"{"choices":[{"delta":{},"finish_reason":"stop","index":0}],"usage":{"prompt_tokens":42,"completion_tokens":7,"prompt_tokens_details":{"cached_tokens":3},"completion_tokens_details":{"reasoning_tokens":2},"cost":0.003}}"#;
         let event = parse_sse_event(done, &mut acc)
             .expect("done event should not error")
             .expect("expected Some(StreamEvent) for finish_reason");
@@ -1137,7 +1149,7 @@ mod tests {
     fn test_parse_sse_finish_reason_tool_calls_no_delta() {
         // SSE line with EMPTY delta, finish_reason="tool_calls", AND usage
         // (simulating the second event from OpenRouter with usage data).
-        let json = r#"{"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}],"usage":{"prompt_tokens":10,"completion_tokens":5,"cached_tokens":0,"reasoning_tokens":0,"total_cost":0.0}}"#;
+        let json = r#"{"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}],"usage":{"prompt_tokens":10,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":0},"cost":0.0}}"#;
         let mut acc = StreamAccumulator::default();
 
         let event = parse_sse_event(json, &mut acc)
@@ -1174,7 +1186,7 @@ mod tests {
 
         // Process finish_reason "tool_calls" SSE line with usage
         // (simulating the second event from OpenRouter).
-        let json = r#"{"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}],"usage":{"prompt_tokens":15,"completion_tokens":8,"cached_tokens":1,"reasoning_tokens":0,"total_cost":0.002}}"#;
+        let json = r#"{"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}],"usage":{"prompt_tokens":15,"completion_tokens":8,"prompt_tokens_details":{"cached_tokens":1},"completion_tokens_details":{"reasoning_tokens":0},"cost":0.002}}"#;
         let event = parse_sse_event(json, &mut acc)
             .expect("parse_sse_event should not error")
             .expect("expected Some(StreamEvent) for finish_reason tool_calls with usage");
@@ -1224,7 +1236,7 @@ mod tests {
         };
 
         // Process finish_reason "tool_calls" SSE line with usage
-        let json = r#"{"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}],"usage":{"prompt_tokens":20,"completion_tokens":10,"cached_tokens":2,"reasoning_tokens":1,"total_cost":0.004}}"#;
+        let json = r#"{"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}],"usage":{"prompt_tokens":20,"completion_tokens":10,"prompt_tokens_details":{"cached_tokens":2},"completion_tokens_details":{"reasoning_tokens":1},"cost":0.004}}"#;
         let event = parse_sse_event(json, &mut acc)
             .expect("parse_sse_event should not error")
             .expect("expected Some(StreamEvent) for finish_reason tool_calls with usage");
