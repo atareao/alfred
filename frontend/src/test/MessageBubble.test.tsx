@@ -133,6 +133,20 @@ describe("MessageBubble", () => {
     expect(container.textContent).not.toContain("📍");
   });
 
+  it("muestra la dirección completa, no truncada", () => {
+    const msg: Message = {
+      id: "8",
+      role: "user",
+      content: "Hola",
+      location: "Calle Mayor 1, Silla, Valencia, España",
+      created_at: "2026-09-27T10:30:00Z",
+    };
+    const { container } = render(<MessageBubble message={msg} />);
+    expect(container.textContent).toContain("Calle Mayor 1");
+    expect(container.textContent).toContain("Silla");
+    expect(container.textContent).toContain("Valencia");
+  });
+
   it("NO muestra timestamp para mensajes streaming", () => {
     const msg: Message = {
       id: "streaming",

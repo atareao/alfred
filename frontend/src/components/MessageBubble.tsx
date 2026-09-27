@@ -19,11 +19,6 @@ function formatTime(isoDate: string): string {
   return `${hours}:${minutes}`;
 }
 
-function extractCity(location: string): string {
-  // "Silla, Valencia, España" → "Silla"
-  return location.split(",")[0].trim();
-}
-
 interface MessageBubbleProps {
   message: Message;
 }
@@ -109,15 +104,14 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({ message }) => {
             <>
               <span>·</span>
               <span>{formatTime(message.created_at)}</span>
-              {message.location && (
-                <>
-                  <span>·</span>
-                  <span>📍 {extractCity(message.location)}</span>
-                </>
-              )}
             </>
           )}
         </div>
+        {message.id !== "streaming" && message.location && (
+          <div style={{ fontSize: 10, marginTop: 1, opacity: 0.35 }}>
+            📍 {message.location}
+          </div>
+        )}
       </div>
       {config.showIcon && config.iconPosition === "right" && (
         <div style={{ marginLeft: 8, marginTop: 8 }}>{config.icon}</div>
