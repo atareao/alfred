@@ -1,6 +1,9 @@
 pub mod calendar;
 pub mod contacts;
+pub mod current_location;
+pub mod current_time;
 pub mod geo;
+pub mod geo_utils;
 pub mod google_places;
 pub mod habits;
 pub mod knowledge;
@@ -9,6 +12,7 @@ pub mod permission;
 pub mod registry;
 pub mod reminders;
 pub mod tasks;
+pub mod time_format;
 pub mod r#trait;
 pub mod unified_search;
 pub mod weather;

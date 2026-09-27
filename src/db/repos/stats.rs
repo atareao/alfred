@@ -261,6 +261,56 @@ impl StatsRepo {
         Ok(csv)
     }
 
+    /// Record an LLM request in the `llm_requests` table.
+    ///
+    /// Inserts a row with the given parameters. If `created_at` is `None`,
+    /// the database will assign `datetime('now')` automatically via the
+    /// column default.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn record_request(
+        pool: &SqlitePool,
+        id: &str,
+        model: &str,
+        profile_id: &str,
+        prompt_tokens: i64,
+        completion_tokens: i64,
+        total_tokens: i64,
+        cached_tokens: i64,
+        reasoning_tokens: i64,
+        cost: f64,
+        duration_ms: Option<i64>,
+        status: &str,
+        error_message: Option<&str>,
+        tool_calls: Option<&str>,
+        created_at: Option<&str>,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO llm_requests (id, model, provider, profile_id, prompt_tokens, completion_tokens, total_tokens, cached_tokens, reasoning_tokens, cost, is_byok, duration_ms, cache_hit, status, error_message, tool_calls, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, COALESCE(?17, datetime('now')))",
+        )
+        .bind(id)
+        .bind(model)
+        .bind(Option::<String>::None) // provider
+        .bind(profile_id)
+        .bind(prompt_tokens)
+        .bind(completion_tokens)
+        .bind(total_tokens)
+        .bind(cached_tokens)
+        .bind(reasoning_tokens)
+        .bind(cost)
+        .bind(0i64) // is_byok
+        .bind(duration_ms)
+        .bind(0i64) // cache_hit
+        .bind(status)
+        .bind(error_message)
+        .bind(tool_calls)
+        .bind(created_at)
+        .execute(pool)
+        .await?;
+
+        Ok(())
+    }
+
     /// Purge LLM request records older than `days` days.
     ///
     /// Returns the number of deleted rows.
@@ -403,6 +453,164 @@ mod tests {
         .bind(created_at);
 
         q.execute(pool).await.unwrap();
+    }
+
+    // ── record_request tests ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_record_request_inserts_row() {
+        let pool = setup().await;
+
+        StatsRepo::record_request(
+            &pool,
+            "req-1",
+            "gpt-4o",
+            "profile-1",
+            100,
+            50,
+            150,
+            0,
+            0,
+            0.0,
+            Some(200),
+            "success",
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM llm_requests")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+
+        let row = sqlx::query("SELECT id, model, profile_id, prompt_tokens, completion_tokens, total_tokens, cached_tokens, reasoning_tokens, cost, duration_ms, status, error_message, tool_calls, created_at FROM llm_requests WHERE id = 'req-1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(row.get::<String, _>(0), "req-1");
+        assert_eq!(row.get::<String, _>(1), "gpt-4o");
+        assert_eq!(row.get::<String, _>(2), "profile-1");
+        assert_eq!(row.get::<i64, _>(3), 100);
+        assert_eq!(row.get::<i64, _>(4), 50);
+        assert_eq!(row.get::<i64, _>(5), 150);
+        assert_eq!(row.get::<i64, _>(6), 0);
+        assert_eq!(row.get::<i64, _>(7), 0);
+        assert!((row.get::<f64, _>(8) - 0.0).abs() < f64::EPSILON);
+        assert_eq!(row.get::<Option<i64>, _>(9), Some(200));
+        assert_eq!(row.get::<String, _>(10), "success");
+        assert!(row.get::<Option<String>, _>(11).is_none());
+        assert!(row.get::<Option<String>, _>(12).is_none());
+        assert!(row.get::<String, _>(13).len() >= 19); // created_at not null, ISO format
+    }
+
+    #[tokio::test]
+    async fn test_record_request_with_tool_calls() {
+        let pool = setup().await;
+
+        let tool_calls_json = r#"{"model":"gpt-4o","tool_calls":[{"name":"get_weather"}]}"#;
+
+        StatsRepo::record_request(
+            &pool,
+            "req-tc",
+            "gpt-4o",
+            "profile-1",
+            100,
+            50,
+            150,
+            0,
+            0,
+            0.01,
+            None,
+            "success",
+            None,
+            Some(tool_calls_json),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let saved: Option<String> =
+            sqlx::query_scalar("SELECT tool_calls FROM llm_requests WHERE id = 'req-tc'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+
+        assert_eq!(saved, Some(tool_calls_json.to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_record_request_with_error() {
+        let pool = setup().await;
+
+        StatsRepo::record_request(
+            &pool,
+            "req-err",
+            "gpt-4o",
+            "profile-1",
+            100,
+            50,
+            150,
+            0,
+            0,
+            0.0,
+            None,
+            "error",
+            Some("timeout"),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let row =
+            sqlx::query("SELECT status, error_message FROM llm_requests WHERE id = 'req-err'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+
+        assert_eq!(row.get::<String, _>(0), "error");
+        assert_eq!(row.get::<Option<String>, _>(1), Some("timeout".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_record_request_auto_created_at() {
+        let pool = setup().await;
+
+        StatsRepo::record_request(
+            &pool,
+            "req-auto",
+            "gpt-4o",
+            "profile-1",
+            100,
+            50,
+            150,
+            0,
+            0,
+            0.0,
+            None,
+            "success",
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let created_at: String =
+            sqlx::query_scalar("SELECT created_at FROM llm_requests WHERE id = 'req-auto'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+
+        assert!(
+            !created_at.is_empty(),
+            "created_at should be auto-assigned and non-empty"
+        );
     }
 
     // ── 1. summary con datos variados ─────────────────────────────────────

@@ -1,20 +1,20 @@
-use std::collections::HashMap;
-use std::sync::{Arc, LazyLock, Mutex};
-
-use chrono::Datelike;
-use chrono::Timelike;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::SqlitePool;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
+use crate::db::repos::stats::StatsRepo;
 use crate::llm::provider::{ChatMessage, ChatRequest, LLMProvider, StreamEvent, ToolCall};
 use crate::orchestrator::context_builder::ContextBuilder;
 use crate::orchestrator::context_classifier::ContextClassifier;
 use crate::orchestrator::guardrails::{GuardrailResult, Guardrails};
+use crate::tools::geo_utils::reverse_geocode;
 use crate::tools::r#trait::ToolResult;
 use crate::tools::registry::ToolRegistry;
+use crate::tools::time_format::format_browser_timestamp;
 use futures::StreamExt;
+use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -203,181 +203,6 @@ pub struct BrowserContext {
 /// Maximum number of times the same tool+operation can be called in one ReAct loop.
 const MAX_TOOL_RETRIES: usize = 5;
 
-/// Spanish day-of-week names (ISO weekday: 1 = Monday … 7 = Sunday).
-const DIAS: [&str; 7] = [
-    "lunes",
-    "martes",
-    "miércoles",
-    "jueves",
-    "viernes",
-    "sábado",
-    "domingo",
-];
-
-/// Spanish month names.
-const MESES: [&str; 12] = [
-    "enero",
-    "febrero",
-    "marzo",
-    "abril",
-    "mayo",
-    "junio",
-    "julio",
-    "agosto",
-    "septiembre",
-    "octubre",
-    "noviembre",
-    "diciembre",
-];
-
-/// Spanish time-of-day phrases keyed by hour.
-fn momento_del_dia(hora: u32) -> &'static str {
-    match hora {
-        0..=5 => "de la madrugada",
-        6..=11 => "de la mañana",
-        12..=20 => "de la tarde",
-        _ => "de la noche",
-    }
-}
-
-/// Parse an ISO‑8601 UTC timestamp and return a human‑readable Spanish string.
-///
-/// Returns `None` on parse failure so callers can fall back gracefully.
-fn format_browser_timestamp(iso: &str, tz: &str) -> Option<String> {
-    use chrono::NaiveDateTime;
-    use chrono_tz::Tz;
-    use std::str::FromStr;
-
-    // Accept both "2026-09-24T08:00:00Z" and "2026-09-26T10:00:00.000Z"
-    let naive =
-        NaiveDateTime::parse_from_str(iso.trim_end_matches('Z'), "%Y-%m-%dT%H:%M:%S%.f").ok()?;
-
-    let utc_dt: chrono::DateTime<chrono::Utc> =
-        chrono::DateTime::from_naive_utc_and_offset(naive, chrono::Utc);
-
-    // Convert to user's timezone
-    let tz = Tz::from_str(tz).ok()?;
-    let dt = utc_dt.with_timezone(&tz);
-
-    let wd = dt.format("%u").to_string().parse::<usize>().ok()?; // 1–7
-    let day_name = DIAS.get(wd - 1)?;
-    let month_name = MESES.get((dt.month0()) as usize)?;
-    let momento = momento_del_dia(dt.hour());
-
-    Some(format!(
-        "Hoy es {}, {} de {} de {}, son las {}:{:02} {}",
-        day_name,
-        dt.day(),
-        month_name,
-        dt.year(),
-        dt.hour(),
-        dt.minute(),
-        momento,
-    ))
-}
-
-/// Reverse‑geocode coordinates via Nominatim and return a short location name.
-///
-/// Results are cached in memory for 5 minutes, keyed by coordinates rounded
-/// to 2 decimal places (≈1 km precision).
-///
-/// Returns `None` on any error (network, parse, no results) so callers can
-/// fall back to showing raw coordinates.
-async fn reverse_geocode(lat: f64, lon: f64) -> Option<String> {
-    use std::time::Instant;
-
-    /// Cache key: (lat×2000, lon×2000) rounded to integers (~55 m precision).
-    type CacheKey = (i32, i32);
-    /// Cache value: (when cached, location name).
-    type CacheVal = (Instant, String);
-
-    static CACHE: LazyLock<Mutex<HashMap<CacheKey, CacheVal>>> =
-        LazyLock::new(|| Mutex::new(HashMap::new()));
-
-    let key: CacheKey = ((lat * 2000.0).round() as i32, (lon * 2000.0).round() as i32);
-
-    // Check cache (5-minute TTL)
-    {
-        let cache = CACHE.lock().unwrap();
-        if let Some((cached_at, name)) = cache.get(&key) {
-            if cached_at.elapsed() < std::time::Duration::from_secs(300) {
-                return Some(name.clone());
-            }
-        }
-    }
-
-    let url = format!(
-        "https://nominatim.openstreetmap.org/reverse?lat={}&lon={}&format=json&addressdetails=1",
-        lat, lon
-    );
-
-    let client = reqwest::Client::builder()
-        .user_agent("Alfred/0.5 (alfred@atareao.es)")
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-        .ok()?;
-
-    let resp = client.get(&url).send().await.ok()?;
-    let body: serde_json::Value = resp.json().await.ok()?;
-
-    if body.get("error").is_some() {
-        return None;
-    }
-
-    let addr = body.get("address")?;
-    // Build a compact location string: street, town/city, region, country
-    let mut parts: Vec<String> = Vec::new();
-
-    // Street + house number
-    if let Some(road) = addr.get("road").and_then(|v| v.as_str()) {
-        let s = match addr.get("house_number").and_then(|v| v.as_str()) {
-            Some(n) => format!("{} {}", road, n),
-            None => road.to_string(),
-        };
-        parts.push(s);
-    }
-
-    // Town / city / village / hamlet (first match wins, dedup against street)
-    for key in ["town", "city", "village", "hamlet"] {
-        if let Some(v) = addr.get(key).and_then(|v| v.as_str()) {
-            if parts.last().map(|l| l != v).unwrap_or(true) {
-                parts.push(v.to_string());
-                break;
-            }
-        }
-    }
-
-    // State, country
-    for key in ["state", "country"] {
-        if let Some(v) = addr.get(key).and_then(|v| v.as_str()) {
-            if parts.last().map(|l| l != v).unwrap_or(true) {
-                parts.push(v.to_string());
-            }
-        }
-    }
-
-    if parts.is_empty() {
-        None
-    } else {
-        // Deduplicate consecutive identical parts (e.g. same city and village)
-        let mut dedup: Vec<&str> = Vec::new();
-        for p in &parts {
-            if dedup.last().map(|&l| l != p.as_str()).unwrap_or(true) {
-                dedup.push(p.as_str());
-            }
-        }
-        let result = dedup.join(", ");
-
-        // Store in cache
-        {
-            let mut cache = CACHE.lock().unwrap();
-            cache.insert(key, (Instant::now(), result.clone()));
-        }
-
-        Some(result)
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Orchestrator — ReAct loop
 // ---------------------------------------------------------------------------
@@ -535,7 +360,64 @@ impl Orchestrator {
                 stream: false,
             };
 
-            let response = self.llm.chat(request).await?;
+            let start = std::time::Instant::now();
+            let response = match self.llm.chat(request).await {
+                Ok(r) => r,
+                Err(e) => {
+                    let duration_ms = start.elapsed().as_millis() as i64;
+                    let _ = StatsRepo::record_request(
+                        &self.db,
+                        &Uuid::new_v4().to_string(),
+                        "default",
+                        profile_id,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0.0,
+                        Some(duration_ms),
+                        "error",
+                        Some(&e.to_string()),
+                        None,
+                        None,
+                    )
+                    .await;
+                    return Err(e.into());
+                }
+            };
+            let duration_ms = start.elapsed().as_millis() as i64;
+
+            let prompt_tokens = response
+                .usage
+                .as_ref()
+                .map(|u| u.prompt_tokens as i64)
+                .unwrap_or(0);
+            let completion_tokens = response
+                .usage
+                .as_ref()
+                .map(|u| u.completion_tokens as i64)
+                .unwrap_or(0);
+            let total_tokens = prompt_tokens + completion_tokens;
+
+            let _ = StatsRepo::record_request(
+                &self.db,
+                &Uuid::new_v4().to_string(),
+                "default",
+                profile_id,
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+                0,
+                0,
+                0.0,
+                Some(duration_ms),
+                "success",
+                None,
+                None,
+                None,
+            )
+            .await;
 
             iterations += 1;
 
@@ -742,7 +624,7 @@ impl Orchestrator {
             let fecha = format_browser_timestamp(&ctx.timestamp, &ctx.timezone)
                 .unwrap_or_else(|| ctx.timestamp.clone());
 
-            let mut parts = vec![format!("{}. Zona horaria: {}.", fecha, ctx.timezone)];
+            let mut parts = vec![format!("{:}.", fecha)];
 
             // Reverse‑geocode coordinates if we have them but no location name yet
             let location_name = if let (Some(lat), Some(lon)) = (ctx.latitude, ctx.longitude) {
@@ -756,10 +638,9 @@ impl Orchestrator {
 
             if let (Some(lat), Some(lon)) = (ctx.latitude, ctx.longitude) {
                 match &location_name {
-                    Some(name) => parts.push(format!(
-                        "El usuario está en {} ({:.4}, {:.4}).",
-                        name, lat, lon
-                    )),
+                    Some(name) => {
+                        parts.push(format!("Ubicación: {} ({:.4}, {:.4}).", name, lat, lon))
+                    }
                     None => parts.push(format!("Coordenadas: ({:.4}, {:.4}).", lat, lon)),
                 }
             }
@@ -891,6 +772,39 @@ impl Orchestrator {
                             .message
                             .tool_calls
                             .or_else(|| tool_calls_from_stream.take());
+
+                        // Record stats for this LLM call
+                        let prompt_tokens = response
+                            .usage
+                            .as_ref()
+                            .map(|u| u.prompt_tokens as i64)
+                            .unwrap_or(0);
+                        let completion_tokens = response
+                            .usage
+                            .as_ref()
+                            .map(|u| u.completion_tokens as i64)
+                            .unwrap_or(0);
+                        let total_tokens = prompt_tokens + completion_tokens;
+
+                        let _ = StatsRepo::record_request(
+                            &self.db,
+                            &Uuid::new_v4().to_string(),
+                            "default",
+                            profile_id,
+                            prompt_tokens,
+                            completion_tokens,
+                            total_tokens,
+                            0,
+                            0,
+                            0.0,
+                            None, // duration_ms
+                            "success",
+                            None,
+                            None,
+                            None,
+                        )
+                        .await;
+
                         if let Some(tcs) = tool_calls {
                             let content = content_buffer.clone();
 
@@ -1282,7 +1196,7 @@ Respond in JSON format:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::provider::{ChatResponse, LLMError, StreamEvent};
+    use crate::llm::provider::{ChatResponse, LLMError, StreamEvent, TokenUsage};
     use crate::tools::permission::Permission;
     use crate::tools::r#trait::{Tool, ToolError, ToolResult};
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -1916,9 +1830,7 @@ mod tests {
         match received {
             Ok(Some(())) => { /* expected: received signal */ }
             _ => {
-                panic!(
-                    "Should have received () via memory_tx after persisting user message"
-                );
+                panic!("Should have received () via memory_tx after persisting user message");
             }
         }
         Ok(())
@@ -2039,9 +1951,7 @@ mod tests {
         match signal2 {
             Ok(Some(())) => { /* second signal received */ }
             _ => {
-                panic!(
-                    "Should have received second () via memory_tx (assistant response)"
-                );
+                panic!("Should have received second () via memory_tx (assistant response)");
             }
         }
         Ok(())
@@ -2945,5 +2855,231 @@ mod tests {
         assert!(result.is_some());
         let s = result.unwrap();
         assert!(s.contains("6:23"), "Expected UTC time 6:23, got: {}", s);
+    }
+
+    // -----------------------------------------------------------------------
+    // Stats recording tests (RED — orchestrator does NOT call record_request yet)
+    // -----------------------------------------------------------------------
+
+    /// Helper: create in-memory SQLite pool, run migrations, seed a default profile.
+    async fn setup_test_db() -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(":memory:")
+                    .create_if_missing(true),
+            )
+            .await
+            .expect("failed to create in-memory pool");
+
+        sqlx::migrate::Migrator::new(std::path::Path::new("migrations"))
+            .await
+            .unwrap()
+            .run(&pool)
+            .await
+            .unwrap();
+
+        // Seed a default profile for FK references
+        sqlx::query(
+            "INSERT OR IGNORE INTO profiles (id, name, preferences) VALUES ('profile-1', 'Test', '{}')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        pool
+    }
+
+    /// Mock LLM that returns plain text immediately (no tool calls).
+    struct SimpleTextLLM;
+
+    #[async_trait::async_trait]
+    impl LLMProvider for SimpleTextLLM {
+        async fn chat(&self, _request: ChatRequest) -> Result<ChatResponse, LLMError> {
+            Ok(ChatResponse {
+                message: ChatMessage {
+                    role: "assistant".into(),
+                    content: "Simple response.".into(),
+                    tool_calls: None,
+                    tool_result: None,
+                    tool_call_id: None,
+                },
+                usage: Some(TokenUsage {
+                    prompt_tokens: 10,
+                    completion_tokens: 5,
+                }),
+            })
+        }
+
+        async fn chat_stream(
+            &self,
+            request: ChatRequest,
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, LLMError>> + Send>>, LLMError>
+        {
+            let result = self.chat(request).await?;
+            let content = result.message.content.clone();
+            let mut events: Vec<Result<StreamEvent, LLMError>> = Vec::new();
+            for chunk in content
+                .chars()
+                .collect::<Vec<_>>()
+                .chunks(10)
+                .map(|c| c.iter().collect::<String>())
+            {
+                events.push(Ok(StreamEvent::Chunk(chunk)));
+            }
+            events.push(Ok(StreamEvent::Done(result)));
+            let stream = futures::stream::iter(events);
+            Ok(Box::pin(stream))
+        }
+
+        async fn embed(&self, _input: &str) -> Result<Vec<f32>, LLMError> {
+            Ok(vec![])
+        }
+    }
+
+    /// Mock LLM that always fails with an HTTP error.
+    struct AlwaysFailingLLM;
+
+    #[async_trait::async_trait]
+    impl LLMProvider for AlwaysFailingLLM {
+        async fn chat(&self, _request: ChatRequest) -> Result<ChatResponse, LLMError> {
+            Err(LLMError::HttpError("fail".into()))
+        }
+
+        async fn chat_stream(
+            &self,
+            _request: ChatRequest,
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, LLMError>> + Send>>, LLMError>
+        {
+            Err(LLMError::HttpError("fail".into()))
+        }
+
+        async fn embed(&self, _input: &str) -> Result<Vec<f32>, LLMError> {
+            Ok(vec![])
+        }
+    }
+
+    #[tokio::test]
+    async fn test_process_message_records_stats() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+
+        let llm = Arc::new(SimpleTextLLM);
+        let registry = Arc::new(ToolRegistry::new());
+        let guardrails = Arc::new(Guardrails::new(registry.clone()));
+        let context_builder = Arc::new(ContextBuilder::new());
+        let config = OrchestratorConfig::default();
+
+        let orchestrator = Orchestrator::new(
+            llm,
+            registry,
+            guardrails,
+            context_builder,
+            config,
+            pool.clone(),
+            None,
+            None,
+        );
+
+        let result = orchestrator.process_message("profile-1", "hello").await?;
+        assert_eq!(result.iterations, 1);
+
+        // RED: this assertion will fail because the orchestrator does not yet
+        // call StatsRepo::record_request() after each LLM call.
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM llm_requests")
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(
+            count, 1,
+            "Expected exactly 1 row in llm_requests. RED: record_request is not yet called."
+        );
+
+        let status: String = sqlx::query_scalar("SELECT status FROM llm_requests")
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(status, "success");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_process_message_stream_records_stats() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+
+        let llm = Arc::new(SimpleTextLLM);
+        let registry = Arc::new(ToolRegistry::new());
+        let guardrails = Arc::new(Guardrails::new(registry.clone()));
+        let context_builder = Arc::new(ContextBuilder::new());
+        let config = OrchestratorConfig::default();
+
+        let orchestrator = Orchestrator::new(
+            llm,
+            registry,
+            guardrails,
+            context_builder,
+            config,
+            pool.clone(),
+            None,
+            None,
+        );
+
+        let (tx, _rx) = mpsc::channel(100);
+        orchestrator
+            .process_message_stream("profile-1", "hello", None, tx)
+            .await?;
+
+        // RED: this assertion will fail because the orchestrator does not yet
+        // call StatsRepo::record_request() after each LLM call.
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM llm_requests")
+            .fetch_one(&pool)
+            .await?;
+        assert!(
+            count >= 1,
+            "Expected at least 1 row in llm_requests. RED: record_request is not yet called."
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_process_message_records_stats_on_llm_error(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+
+        let llm = Arc::new(AlwaysFailingLLM);
+        let registry = Arc::new(ToolRegistry::new());
+        let guardrails = Arc::new(Guardrails::new(registry.clone()));
+        let context_builder = Arc::new(ContextBuilder::new());
+        let config = OrchestratorConfig::default();
+
+        let orchestrator = Orchestrator::new(
+            llm,
+            registry,
+            guardrails,
+            context_builder,
+            config,
+            pool.clone(),
+            None,
+            None,
+        );
+
+        let result = orchestrator.process_message("profile-1", "hello").await;
+        assert!(
+            result.is_err(),
+            "process_message should return an error with AlwaysFailingLLM"
+        );
+
+        // RED: this assertion will fail because the orchestrator does not yet
+        // call StatsRepo::record_request() even on error paths.
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM llm_requests WHERE status = 'error'")
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!(
+            count, 1,
+            "Expected 1 row with status='error' in llm_requests. RED: record_request is not yet called on error."
+        );
+
+        Ok(())
     }
 }

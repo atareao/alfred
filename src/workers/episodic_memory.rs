@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
 use sqlx::Row;
@@ -36,7 +37,7 @@ pub struct EpisodicMemoryConfig {
     /// (default: 30).
     pub poll_interval_minutes: u64,
     /// LLM model used for generating episodic memory cards
-    /// (default: `"mistralai/mistral-small"`).
+    /// (default: `"mistralai/mistral-small-24b-instruct-2501"`).
     pub model: String,
 }
 
@@ -47,7 +48,7 @@ impl Default for EpisodicMemoryConfig {
             inactivity_minutes: 30,
             overlap: 2,
             poll_interval_minutes: 30,
-            model: "mistralai/mistral-small".into(),
+            model: "mistralai/mistral-small-24b-instruct-2501".into(),
         }
     }
 }
@@ -66,6 +67,10 @@ Devuelve la ficha en este formato exacto:
 
 Conversación a procesar:
 {{ BLOQUE_DE_MENSAJES }}"#;
+
+/// Tracks the Unix timestamp (in seconds) of the last failed LLM call.
+/// Used to avoid rapid retries when the LLM returns unparseable responses.
+static LAST_LLM_ATTEMPT: AtomicI64 = AtomicI64::new(0);
 
 /// A structured memory card extracted from an LLM response.
 #[derive(Debug, Clone)]
@@ -175,10 +180,39 @@ impl EpisodicMemoryWorker {
         // 4. Build the message block for the LLM
         let message_block = Self::format_message_block(&primary, &overlap_before, &overlap_after);
 
-        // 5. Call LLM
+        // 5. Rate-limit: skip LLM call if we just failed recently
+        let now_ts = chrono::Utc::now().timestamp();
+        let last_attempt = LAST_LLM_ATTEMPT.load(Ordering::Relaxed);
+        let cooldown_secs: i64 = 60; // fixed 60s cooldown after a failed LLM call
+
+        if now_ts - last_attempt < cooldown_secs && last_attempt > 0 {
+            let unindexed_count: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE is_indexed = 0")
+                    .fetch_one(db)
+                    .await
+                    .unwrap_or(0);
+
+            // Also check that the same messages are still unindexed
+            // (count hasn't changed since last attempt)
+            if unindexed_count > 0 {
+                tracing::warn!(
+                    unindexed_count = %unindexed_count,
+                    seconds_since_last_attempt = %(now_ts - last_attempt),
+                    "EpisodicMemoryWorker: skipping LLM call (rate-limited after previous failure)"
+                );
+                return;
+            }
+        }
+
+        // 5b. Call LLM
         let card = match Self::call_llm(&llm_provider, config, &message_block).await {
-            Some(card) => card,
+            Some(card) => {
+                // Reset the failure tracker on success
+                LAST_LLM_ATTEMPT.store(0, Ordering::Relaxed);
+                card
+            }
             None => {
+                LAST_LLM_ATTEMPT.store(chrono::Utc::now().timestamp(), Ordering::Relaxed);
                 tracing::error!(
                     "EpisodicMemoryWorker: LLM call failed or returned unparseable response"
                 );
@@ -382,6 +416,13 @@ impl EpisodicMemoryWorker {
     ) -> Option<MemoryCard> {
         let system_content = ARCHIVIST_PROMPT.replace("{{ BLOQUE_DE_MENSAJES }}", message_block);
 
+        tracing::debug!(
+            prompt_preview = %system_content.chars().take(200).collect::<String>(),
+            prompt_len = %system_content.len(),
+            model = %config.model,
+            "EpisodicMemoryWorker: LLM request prompt preview"
+        );
+
         let request = ChatRequest {
             model: config.model.clone(),
             messages: vec![ChatMessage {
@@ -405,7 +446,19 @@ impl EpisodicMemoryWorker {
             }
         };
 
-        Self::parse_memory_card(&response.message.content)
+        let content = &response.message.content;
+        let content_preview = content.chars().take(300).collect::<String>();
+        let card = Self::parse_memory_card(content);
+
+        if card.is_none() {
+            tracing::debug!(
+                content_len = %content.len(),
+                content_preview = %content_preview,
+                "EpisodicMemoryWorker: LLM response content preview (unparseable)"
+            );
+        }
+
+        card
     }
 
     /// Parse the structured LLM response into a `MemoryCard`.
@@ -571,6 +624,7 @@ mod tests {
     use crate::db::schema::run_migrations;
     use crate::llm::provider::{ChatMessage, ChatRequest, ChatResponse, LLMError, TokenUsage};
     use async_trait::async_trait;
+    use serial_test::serial;
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     use std::sync::{Arc, Mutex};
 
@@ -713,7 +767,12 @@ mod tests {
     // ─── 3.1 / 3.2: Worker loop ───────────────────────────────────────────
 
     #[tokio::test]
+    #[serial]
     async fn test_worker_loop_receives_channel_signal() {
+        // Reset the global rate limiter from any previous test
+        LAST_LLM_ATTEMPT.store(0, Ordering::Relaxed);
+
+        let db = test_db().await;
         let db = test_db().await;
         let (memory_tx, memory_rx) = mpsc::channel::<()>(16);
         let (shutdown_tx, shutdown_rx) = broadcast::channel::<()>(1);
@@ -757,6 +816,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_worker_loop_shutdown() {
         let db = test_db().await;
         let (_, memory_rx) = mpsc::channel::<()>(16);
@@ -787,6 +847,7 @@ mod tests {
     // ─── 3.3 / 3.4: Query unindexed messages ─────────────────────────────
 
     #[tokio::test]
+    #[serial]
     async fn test_evaluate_selects_unindexed_messages() {
         let db = test_db().await;
         let now = chrono::Utc::now().to_rfc3339();
@@ -818,6 +879,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_evaluate_no_unindexed_messages() {
         let db = test_db().await;
         let now = chrono::Utc::now().to_rfc3339();
@@ -843,6 +905,7 @@ mod tests {
     // ─── Batch size threshold ────────────────────────────────────────────
 
     #[tokio::test]
+    #[serial]
     async fn test_evaluate_batch_size_threshold() {
         let db = test_db().await;
         let now = chrono::Utc::now().to_rfc3339();
@@ -860,6 +923,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_evaluate_below_batch_threshold_and_recent() {
         let db = test_db().await;
         let now = chrono::Utc::now().to_rfc3339();
@@ -900,6 +964,7 @@ mod tests {
     // ─── Inactivity timeout ──────────────────────────────────────────────
 
     #[tokio::test]
+    #[serial]
     async fn test_evaluate_inactivity_triggers_batch() {
         let db = test_db().await;
         let old_time = (chrono::Utc::now() - chrono::Duration::minutes(45)).to_rfc3339();
@@ -940,6 +1005,7 @@ mod tests {
     // ─── 3.5 / 3.6: Batch with overlap ───────────────────────────────────
 
     #[tokio::test]
+    #[serial]
     async fn test_evaluate_batch_with_overlap() {
         let db = test_db().await;
         let base_time = chrono::Utc::now() - chrono::Duration::hours(1);
@@ -1050,6 +1116,7 @@ mod tests {
     // ─── 3.7 / 3.8: LLM generates ficha ───────────────────────────────────
 
     #[tokio::test]
+    #[serial]
     async fn test_evaluate_parses_llm_response() {
         let db = test_db().await;
         let now = chrono::Utc::now().to_rfc3339();
@@ -1086,6 +1153,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_evaluate_unparseable_response_does_not_create_memory() {
         let db = test_db().await;
         let now = chrono::Utc::now().to_rfc3339();
@@ -1108,6 +1176,7 @@ mod tests {
     // ─── 3.9 / 3.10: Persistencia completa ───────────────────────────────
 
     #[tokio::test]
+    #[serial]
     async fn test_evaluate_persists_memory_embedding_and_updates() {
         let db = test_db().await;
         let now = chrono::Utc::now().to_rfc3339();
@@ -1216,6 +1285,7 @@ mod tests {
     // ─── Additional: parse_memory_card unit tests ────────────────────────
 
     #[tokio::test]
+    #[serial]
     async fn test_parse_memory_card_full() {
         let card = EpisodicMemoryWorker::parse_memory_card(SAMPLE_LLM_RESPONSE);
         assert!(card.is_some(), "Should parse valid response");
@@ -1234,12 +1304,14 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_parse_memory_card_empty() {
         let card = EpisodicMemoryWorker::parse_memory_card("");
         assert!(card.is_none(), "Empty input should return None");
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_parse_memory_card_invalid() {
         let card =
             EpisodicMemoryWorker::parse_memory_card("This is just random text without sections.");

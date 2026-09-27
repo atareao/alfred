@@ -51,10 +51,16 @@ impl ConflictDetector {
             let current = &sorted[i];
             let next = &sorted[i + 1];
 
-            let current_end = NaiveDateTime::parse_from_str(&current.end_time, "%Y-%m-%dT%H:%M:%S")
-                .map_err(|e| e.to_string())?;
-            let next_start = NaiveDateTime::parse_from_str(&next.start_time, "%Y-%m-%dT%H:%M:%S")
-                .map_err(|e| e.to_string())?;
+            let current_end = NaiveDateTime::parse_from_str(
+                current.end_time.trim_end_matches('Z'),
+                "%Y-%m-%dT%H:%M:%S",
+            )
+            .map_err(|e| e.to_string())?;
+            let next_start = NaiveDateTime::parse_from_str(
+                next.start_time.trim_end_matches('Z'),
+                "%Y-%m-%dT%H:%M:%S",
+            )
+            .map_err(|e| e.to_string())?;
 
             // Check for overlap
             if next_start < current_end {
