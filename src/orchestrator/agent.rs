@@ -539,6 +539,42 @@ impl Orchestrator {
         }
     }
 
+    /// Resolve the user's current location name from settings or reverse geocoding.
+    /// Caches the result back to settings so subsequent calls are instant.
+    async fn resolve_location(&self) -> Option<String> {
+        // First try stored location_name
+        if let Some(name) = crate::db::repos::settings::SettingsRepo::get(&self.db, "location_name")
+            .await
+            .ok()
+            .flatten()
+        {
+            return Some(name);
+        }
+
+        // Fall back to reverse geocoding from stored lat/lon
+        let lat = crate::db::repos::settings::SettingsRepo::get(&self.db, "latitude")
+            .await
+            .ok()
+            .flatten()
+            .and_then(|v| v.parse::<f64>().ok());
+        let lon = crate::db::repos::settings::SettingsRepo::get(&self.db, "longitude")
+            .await
+            .ok()
+            .flatten()
+            .and_then(|v| v.parse::<f64>().ok());
+
+        if let (Some(lat), Some(lon)) = (lat, lon) {
+            let address = crate::tools::geo_utils::reverse_geocode(lat, lon).await?;
+            // Cache back to settings so next call is instant
+            let _ =
+                crate::db::repos::settings::SettingsRepo::set(&self.db, "location_name", &address)
+                    .await;
+            Some(address)
+        } else {
+            None
+        }
+    }
+
     /// Streaming entry point: runs the ReAct loop and emits [`SSEEvent`] values
     /// over the provided channel so the frontend can receive them incrementally.
     pub async fn process_message_stream(
@@ -695,6 +731,7 @@ impl Orchestrator {
         });
 
         // Persist user message to DB
+        let location = self.resolve_location().await;
         let user_message_id = {
             let collapse_callback = self.collapse_tx.clone().map(|tx| {
                 Box::new(move |msg_id: String| {
@@ -707,7 +744,7 @@ impl Orchestrator {
                 user_message,
                 None,
                 None,
-                None,
+                location.as_deref(),
                 2000,
                 collapse_callback,
             )
@@ -1012,6 +1049,7 @@ impl Orchestrator {
                             };
 
                             // Persist assistant message to DB (capture the real UUID)
+                            let location = self.resolve_location().await;
                             let assistant_message_id = {
                                 let collapse_callback = self.collapse_tx.clone().map(|tx| {
                                     Box::new(move |msg_id: String| {
@@ -1025,7 +1063,7 @@ impl Orchestrator {
                                     &final_text,
                                     None,
                                     None,
-                                    None,
+                                    location.as_deref(),
                                     2000,
                                     collapse_callback,
                                 )

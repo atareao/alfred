@@ -92,23 +92,23 @@ pub async fn stream_message(
     let content = query.content.clone();
     let browser_context = query.browser_context.clone();
 
-    // Persist browser_context into settings for get_current_time/get_current_location tools
+    // Persist browser_context into settings (inline — reverse_geocode has internal cache)
     if let Some(ref ctx) = query.browser_context {
-        let pool = state.db.clone();
-        let ctx_clone = ctx.clone();
-        tokio::spawn(async move {
-            use crate::db::repos::settings::SettingsRepo;
-            let _ = SettingsRepo::set(&pool, "timezone", &ctx_clone.timezone).await;
-            if let Some(lat) = ctx_clone.latitude {
-                let _ = SettingsRepo::set(&pool, "latitude", &lat.to_string()).await;
+        use crate::db::repos::settings::SettingsRepo;
+        let _ = SettingsRepo::set(&state.db, "timezone", &ctx.timezone).await;
+        if let Some(lat) = ctx.latitude {
+            let _ = SettingsRepo::set(&state.db, "latitude", &lat.to_string()).await;
+        }
+        if let Some(lon) = ctx.longitude {
+            let _ = SettingsRepo::set(&state.db, "longitude", &lon.to_string()).await;
+        }
+        if let Some(ref loc) = ctx.location_name {
+            let _ = SettingsRepo::set(&state.db, "location_name", loc).await;
+        } else if let (Some(lat), Some(lon)) = (ctx.latitude, ctx.longitude) {
+            if let Some(address) = crate::tools::geo_utils::reverse_geocode(lat, lon).await {
+                let _ = SettingsRepo::set(&state.db, "location_name", &address).await;
             }
-            if let Some(lon) = ctx_clone.longitude {
-                let _ = SettingsRepo::set(&pool, "longitude", &lon.to_string()).await;
-            }
-            if let Some(ref loc) = ctx_clone.location_name {
-                let _ = SettingsRepo::set(&pool, "location_name", loc).await;
-            }
-        });
+        }
     }
 
     tokio::spawn(async move {
