@@ -182,7 +182,8 @@ mod tests {
     /// Helper: create a long message (> 2000 tokens) and return its id.
     async fn create_long_message(pool: &DbPool) -> Result<String, sqlx::Error> {
         let long_content = "x".repeat(8000);
-        let msg = MessagesRepo::create(pool, "user", &long_content, None, None, 2000, None).await?;
+        let msg =
+            MessagesRepo::create(pool, "user", &long_content, None, None, None, 2000, None).await?;
         Ok(msg.id)
     }
 

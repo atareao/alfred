@@ -43,12 +43,18 @@ pub async fn create_message(
         }) as Box<dyn Fn(String) + Send>
     });
 
+    let location = crate::db::repos::settings::SettingsRepo::get(&state.db, "location_name")
+        .await
+        .ok()
+        .flatten();
+
     let msg = crate::db::repos::messages::MessagesRepo::create(
         &state.db,
         &body.role,
         &body.content,
         body.tool_calls.as_ref(),
         body.tool_results.as_ref(),
+        location.as_deref(),
         2000,
         collapse_callback,
     )
@@ -94,6 +100,7 @@ mod tests {
                 &state.db,
                 "user",
                 &format!("Message {}", i),
+                None,
                 None,
                 None,
                 2000,

@@ -44,6 +44,7 @@ pub struct Message {
     pub collapsed_tokens_count: usize,
     pub is_indexed: bool,
     pub summary_ref: Option<String>,
+    pub location: Option<String>,
     pub created_at: String,
 }
 
@@ -99,6 +100,25 @@ pub fn estimate_markdown_tokens_heuristic(text: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_message_location_field() {
+        let msg = Message {
+            id: "test-id".to_string(),
+            role: "user".to_string(),
+            content: "Hello".to_string(),
+            tool_calls: None,
+            tool_results: None,
+            tokens_count: 0,
+            collapsed_content: None,
+            collapsed_tokens_count: 0,
+            is_indexed: false,
+            summary_ref: None,
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            location: Some("Barcelona".to_string()),
+        };
+        assert_eq!(msg.location, Some("Barcelona".to_string()));
+    }
 
     #[test]
     fn test_estimate_markdown_tokens_heuristic_empty() {
