@@ -2,6 +2,7 @@ import type {
   CalendarEvent,
   ChatInitResponse,
   CreateMessage,
+  MemoryStats,
   Message,
   PaginatedResponse,
   Profile,
@@ -113,4 +114,5 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ days }),
     }),
+  getMemoryStats: () => request<MemoryStats>("/stats/memory"),
 };
