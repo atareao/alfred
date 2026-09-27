@@ -707,6 +707,7 @@ impl Orchestrator {
                 user_message,
                 None,
                 None,
+                None,
                 2000,
                 collapse_callback,
             )
@@ -1022,6 +1023,7 @@ impl Orchestrator {
                                     &self.db,
                                     "assistant",
                                     &final_text,
+                                    None,
                                     None,
                                     None,
                                     2000,

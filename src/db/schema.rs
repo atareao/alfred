@@ -185,6 +185,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_messages_table_has_location_column() {
+        let pool = setup().await;
+
+        let column_names: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM pragma_table_info('messages')")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+
+        assert!(
+            column_names.contains(&"location".to_string()),
+            "Column 'location' should exist in messages table"
+        );
+    }
+
+    #[tokio::test]
     async fn test_messages_table_has_new_columns() {
         let pool = setup().await;
 

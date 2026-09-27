@@ -1,6 +1,7 @@
 import React, { useRef, useEffect } from "react";
 import type { Message } from "../types";
 import { MessageBubble } from "./MessageBubble";
+import { DateSeparator } from "./DateSeparator";
 import { MessageInput, type MessageInputHandle } from "./MessageInput";
 
 interface ChatViewProps {
@@ -11,6 +12,16 @@ interface ChatViewProps {
   streamingContent?: string;
   activeTools?: string[];
   settings?: Record<string, string> | null;
+}
+
+function isSameDay(date1: string, date2: string): boolean {
+  const d1 = new Date(date1);
+  const d2 = new Date(date2);
+  return (
+    d1.getFullYear() === d2.getFullYear() &&
+    d1.getMonth() === d2.getMonth() &&
+    d1.getDate() === d2.getDate()
+  );
 }
 
 export const ChatView: React.FC<ChatViewProps> = (props) => {
@@ -67,9 +78,16 @@ export const ChatView: React.FC<ChatViewProps> = (props) => {
         }}
       >
         {loading && <div>Cargando...</div>}
-        {allMessages.map((msg) => (
-          <MessageBubble key={msg.id} message={msg} />
-        ))}
+        {allMessages.map((msg, idx) => {
+          const prevMsg = idx > 0 ? allMessages[idx - 1] : null;
+          const showSeparator = !prevMsg || !isSameDay(prevMsg.created_at, msg.created_at);
+          return (
+            <React.Fragment key={msg.id}>
+              {showSeparator && <DateSeparator date={msg.created_at} />}
+              <MessageBubble message={msg} />
+            </React.Fragment>
+          );
+        })}
         <div ref={bottomRef} />
         {allMessages.length === 0 && !loading && (
           <div

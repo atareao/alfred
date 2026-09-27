@@ -12,6 +12,18 @@ import type { Message } from "../types";
 
 const { Text } = Typography;
 
+function formatTime(isoDate: string): string {
+  const date = new Date(isoDate);
+  const hours = date.getUTCHours().toString().padStart(2, "0");
+  const minutes = date.getUTCMinutes().toString().padStart(2, "0");
+  return `${hours}:${minutes}`;
+}
+
+function extractCity(location: string): string {
+  // "Silla, Valencia, España" → "Silla"
+  return location.split(",")[0].trim();
+}
+
 interface MessageBubbleProps {
   message: Message;
 }
@@ -91,8 +103,20 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({ message }) => {
         ) : (
           renderContent()
         )}
-        <div style={{ fontSize: 11, marginTop: 4, opacity: 0.5 }}>
-          {message.role}
+        <div style={{ fontSize: 10, marginTop: 4, opacity: 0.35, display: "flex", gap: 4 }}>
+          <span>{message.role}</span>
+          {message.id !== "streaming" && (
+            <>
+              <span>·</span>
+              <span>{formatTime(message.created_at)}</span>
+              {message.location && (
+                <>
+                  <span>·</span>
+                  <span>📍 {extractCity(message.location)}</span>
+                </>
+              )}
+            </>
+          )}
         </div>
       </div>
       {config.showIcon && config.iconPosition === "right" && (
