@@ -42,6 +42,7 @@ vi.mock("../api/client", () => ({
     getStatsByDay: vi.fn(),
     getStatsTools: vi.fn(),
     getDbSizes: vi.fn(),
+    getMemoryStats: vi.fn(),
     getRetention: vi.fn(),
     setRetention: vi.fn(),
   },

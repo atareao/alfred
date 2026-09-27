@@ -147,6 +147,13 @@ export interface RetentionConfig {
   days: number;
 }
 
+export interface MemoryStats {
+  total_memories: number;
+  total_tokens: number;
+  messages_indexed: number;
+  messages_total: number;
+}
+
 export interface CalendarEvent {
   id: string;
   profile_id: string;

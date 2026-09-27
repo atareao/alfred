@@ -44,6 +44,14 @@ pub struct Config {
     pub collapse_threshold_tokens: usize,
     // Model used for collapse/summary
     pub collapse_model: String,
+
+    // Episodic Memory
+    pub memory_batch_tokens: usize,
+    pub memory_inactivity_minutes: u64,
+    pub memory_overlap: i64,
+    pub memory_poll_interval_minutes: u64,
+    pub memory_model: String,
+    pub rag_budget_tokens: usize,
 }
 
 impl Config {
@@ -96,6 +104,29 @@ impl Config {
                 .unwrap_or(2000),
             collapse_model: env::var("COLLAPSE_MODEL")
                 .unwrap_or_else(|_| "mistralai/mistral-small".into()),
+
+            memory_batch_tokens: env::var("MEMORY_BATCH_TOKENS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(2000),
+            memory_inactivity_minutes: env::var("MEMORY_INACTIVITY_MINUTES")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(30),
+            memory_overlap: env::var("MEMORY_OVERLAP")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(2),
+            memory_poll_interval_minutes: env::var("MEMORY_POLL_INTERVAL_MINUTES")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(30),
+            memory_model: env::var("MEMORY_MODEL")
+                .unwrap_or_else(|_| "mistralai/mistral-small".into()),
+            rag_budget_tokens: env::var("RAG_BUDGET_TOKENS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(2000),
         }
     }
 }
@@ -136,6 +167,12 @@ mod tests {
             "TRAVEL_PREP_DAYS_BEFORE",
             "COLLAPSE_THRESHOLD_TOKENS",
             "COLLAPSE_MODEL",
+            "MEMORY_BATCH_TOKENS",
+            "MEMORY_INACTIVITY_MINUTES",
+            "MEMORY_OVERLAP",
+            "MEMORY_POLL_INTERVAL_MINUTES",
+            "MEMORY_MODEL",
+            "RAG_BUDGET_TOKENS",
         ] {
             env::remove_var(var);
         }
@@ -169,6 +206,13 @@ mod tests {
         assert_eq!(cfg.travel_prep_days_before, 3);
         assert_eq!(cfg.collapse_threshold_tokens, 2000);
         assert_eq!(cfg.collapse_model, "mistralai/mistral-small");
+
+        assert_eq!(cfg.memory_batch_tokens, 2000);
+        assert_eq!(cfg.memory_inactivity_minutes, 30);
+        assert_eq!(cfg.memory_overlap, 2);
+        assert_eq!(cfg.memory_poll_interval_minutes, 30);
+        assert_eq!(cfg.memory_model, "mistralai/mistral-small");
+        assert_eq!(cfg.rag_budget_tokens, 2000);
     }
 
     /// When environment variables are set, [`Config::from_env`] must pick
@@ -200,6 +244,12 @@ mod tests {
         env::set_var("TRAVEL_PREP_DAYS_BEFORE", "5");
         env::set_var("COLLAPSE_THRESHOLD_TOKENS", "500");
         env::set_var("COLLAPSE_MODEL", "google/gemini-2.0-flash-lite");
+        env::set_var("MEMORY_BATCH_TOKENS", "5000");
+        env::set_var("MEMORY_INACTIVITY_MINUTES", "15");
+        env::set_var("MEMORY_OVERLAP", "3");
+        env::set_var("MEMORY_POLL_INTERVAL_MINUTES", "10");
+        env::set_var("MEMORY_MODEL", "google/gemini-2.0-flash-lite");
+        env::set_var("RAG_BUDGET_TOKENS", "4000");
 
         let cfg = Config::from_env();
 
@@ -236,6 +286,12 @@ mod tests {
         assert_eq!(cfg.travel_prep_days_before, 5);
         assert_eq!(cfg.collapse_threshold_tokens, 500);
         assert_eq!(cfg.collapse_model, "google/gemini-2.0-flash-lite");
+        assert_eq!(cfg.memory_batch_tokens, 5000);
+        assert_eq!(cfg.memory_inactivity_minutes, 15);
+        assert_eq!(cfg.memory_overlap, 3);
+        assert_eq!(cfg.memory_poll_interval_minutes, 10);
+        assert_eq!(cfg.memory_model, "google/gemini-2.0-flash-lite");
+        assert_eq!(cfg.rag_budget_tokens, 4000);
 
         // Clean up to avoid polluting other tests
         for var in [
@@ -262,6 +318,12 @@ mod tests {
             "TRAVEL_PREP_DAYS_BEFORE",
             "COLLAPSE_THRESHOLD_TOKENS",
             "COLLAPSE_MODEL",
+            "MEMORY_BATCH_TOKENS",
+            "MEMORY_INACTIVITY_MINUTES",
+            "MEMORY_OVERLAP",
+            "MEMORY_POLL_INTERVAL_MINUTES",
+            "MEMORY_MODEL",
+            "RAG_BUDGET_TOKENS",
         ] {
             env::remove_var(var);
         }
@@ -295,6 +357,12 @@ mod tests {
             "TRAVEL_PREP_DAYS_BEFORE",
             "COLLAPSE_THRESHOLD_TOKENS",
             "COLLAPSE_MODEL",
+            "MEMORY_BATCH_TOKENS",
+            "MEMORY_INACTIVITY_MINUTES",
+            "MEMORY_OVERLAP",
+            "MEMORY_POLL_INTERVAL_MINUTES",
+            "MEMORY_MODEL",
+            "RAG_BUDGET_TOKENS",
         ] {
             env::remove_var(var);
         }
@@ -331,6 +399,12 @@ mod tests {
             "TRAVEL_PREP_DAYS_BEFORE",
             "COLLAPSE_THRESHOLD_TOKENS",
             "COLLAPSE_MODEL",
+            "MEMORY_BATCH_TOKENS",
+            "MEMORY_INACTIVITY_MINUTES",
+            "MEMORY_OVERLAP",
+            "MEMORY_POLL_INTERVAL_MINUTES",
+            "MEMORY_MODEL",
+            "RAG_BUDGET_TOKENS",
         ] {
             env::remove_var(var);
         }

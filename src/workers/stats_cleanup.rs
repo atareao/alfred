@@ -18,22 +18,20 @@ pub async fn run_cleanup_worker(pool: SqlitePool) {
     loop {
         ticker.tick().await;
         match StatsRepo::get_retention_days(&pool).await {
-            Ok(days) => {
-                match StatsRepo::purge_old(&pool, days).await {
-                    Ok(count) => {
-                        if count > 0 {
-                            tracing::info!(
-                                deleted = count,
-                                retention_days = days,
-                                "Stats cleanup: purged old llm_requests",
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "Stats cleanup: purge_old failed");
+            Ok(days) => match StatsRepo::purge_old(&pool, days).await {
+                Ok(count) => {
+                    if count > 0 {
+                        tracing::info!(
+                            deleted = count,
+                            retention_days = days,
+                            "Stats cleanup: purged old llm_requests",
+                        );
                     }
                 }
-            }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Stats cleanup: purge_old failed");
+                }
+            },
             Err(e) => {
                 tracing::warn!(error = %e, "Stats cleanup: failed to read retention days");
             }
@@ -126,8 +124,20 @@ mod tests {
         for i in 0..5 {
             let id = format!("old-{i}");
             insert_request(
-                &pool, &id, "gpt-4o", 10, 5, 15, 0, 0, 0.001, None,
-                "success", None, None, Some("2026-08-12T00:00:00"),
+                &pool,
+                &id,
+                "gpt-4o",
+                10,
+                5,
+                15,
+                0,
+                0,
+                0.001,
+                None,
+                "success",
+                None,
+                None,
+                Some("2026-08-12T00:00:00"),
             )
             .await;
         }
@@ -136,18 +146,29 @@ mod tests {
         for i in 0..3 {
             let id = format!("recent-{i}");
             insert_request(
-                &pool, &id, "gpt-4o", 10, 5, 15, 0, 0, 0.001, None,
-                "success", None, None, Some("2026-09-21T00:00:00"),
+                &pool,
+                &id,
+                "gpt-4o",
+                10,
+                5,
+                15,
+                0,
+                0,
+                0.001,
+                None,
+                "success",
+                None,
+                None,
+                Some("2026-09-21T00:00:00"),
             )
             .await;
         }
 
         // Verify total before purge
-        let total_before: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM llm_requests")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let total_before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM llm_requests")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         assert_eq!(total_before, 8, "should have 8 records before purge");
 
         // Act: purge with 30 days retention
@@ -157,12 +178,14 @@ mod tests {
         assert_eq!(deleted, 5, "should purge exactly 5 old records");
 
         // Assert: only 3 recent records remain
-        let total_after: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM llm_requests")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!(total_after, 3, "should have 3 records remaining after purge");
+        let total_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM llm_requests")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            total_after, 3,
+            "should have 3 records remaining after purge"
+        );
     }
 
     // ── Test 2: purge_old on empty table ─────────────────────────────────

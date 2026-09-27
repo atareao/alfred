@@ -628,8 +628,8 @@ pub fn parse_sse_event(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wiremock::{Mock, MockServer, ResponseTemplate};
     use wiremock::matchers::{any, method};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn make_response_body_with_tool_calls() -> Value {
         serde_json::json!({
@@ -1211,17 +1211,27 @@ mod tests {
 
         let _ = provider.chat(request).await;
 
-        let headers = captured_headers.lock().unwrap().take().expect("No headers captured");
+        let headers = captured_headers
+            .lock()
+            .unwrap()
+            .take()
+            .expect("No headers captured");
 
         // Check HTTP-Referer header
-        let referer = headers.get("HTTP-Referer")
+        let referer = headers
+            .get("HTTP-Referer")
             .or_else(|| headers.get("http-referer"))
             .or_else(|| headers.get("Http-Referer"))
             .and_then(|v| v.to_str().ok());
-        assert_eq!(referer, Some("https://github.com/atareao/alfred"), "Missing or incorrect HTTP-Referer header");
+        assert_eq!(
+            referer,
+            Some("https://github.com/atareao/alfred"),
+            "Missing or incorrect HTTP-Referer header"
+        );
 
         // Check X-Title header
-        let title = headers.get("X-Title")
+        let title = headers
+            .get("X-Title")
             .or_else(|| headers.get("x-title"))
             .or_else(|| headers.get("X-title"))
             .and_then(|v| v.to_str().ok());

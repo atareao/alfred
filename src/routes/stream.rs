@@ -496,6 +496,7 @@ mod tests {
             config,
             pool.clone(),
             None,
+            None,
         ));
 
         // 5. Build AppState
@@ -506,6 +507,7 @@ mod tests {
             tool_registry: Some(registry),
             auth_config: None,
             collapse_tx: None,
+            memory_tx: None,
         };
 
         // 6. Build axum Router

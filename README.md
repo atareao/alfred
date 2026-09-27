@@ -14,6 +14,23 @@ Un asistente ejecutivo y de vida personal auto-hospedado para el hogar. Diseñad
 - **🔔 Proactivo**: Briefing matutino, detección de conflictos, preparación de viajes
 - **📱 PWA**: Frontend React + Ant Design, responsive
 
+## 🧠 Memoria Episódica
+
+Alfred cuenta con un sistema de memoria episódica de dos capas:
+
+- **Capa A (mensajes en bruto)**: Tabla `messages` con cada interacción usuario↔asistente
+- **Capa B (fichas episódicas)**: Tabla `memory` con resúmenes sintéticos generados por un LLM secundario
+
+El worker `EpisodicMemoryWorker` se dispara al insertar un mensaje (o cada 30 min como respaldo):
+1. Acumula mensajes sin indexar hasta ~2000 tokens
+2. Añade ±2 mensajes de solapamiento para contexto
+3. Envía el bloque a un LLM secundario con prompt de archivista
+4. Genera una ficha estructurada (FECHA, TEMAS, HECHOS, SÍNTESIS)
+5. Almacena la ficha + embedding vectorial en `memory` + `vec_memory`
+6. Marca los mensajes como indexados
+
+En el chat, el orquestador usa **RAG**: genera embedding de la consulta del usuario, busca en `vec_memory` por similitud coseno, e inyecta las fichas más relevantes en el contexto (respetando un presupuesto de tokens).
+
 ## Stack
 
 | Capa | Tecnología |
@@ -61,6 +78,12 @@ Variables de entorno principales (ver `.env.example`):
 | `AUTH_ENABLED` | Habilitar autenticación | `false` |
 | `LOG_LEVEL` | Nivel de log | `info` |
 | `BRIEFING_TIME` | Hora del briefing | `08:15` |
+| `MEMORY_BATCH_TOKENS` | Tokens acumulados para trigger de ficha episódica | `2000` |
+| `MEMORY_INACTIVITY_MINUTES` | Minutos de inactividad para forzar ficha | `30` |
+| `MEMORY_OVERLAP` | Mensajes de solapamiento (±) en el bloque | `2` |
+| `MEMORY_POLL_INTERVAL_MINUTES` | Intervalo del timer de respaldo | `30` |
+| `MEMORY_MODEL` | Modelo LLM para generar fichas | `mistralai/mistral-small` |
+| `RAG_BUDGET_TOKENS` | Presupuesto de tokens para RAG en el chat | `2000` |
 
 ## Producción
 
@@ -94,6 +117,12 @@ docker compose -f docker-compose.prod.yml up -d
 │  └──────────────────────────────────────────┘    │
 └──────────────────────────────────────────────────┘
 ```
+
+## API — Stats
+
+| Método | Ruta | Descripción |
+|--------|------|-------------|
+| GET | `/api/stats/memory` | Estadísticas de memoria episódica |
 
 ## Tests
 

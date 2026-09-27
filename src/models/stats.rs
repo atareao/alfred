@@ -50,3 +50,12 @@ pub struct TableSize {
     pub table: String,
     pub rows: u64,
 }
+
+/// Aggregate statistics over episodic memory.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryStats {
+    pub total_memories: u64,
+    pub total_tokens: u64,
+    pub messages_indexed: u64,
+    pub messages_total: u64,
+}

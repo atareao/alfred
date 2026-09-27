@@ -55,14 +55,12 @@ impl UnifiedSearchTool {
     ) -> Result<ToolResult, ToolError> {
         let tables: Vec<(&str, &str)> = match dimensions {
             Some("messages") => vec![("messages_fts", "message")],
-            Some("memories") => vec![("memories_fts", "memory")],
             Some("notes") => vec![("notes_fts", "note")],
             Some("events") => vec![("events_fts", "event")],
             Some("tasks") => vec![("tasks_fts", "task")],
             Some("contacts") => vec![("contacts_fts", "contact")],
             _ => vec![
                 ("messages_fts", "message"),
-                ("memories_fts", "memory"),
                 ("notes_fts", "note"),
                 ("events_fts", "event"),
                 ("tasks_fts", "task"),
@@ -104,7 +102,7 @@ impl Tool for UnifiedSearchTool {
     }
 
     fn description(&self) -> &'static str {
-        "Buscar en todas las dimensiones (mensajes, memorias, notas, eventos, tareas, contactos)"
+        "Buscar en todas las dimensiones (mensajes, notas, eventos, tareas, contactos)"
     }
 
     fn parameters(&self) -> Value {
@@ -114,7 +112,7 @@ impl Tool for UnifiedSearchTool {
                 "query": { "type": "string", "description": "Texto a buscar" },
                 "dimensions": {
                     "type": "string",
-                    "enum": ["messages", "memories", "notes", "events", "tasks", "contacts"],
+                    "enum": ["messages", "notes", "events", "tasks", "contacts"],
                     "description": "Limitar a una dimensión específica"
                 },
                 "limit": { "type": "integer", "description": "Máximo de resultados (default: 10)" }

@@ -1,21 +1,18 @@
 import React, { useState, useEffect } from "react";
 import { Layout, Typography, Button, Space, Modal } from "antd";
 import {
-  UserOutlined,
   SettingOutlined,
   CalendarOutlined,
   CheckSquareOutlined,
   BarChartOutlined,
 } from "@ant-design/icons";
 import { ChatView } from "./ChatView";
-import { ProfileEditor } from "./ProfileEditor";
-import { SettingsEditor } from "./SettingsEditor";
+import { SettingsDialog } from "./SettingsDialog";
 import { CalendarView } from "./CalendarView";
 import { TaskView } from "./TaskView";
+import { StatsDashboard } from "../pages/StatsDashboard";
 import { useMainChat } from "../hooks/useMainChat";
-import { useProfile } from "../hooks/useProfile";
 import { useSettings } from "../hooks/useSettings";
-import { useNavigate } from "react-router-dom";
 
 const { Header, Content } = Layout;
 const { Text } = Typography;
@@ -26,9 +23,7 @@ interface AppLayoutProps {
 
 export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
   const mainChat = useMainChat();
-  const profile = useProfile();
   const { settings } = useSettings();
-  const navigate = useNavigate();
 
   // Apply font-size as CSS variable on root element
   const fontSize = settings?.font_size ? parseInt(settings.font_size, 10) : 16;
@@ -38,10 +33,10 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
       `${fontSize}px`,
     );
   }, [fontSize]);
-  const [profileVisible, setProfileVisible] = useState(false);
   const [settingsVisible, setSettingsVisible] = useState(false);
   const [calendarVisible, setCalendarVisible] = useState(false);
   const [tasksVisible, setTasksVisible] = useState(false);
+  const [statsVisible, setStatsVisible] = useState(false);
 
   return (
     <Layout style={{ minHeight: "100vh" }}>
@@ -74,13 +69,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
           <Button
             type="text"
             icon={<BarChartOutlined />}
-            onClick={() => navigate("/stats")}
-            style={{ color: "rgba(255,255,255,0.65)" }}
-          />
-          <Button
-            type="text"
-            icon={<UserOutlined />}
-            onClick={() => setProfileVisible(true)}
+            onClick={() => setStatsVisible(true)}
             style={{ color: "rgba(255,255,255,0.65)" }}
           />
           <Button
@@ -129,13 +118,16 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
       >
         <TaskView onClose={() => setTasksVisible(false)} />
       </Modal>
-      <ProfileEditor
-        profile={profile.profile}
-        onUpdate={profile.updateProfile}
-        visible={profileVisible}
-        onClose={() => setProfileVisible(false)}
-      />
-      <SettingsEditor
+      <Modal
+        title="📊 Stats"
+        open={statsVisible}
+        onCancel={() => setStatsVisible(false)}
+        footer={null}
+        width={1000}
+      >
+        <StatsDashboard />
+      </Modal>
+      <SettingsDialog
         visible={settingsVisible}
         onClose={() => setSettingsVisible(false)}
       />

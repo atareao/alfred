@@ -1,8 +1,9 @@
 import { useState, useEffect } from "react";
 import { Row, Col, Spin, Alert, Empty } from "antd";
 import { api } from "../api/client";
-import type { StatsSummary, ModelStats, DayStats, ToolStats, TableSize } from "../types";
+import type { StatsSummary, ModelStats, DayStats, ToolStats, TableSize, MemoryStats } from "../types";
 import { SummaryCard } from "../components/stats/SummaryCard";
+import { MemoryCard } from "../components/stats/MemoryCard";
 import { ModelChart } from "../components/stats/ModelChart";
 import { DailyChart } from "../components/stats/DailyChart";
 import { ToolsChart } from "../components/stats/ToolsChart";
@@ -15,6 +16,7 @@ export const StatsDashboard: React.FC = () => {
   const [byDay, setByDay] = useState<DayStats[]>([]);
   const [tools, setTools] = useState<ToolStats[]>([]);
   const [dbSizes, setDbSizes] = useState<TableSize[]>([]);
+  const [memory, setMemory] = useState<MemoryStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedDays, setSelectedDays] = useState(30);
   const [error, setError] = useState<string | null>(null);
@@ -23,19 +25,21 @@ export const StatsDashboard: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      const [summaryData, modelData, dayData, toolsData, dbData] =
+      const [summaryData, modelData, dayData, toolsData, dbData, memoryData] =
         await Promise.all([
           api.getStatsSummary(),
           api.getStatsByModel(),
           api.getStatsByDay(days),
           api.getStatsTools(),
           api.getDbSizes(),
+          api.getMemoryStats(),
         ]);
       setSummary(summaryData);
       setByModel(modelData);
       setByDay(dayData);
       setTools(toolsData);
       setDbSizes(dbData);
+      setMemory(memoryData);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load stats");
     } finally {
@@ -89,7 +93,8 @@ export const StatsDashboard: React.FC = () => {
     byModel.length > 0 ||
     byDay.length > 0 ||
     tools.length > 0 ||
-    dbSizes.length > 0;
+    dbSizes.length > 0 ||
+    (memory && memory.total_memories > 0);
 
   if (!loading && !hasData) {
     return (
@@ -104,6 +109,9 @@ export const StatsDashboard: React.FC = () => {
       <Row gutter={[16, 16]}>
         <Col span={24}>
           <SummaryCard data={summary} loading={loading} />
+        </Col>
+        <Col span={24}>
+          <MemoryCard data={memory} loading={loading} />
         </Col>
         <Col xs={24} lg={12}>
           <ModelChart data={byModel} loading={loading} />

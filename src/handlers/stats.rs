@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::db::repos::stats::StatsRepo;
 use crate::errors::AppError;
-use crate::models::stats::{DayStats, ModelStats, StatsSummary, TableSize, ToolStats};
+use crate::models::stats::{DayStats, MemoryStats, ModelStats, StatsSummary, TableSize, ToolStats};
 use crate::AppState;
 
 // ── Request / Response types ────────────────────────────────────────────────
@@ -89,9 +89,7 @@ pub async fn db_sizes_handler(
 }
 
 /// Export all LLM request records as a downloadable CSV file.
-pub async fn export_csv_handler(
-    State(state): State<AppState>,
-) -> Result<CsvResponse, AppError> {
+pub async fn export_csv_handler(State(state): State<AppState>) -> Result<CsvResponse, AppError> {
     let csv = StatsRepo::export_csv(&state.db).await?;
     Ok(CsvResponse(csv))
 }
@@ -111,6 +109,12 @@ pub async fn set_retention_handler(
 ) -> Result<Json<Value>, AppError> {
     StatsRepo::set_retention_days(&state.db, body.days).await?;
     Ok(Json(serde_json::json!({ "days": body.days })))
+}
+
+/// Aggregate statistics over episodic memory.
+pub async fn memory_handler(State(state): State<AppState>) -> Result<Json<MemoryStats>, AppError> {
+    let stats = StatsRepo::memory_summary(&state.db).await?;
+    Ok(Json(stats))
 }
 
 #[cfg(test)]
@@ -186,9 +190,7 @@ mod tests {
     #[tokio::test]
     async fn test_summary_handler_empty() {
         let state = setup_state().await;
-        let res = summary_handler(State(state))
-            .await
-            .unwrap();
+        let res = summary_handler(State(state)).await.unwrap();
         assert_eq!(res.0.total_calls, 0);
         assert_eq!(res.0.total_cost, 0.0);
         assert!(res.0.avg_duration_ms.is_none());
@@ -198,9 +200,57 @@ mod tests {
     async fn test_summary_handler_with_data() {
         let state = setup_state().await;
 
-        insert_request(&state.db, "h1", "gpt-4o", 100, 50, 150, 10, 5, 0.01, Some(200), "success", None, None, None).await;
-        insert_request(&state.db, "h2", "gpt-4o", 200, 100, 300, 20, 10, 0.02, Some(300), "success", None, None, None).await;
-        insert_request(&state.db, "h3", "claude-3", 0, 0, 0, 0, 0, 0.0, None, "error", Some("timeout"), None, None).await;
+        insert_request(
+            &state.db,
+            "h1",
+            "gpt-4o",
+            100,
+            50,
+            150,
+            10,
+            5,
+            0.01,
+            Some(200),
+            "success",
+            None,
+            None,
+            None,
+        )
+        .await;
+        insert_request(
+            &state.db,
+            "h2",
+            "gpt-4o",
+            200,
+            100,
+            300,
+            20,
+            10,
+            0.02,
+            Some(300),
+            "success",
+            None,
+            None,
+            None,
+        )
+        .await;
+        insert_request(
+            &state.db,
+            "h3",
+            "claude-3",
+            0,
+            0,
+            0,
+            0,
+            0,
+            0.0,
+            None,
+            "error",
+            Some("timeout"),
+            None,
+            None,
+        )
+        .await;
 
         let res = summary_handler(State(state)).await.unwrap();
         assert_eq!(res.0.total_calls, 3);
@@ -216,9 +266,57 @@ mod tests {
     async fn test_by_model_handler() {
         let state = setup_state().await;
 
-        insert_request(&state.db, "m1", "gpt-4o", 100, 50, 150, 10, 5, 0.02, Some(200), "success", None, None, None).await;
-        insert_request(&state.db, "m2", "gpt-4o", 50, 25, 75, 5, 3, 0.01, Some(100), "success", None, None, None).await;
-        insert_request(&state.db, "m3", "claude-3", 200, 100, 300, 20, 10, 0.04, Some(400), "success", None, None, None).await;
+        insert_request(
+            &state.db,
+            "m1",
+            "gpt-4o",
+            100,
+            50,
+            150,
+            10,
+            5,
+            0.02,
+            Some(200),
+            "success",
+            None,
+            None,
+            None,
+        )
+        .await;
+        insert_request(
+            &state.db,
+            "m2",
+            "gpt-4o",
+            50,
+            25,
+            75,
+            5,
+            3,
+            0.01,
+            Some(100),
+            "success",
+            None,
+            None,
+            None,
+        )
+        .await;
+        insert_request(
+            &state.db,
+            "m3",
+            "claude-3",
+            200,
+            100,
+            300,
+            20,
+            10,
+            0.04,
+            Some(400),
+            "success",
+            None,
+            None,
+            None,
+        )
+        .await;
 
         let res = by_model_handler(State(state)).await.unwrap();
         assert_eq!(res.0.len(), 2);
@@ -237,7 +335,23 @@ mod tests {
         for i in 1..=5 {
             let date = format!("2026-09-{:02}T10:00:00", 20 + i);
             let id = format!("dh-{i}");
-            insert_request(&state.db, &id, "gpt-4o", 100, 50, 150, 10, 5, 0.01, Some(100), "success", None, None, Some(&date)).await;
+            insert_request(
+                &state.db,
+                &id,
+                "gpt-4o",
+                100,
+                50,
+                150,
+                10,
+                5,
+                0.01,
+                Some(100),
+                "success",
+                None,
+                None,
+                Some(&date),
+            )
+            .await;
         }
 
         let params = DayParams { days: Some(30) };
@@ -256,11 +370,43 @@ mod tests {
 
         for i in 0..3 {
             let id = format!("th-{i}");
-            insert_request(&state.db, &id, "gpt-4o", 100, 50, 150, 0, 0, 0.01, None, "success", None, Some(r#"[{"name":"get_weather"}]"#), None).await;
+            insert_request(
+                &state.db,
+                &id,
+                "gpt-4o",
+                100,
+                50,
+                150,
+                0,
+                0,
+                0.01,
+                None,
+                "success",
+                None,
+                Some(r#"[{"name":"get_weather"}]"#),
+                None,
+            )
+            .await;
         }
         for i in 0..2 {
             let id = format!("ts-{i}");
-            insert_request(&state.db, &id, "gpt-4o", 100, 50, 150, 0, 0, 0.01, None, "success", None, Some(r#"[{"name":"search_web"}]"#), None).await;
+            insert_request(
+                &state.db,
+                &id,
+                "gpt-4o",
+                100,
+                50,
+                150,
+                0,
+                0,
+                0.01,
+                None,
+                "success",
+                None,
+                Some(r#"[{"name":"search_web"}]"#),
+                None,
+            )
+            .await;
         }
 
         let res = tools_handler(State(state)).await.unwrap();
@@ -284,10 +430,63 @@ mod tests {
     async fn test_set_and_get_retention() {
         let state = setup_state().await;
         let req = RetentionRequest { days: 60 };
-        let res = set_retention_handler(State(state.clone()), Json(req)).await.unwrap();
+        let res = set_retention_handler(State(state.clone()), Json(req))
+            .await
+            .unwrap();
         assert_eq!(res.0["days"], 60);
 
         let get_res = get_retention_handler(State(state)).await.unwrap();
         assert_eq!(get_res.0.days, 60);
+    }
+
+    // ── memory_handler ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_memory_handler_empty() {
+        let state = setup_state().await;
+        let res = memory_handler(State(state)).await.unwrap();
+        assert_eq!(res.0.total_memories, 0);
+        assert_eq!(res.0.total_tokens, 0);
+        assert_eq!(res.0.messages_indexed, 0);
+        assert_eq!(res.0.messages_total, 0);
+    }
+
+    #[tokio::test]
+    async fn test_memory_handler_with_data() {
+        let state = setup_state().await;
+
+        sqlx::query("INSERT INTO memory (id, content, tokens_count) VALUES ('hm1', 'mem1', 100)")
+            .execute(&state.db)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO memory (id, content, tokens_count) VALUES ('hm2', 'mem2', 200)")
+            .execute(&state.db)
+            .await
+            .unwrap();
+
+        sqlx::query(
+            "INSERT INTO messages (id, role, content, is_indexed) VALUES ('hmsg1', 'user', 'hello', 1)",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO messages (id, role, content, is_indexed) VALUES ('hmsg2', 'assistant', 'hi', 0)",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO messages (id, role, content, is_indexed) VALUES ('hmsg3', 'user', 'howdy', 1)",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        let res = memory_handler(State(state)).await.unwrap();
+        assert_eq!(res.0.total_memories, 2);
+        assert_eq!(res.0.total_tokens, 300);
+        assert_eq!(res.0.messages_indexed, 2);
+        assert_eq!(res.0.messages_total, 3);
     }
 }

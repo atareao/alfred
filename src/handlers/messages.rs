@@ -54,6 +54,12 @@ pub async fn create_message(
     )
     .await
     .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    // Notify the episodic memory worker that a new message was created
+    if let Some(ref tx) = state.memory_tx {
+        let _ = tx.send(()).await;
+    }
+
     Ok((StatusCode::CREATED, Json(msg)))
 }
 
@@ -166,6 +172,59 @@ mod tests {
             }
             _ => {
                 panic!("Should have received message_id via collapse channel for a long message (8000 chars)");
+            }
+        }
+        Ok(())
+    }
+
+    /// Given an AppState with a memory_tx channel,
+    /// when a POST /api/messages creates a message successfully,
+    /// then the handler SHALL send a signal through the memory channel.
+    ///
+    /// RED: currently fails because handler does not wire memory_tx yet.
+    #[tokio::test]
+    async fn test_create_message_triggers_memory_signal() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // ── Setup: in-memory DB with migrations ──────────────────────────
+        let mut state = crate::AppState::new_in_memory_empty().await;
+
+        // Create a memory channel that SHOULD receive ()
+        let (memory_tx, mut memory_rx) = mpsc::channel::<()>(16);
+        state.memory_tx = Some(memory_tx);
+
+        // ── Action: POST a message ──────────────────────────────────────
+        let app = crate::app_with_state(state);
+        let body = serde_json::json!({
+            "role": "user",
+            "content": "Hello, this is a test message",
+        });
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/messages")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await?;
+
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        // ── Assert: the memory channel should receive a signal ────────────
+        let received =
+            tokio::time::timeout(std::time::Duration::from_millis(500), memory_rx.recv()).await;
+
+        match received {
+            Ok(Some(())) => {
+                // Signal received — this is what we expect
+            }
+            _ => {
+                panic!(
+                    "RED: Should have received () via memory_tx channel after creating a message. \
+                     This will pass once the handler wires memory_tx.send(()).await"
+                );
             }
         }
         Ok(())

@@ -215,4 +215,206 @@ mod tests {
             "Column 'summary_ref' should exist in messages table"
         );
     }
+
+    // ─── Episodic memory migration tests ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_memory_table_exists_with_columns() {
+        let pool = setup().await;
+
+        let has_table: bool = sqlx::query_scalar(
+            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='memory'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert!(
+            has_table,
+            "Expected 'memory' table to exist after migration"
+        );
+
+        let columns: Vec<(i64, String, String, i64, Option<String>, i64)> = sqlx::query_as(
+            "SELECT cid, name, type, \"notnull\", dflt_value, pk FROM pragma_table_info('memory')",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+
+        let col_map: std::collections::BTreeMap<String, (String, Option<String>, i64)> = columns
+            .into_iter()
+            .map(|(_cid, name, ty, _notnull, dflt, pk)| (name, (ty, dflt, pk)))
+            .collect();
+
+        // id TEXT PRIMARY KEY
+        let (ty, dflt, pk) = col_map.get("id").expect("Column 'id' should exist");
+        assert_eq!(ty.to_uppercase(), "TEXT", "id should be TEXT");
+        assert_eq!(*pk, 1, "id should be PRIMARY KEY");
+
+        // content TEXT NOT NULL
+        let (ty, dflt, pk) = col_map
+            .get("content")
+            .expect("Column 'content' should exist");
+        assert_eq!(ty.to_uppercase(), "TEXT", "content should be TEXT");
+        assert_eq!(*pk, 0, "content should not be PK");
+
+        // tokens_count INTEGER NOT NULL DEFAULT 0
+        let (ty, dflt, pk) = col_map
+            .get("tokens_count")
+            .expect("Column 'tokens_count' should exist");
+        assert_eq!(
+            ty.to_uppercase(),
+            "INTEGER",
+            "tokens_count should be INTEGER"
+        );
+        assert_eq!(
+            dflt.as_deref(),
+            Some("0"),
+            "tokens_count should default to 0"
+        );
+        assert_eq!(*pk, 0, "tokens_count should not be PK");
+
+        // created_at TEXT
+        let (ty, dflt, _pk) = col_map
+            .get("created_at")
+            .expect("Column 'created_at' should exist");
+        assert_eq!(ty.to_uppercase(), "TEXT", "created_at should be TEXT");
+
+        // metadata TEXT DEFAULT '{}'
+        let (ty, dflt, _pk) = col_map
+            .get("metadata")
+            .expect("Column 'metadata' should exist");
+        assert_eq!(ty.to_uppercase(), "TEXT", "metadata should be TEXT");
+        assert_eq!(
+            dflt.as_deref(),
+            Some("'{}'"),
+            "metadata should default to '{{}}'"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_vec_memory_virtual_table_exists() {
+        let pool = setup().await;
+
+        let has_table: bool = sqlx::query_scalar(
+            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='vec_memory'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert!(
+            has_table,
+            "Expected 'vec_memory' virtual table to exist after migration"
+        );
+
+        let ddl: Option<String> = sqlx::query_scalar(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='vec_memory'",
+        )
+        .fetch_optional(&pool)
+        .await
+        .unwrap();
+
+        assert!(
+            ddl.as_ref().is_some_and(|s| {
+                let upper = s.trim().to_uppercase();
+                upper.starts_with("CREATE TABLE") || upper.starts_with("CREATE VIRTUAL TABLE")
+            }),
+            "vec_memory must be a TABLE (regular or virtual)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_idx_messages_unindexed_exists() {
+        let pool = setup().await;
+
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_messages_unindexed'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(
+            count, 1,
+            "Index 'idx_messages_unindexed' should exist on messages(created_at) WHERE is_indexed = 0"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_idx_messages_summary_ref_exists() {
+        let pool = setup().await;
+
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_messages_summary_ref'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(
+            count, 1,
+            "Index 'idx_messages_summary_ref' should exist on messages(summary_ref) WHERE summary_ref IS NOT NULL"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_legacy_tables_do_not_exist() {
+        let pool = setup().await;
+
+        let tables: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+
+        for legacy in &["memories", "memory_embeddings", "memories_fts"] {
+            assert!(
+                !tables.contains(&legacy.to_string()),
+                "Legacy table '{legacy}' should NOT exist after migration"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_memory_migration_is_idempotent() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(":memory:")
+                    .create_if_missing(true),
+            )
+            .await
+            .unwrap();
+
+        // Run twice – second run must not error
+        run_migrations(&pool).await.unwrap();
+        run_migrations(&pool).await.unwrap();
+
+        // Verify memory table still looks correct after second run
+        let has_memory: bool = sqlx::query_scalar(
+            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='memory'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert!(
+            has_memory,
+            "memory table should survive idempotent migration"
+        );
+
+        let has_vec: bool = sqlx::query_scalar(
+            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='vec_memory'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert!(
+            has_vec,
+            "vec_memory table should survive idempotent migration"
+        );
+    }
 }

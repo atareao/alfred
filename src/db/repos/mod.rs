@@ -3,6 +3,7 @@ pub mod events;
 pub mod habits;
 pub mod meal_plans;
 pub mod memories;
+pub mod memory;
 pub mod messages;
 pub mod notes;
 pub mod profiles;

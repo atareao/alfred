@@ -106,9 +106,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_embed_sends_app_headers() {
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-        use wiremock::matchers::{any, method};
         use crate::llm::provider::LLMProvider;
+        use wiremock::matchers::{any, method};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let mock_server = MockServer::start().await;
 
@@ -140,15 +140,21 @@ mod tests {
 
         let _ = provider.embed("test text").await;
 
-        let headers = captured_headers.lock().unwrap().take().expect("No headers captured");
+        let headers = captured_headers
+            .lock()
+            .unwrap()
+            .take()
+            .expect("No headers captured");
 
-        let referer = headers.get("HTTP-Referer")
+        let referer = headers
+            .get("HTTP-Referer")
             .or_else(|| headers.get("http-referer"))
             .or_else(|| headers.get("Http-Referer"))
             .and_then(|v| v.to_str().ok());
         assert_eq!(referer, Some("https://github.com/atareao/alfred"));
 
-        let title = headers.get("X-Title")
+        let title = headers
+            .get("X-Title")
             .or_else(|| headers.get("x-title"))
             .or_else(|| headers.get("X-title"))
             .and_then(|v| v.to_str().ok());
