@@ -102,6 +102,58 @@ export interface Task {
   updated_at: string;
 }
 
+export interface StatsSummary {
+  total_calls: number;
+  total_prompt_tokens: number;
+  total_completion_tokens: number;
+  total_tokens: number;
+  total_cached_tokens: number;
+  total_reasoning_tokens: number;
+  total_cost: number;
+  total_errors: number;
+  avg_duration_ms: number | null;
+}
+
+export interface ModelStats {
+  model: string;
+  calls: number;
+  total_tokens: number;
+  total_cost: number;
+  avg_duration_ms: number | null;
+  total_cached_tokens: number;
+  total_reasoning_tokens: number;
+}
+
+export interface DayStats {
+  date: string;
+  calls: number;
+  total_tokens: number;
+  total_cost: number;
+  total_cached_tokens: number;
+  total_reasoning_tokens: number;
+}
+
+export interface ToolStats {
+  tool: string;
+  count: number;
+}
+
+export interface TableSize {
+  table: string;
+  rows: number;
+}
+
+export interface RetentionConfig {
+  days: number;
+}
+
+export interface MemoryStats {
+  total_memories: number;
+  total_tokens: number;
+  messages_indexed: number;
+  messages_total: number;
+}
+
 export interface CalendarEvent {
   id: string;
   profile_id: string;

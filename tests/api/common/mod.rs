@@ -108,4 +108,13 @@ impl TestResponse {
             .unwrap();
         serde_json::from_slice(&body).unwrap()
     }
+
+    /// Read the response body as a UTF-8 string (useful for CSV or plain-text
+    /// responses).
+    pub async fn text(self) -> String {
+        let body = axum::body::to_bytes(self.resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        String::from_utf8(body.to_vec()).unwrap()
+    }
 }

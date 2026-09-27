@@ -27,24 +27,6 @@ async fn test_search_with_messages() {
 }
 
 #[tokio::test]
-async fn test_search_with_memories() {
-    let app = TestApp::new().await;
-
-    // Create a memory
-    app.post("/api/memories")
-        .json(&json!({
-            "profile_id": "profile-id",
-            "content": "A Alfred le gusta el café",
-            "category": "fact"
-        }))
-        .send()
-        .await;
-
-    let resp = app.get("/api/search?q=café&type=memory").await;
-    assert_eq!(resp.status(), 200);
-}
-
-#[tokio::test]
 async fn test_search_all_types() {
     let app = TestApp::new().await;
     let resp = app.get("/api/search?q=test&type=all").await;

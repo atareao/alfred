@@ -34,7 +34,7 @@ async fn test_export_returns_json() {
     assert!(data.get("shopping_list").is_some(), "missing shopping_list");
     assert!(data.get("habits").is_some(), "missing habits");
     assert!(data.get("habit_logs").is_some(), "missing habit_logs");
-    assert!(data.get("memories").is_some(), "missing memories");
+    assert!(data.get("memory").is_some(), "missing memory");
     assert!(data.get("tools").is_some(), "missing tools");
 }
 

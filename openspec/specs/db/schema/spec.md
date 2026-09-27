@@ -186,3 +186,61 @@ Then the event does NOT appear in results
 Given a non-recurring event on Tuesday
 When `list_by_date_range` is queried for that week
 Then the event appears once
+
+### Requirement: Migration SHALL create llm_requests table with full OpenRouter usage data
+
+**Given** una base de datos vacía
+**When** se ejecuta la migración `20260926000002_stats.sql`
+**Then** existe la tabla `llm_requests` con las siguientes columnas:
+
+```sql
+CREATE TABLE IF NOT EXISTS llm_requests (
+    id                TEXT PRIMARY KEY,
+    model             TEXT NOT NULL,
+    provider          TEXT,
+    profile_id        TEXT REFERENCES profiles(id),
+    prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    total_tokens      INTEGER NOT NULL DEFAULT 0,
+    cached_tokens     INTEGER NOT NULL DEFAULT 0,
+    reasoning_tokens  INTEGER NOT NULL DEFAULT 0,
+    cost              REAL NOT NULL DEFAULT 0.0,
+    is_byok           INTEGER NOT NULL DEFAULT 0,
+    duration_ms       INTEGER,
+    cache_hit         INTEGER NOT NULL DEFAULT 0,
+    status            TEXT NOT NULL DEFAULT 'success'
+                      CHECK(status IN ('success', 'error', 'timeout')),
+    error_message     TEXT,
+    tool_calls        TEXT,
+    created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+```
+
+#### Scenario: Migración crea tabla correctamente
+**Given** base de datos sin tabla llm_requests
+**When** se ejecuta la migración
+**Then** `SELECT name FROM sqlite_master WHERE type='table' AND name='llm_requests'` devuelve la tabla
+**And** el schema coincide con la definición anterior
+
+#### Scenario: Migración es idempotente
+**Given** la tabla llm_requests ya existe
+**When** se ejecuta la migración de nuevo
+**Then** no hay error
+**And** la tabla sigue existiendo con el mismo schema
+
+### Requirement: StatsRepo SHALL read retention from settings table
+
+**Given** la tabla `settings` con clave `stats_retention_days`
+**When** se llama a `StatsRepo::get_retention_days(pool)`
+**Then** devuelve el valor como `u32`
+**And** si no existe la clave, devuelve 30 (default)
+
+#### Scenario: Retention configurada
+**Given** settings con `stats_retention_days = 45`
+**When** `StatsRepo::get_retention_days(pool)`
+**Then** devuelve 45
+
+#### Scenario: Retention por defecto
+**Given** settings sin `stats_retention_days`
+**When** `StatsRepo::get_retention_days(pool)`
+**Then** devuelve 30

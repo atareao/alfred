@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::db::DbPool;
+use crate::workers::episodic_memory::{EpisodicMemoryConfig, EpisodicMemoryWorker};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
@@ -18,6 +19,8 @@ pub struct WorkerPool {
     pub memory_consolidator: Option<JoinHandle<()>>,
     pub collapse: Option<JoinHandle<()>>,
     pub collapse_tx: Option<mpsc::Sender<String>>,
+    pub memory: Option<JoinHandle<()>>,
+    pub memory_tx: Option<mpsc::Sender<()>>,
     shutdown_tx: Option<broadcast::Sender<()>>,
 }
 
@@ -160,6 +163,22 @@ impl WorkerPool {
             })
         };
 
+        // ── Episodic memory worker ─────────────────────────────────────
+        let (memory_tx, memory_rx) = mpsc::channel::<()>(256);
+        let memory = {
+            let shutdown_rx = shutdown_tx.subscribe();
+            let db = db.clone();
+            let llm_provider = llm_provider.clone();
+            let memory_config = EpisodicMemoryConfig {
+                batch_tokens: _config.memory_batch_tokens,
+                inactivity_minutes: _config.memory_inactivity_minutes as i64,
+                overlap: _config.memory_overlap,
+                poll_interval_minutes: _config.memory_poll_interval_minutes,
+                model: _config.memory_model.clone(),
+            };
+            EpisodicMemoryWorker::start(db, llm_provider, memory_rx, shutdown_rx, memory_config)
+        };
+
         Self {
             briefing: Some(briefing),
             conflict_detector: Some(conflict_detector),
@@ -167,6 +186,8 @@ impl WorkerPool {
             memory_consolidator: Some(memory_consolidator),
             collapse: Some(collapse),
             collapse_tx: Some(collapse_tx),
+            memory: Some(memory),
+            memory_tx: Some(memory_tx),
             shutdown_tx: Some(shutdown_tx),
         }
     }
@@ -198,6 +219,10 @@ impl WorkerPool {
             handle.abort();
         }
         self.collapse_tx.take();
+        if let Some(handle) = self.memory.take() {
+            handle.abort();
+        }
+        self.memory_tx.take();
     }
 }
 
@@ -307,6 +332,12 @@ mod tests {
             travel_prep_days_before: 3,
             collapse_threshold_tokens: 2000,
             collapse_model: "mistralai/mistral-small".into(),
+            memory_batch_tokens: 2000,
+            memory_inactivity_minutes: 30,
+            memory_overlap: 2,
+            memory_poll_interval_minutes: 30,
+            memory_model: "mistralai/mistral-small".into(),
+            rag_budget_tokens: 2000,
         }
     }
 
@@ -336,6 +367,11 @@ mod tests {
             pool.collapse_tx.is_some(),
             "Collapse channel sender should be Some"
         );
+        assert!(
+            pool.memory.is_some(),
+            "Memory worker should be Some — RED: currently None, will pass after GREEN wiring"
+        );
+        assert!(pool.memory_tx.is_some(), "Memory channel sender should be Some — RED: currently None, will pass after GREEN wiring");
         assert!(pool.shutdown_tx.is_some(), "Shutdown sender should be Some");
 
         // Clean up to avoid lingering tasks
@@ -362,6 +398,8 @@ mod tests {
         assert!(pool.memory_consolidator.is_none());
         assert!(pool.collapse.is_none());
         assert!(pool.collapse_tx.is_none());
+        assert!(pool.memory.is_none());
+        assert!(pool.memory_tx.is_none());
         assert!(pool.shutdown_tx.is_none());
     }
 

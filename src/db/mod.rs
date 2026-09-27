@@ -1,7 +1,6 @@
 pub mod fts;
 pub mod repos;
 pub mod schema;
-pub mod vector;
 
 use repos::tools::ToolsRepo;
 use sqlx::SqlitePool;

@@ -2,9 +2,16 @@ import type {
   CalendarEvent,
   ChatInitResponse,
   CreateMessage,
+  MemoryStats,
   Message,
   PaginatedResponse,
   Profile,
+  StatsSummary,
+  ModelStats,
+  DayStats,
+  ToolStats,
+  TableSize,
+  RetentionConfig,
   Task,
   UpdateProfile,
 } from "../types";
@@ -92,4 +99,20 @@ export const api = {
 
   deleteTask: (id: string) =>
     request<Task>(`/tasks/${id}`, { method: "DELETE" }),
+
+  getStatsSummary: () => request<StatsSummary>("/stats/llm/summary"),
+  getStatsByModel: () => request<ModelStats[]>("/stats/llm/by-model"),
+  getStatsByDay: (days = 30) => request<DayStats[]>(`/stats/llm/by-day?days=${days}`),
+  getStatsTools: () => request<ToolStats[]>("/stats/llm/tools"),
+  getDbSizes: () => request<TableSize[]>("/stats/db/sizes"),
+  exportStatsCsv: () => {
+    window.open(`${BASE_URL}/stats/llm/export`, "_blank");
+  },
+  getRetention: () => request<RetentionConfig>("/stats/retention"),
+  setRetention: (days: number) =>
+    request<RetentionConfig>("/stats/retention", {
+      method: "PUT",
+      body: JSON.stringify({ days }),
+    }),
+  getMemoryStats: () => request<MemoryStats>("/stats/memory"),
 };

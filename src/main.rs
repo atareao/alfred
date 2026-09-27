@@ -17,7 +17,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!(model = %config.openrouter_model, "Configuration loaded");
 
     // Build full application state (database, orchestrator, tools, guardrails, auth)
-    let state = AppState::new_with_orchestrator(&config.database_url).await?;
+    let state = AppState::new_with_orchestrator(&config).await?;
+
+    // Spawn the stats cleanup worker (runs hourly, purges old llm_requests)
+    let pool = state.db.clone();
+    tokio::spawn(alfred::workers::stats_cleanup::run_cleanup_worker(pool));
 
     // Build the application router
     let router = app_with_state(state);
@@ -54,7 +58,7 @@ mod tests {
     /// entry point is used, all subsystems must be wired up. Once
     /// `main()` is refactored to use `Config::from_env()` +
     /// `AppState::new_with_orchestrator()`, this assertion will hold.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     #[serial]
     async fn test_production_state_initialization() {
         // -----------------------------------------------------------------
@@ -76,11 +80,15 @@ mod tests {
         // -----------------------------------------------------------------
         // Act: use the SAME entry point that main() SHOULD call
         // -----------------------------------------------------------------
-        let state = AppState::new_with_orchestrator(
-            db_path.to_str().expect("temp path must be valid UTF-8"),
-        )
-        .await
-        .expect("new_with_orchestrator should succeed with minimal env vars");
+        use alfred::config::Config;
+
+        // Create a Config with test values
+        let mut test_config = Config::from_env();
+        test_config.database_url = db_path.to_str().expect("temp path must be valid UTF-8").to_string();
+        // Override env vars are already set above (OPENROUTER_API_KEY, AUTH_*, etc.)
+        let state = AppState::new_with_orchestrator(&test_config)
+            .await
+            .expect("new_with_orchestrator should succeed with minimal env vars");
 
         // -----------------------------------------------------------------
         // Assert: every component is wired up

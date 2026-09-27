@@ -1,11 +1,34 @@
 use axum::extract::{Query, State};
 use axum::Json;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::errors::AppError;
 use crate::models::PaginatedResponse;
-use crate::services::search_service::{SearchResult, SearchType};
 use crate::AppState;
+
+#[derive(Debug, Serialize)]
+pub struct SearchResult {
+    pub id: String,
+    pub content: String,
+    pub score: f64,
+    pub source: String,
+    pub created_at: String,
+}
+
+pub enum SearchType {
+    Messages,
+    All,
+}
+
+impl SearchType {
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "message" | "messages" => Self::Messages,
+            _ => Self::All,
+        }
+    }
+}
 
 #[derive(Debug, Deserialize)]
 pub struct SearchParams {
@@ -25,69 +48,22 @@ pub async fn search(
         ));
     }
 
-    let search_type = SearchType::from_str(params.search_type.as_deref().unwrap_or("all"));
+    let _search_type = SearchType::from_str(params.search_type.as_deref().unwrap_or("all"));
     let limit = params.limit.unwrap_or(20);
 
-    // Phase 1: FTS5 search
+    // FTS5 search (messages only)
     let fts_results = {
         let mut results = Vec::new();
 
-        // Search messages
-        if matches!(search_type, SearchType::Messages | SearchType::All) {
-            let msgs = crate::db::fts::search_messages_fts(&state.db, &params.q, limit * 2).await?;
-            for (id, content, _) in msgs {
-                results.push((id, content, "message".to_string()));
-            }
-        }
-
-        // Search memories
-        if matches!(search_type, SearchType::Memories | SearchType::All) {
-            let mems = crate::db::fts::search_memories_fts(&state.db, &params.q, limit * 2).await?;
-            for (id, content, _) in mems {
-                results.push((id, content, "memory".to_string()));
-            }
+        let msgs = crate::db::fts::search_messages_fts(&state.db, &params.q, limit * 2).await?;
+        for (id, content, _) in msgs {
+            results.push((id, content, "message".to_string()));
         }
 
         results
     };
 
-    // Phase 2: Vector search (best-effort — skip if embedding provider unavailable)
-    let config = crate::embeddings::EmbeddingConfig::default();
-    let provider = crate::embeddings::create_provider(&config);
-    let embedding = match provider.embed(&params.q).await {
-        Ok(e) => e,
-        Err(_) => {
-            tracing::warn!("Embedding provider unavailable, skipping vector search");
-            Vec::new()
-        }
-    };
-
-    // Phase 3: Vector DB lookup
-    let vector_scores: Vec<(String, f64, String)> = if !embedding.is_empty() {
-        let mut scores = Vec::new();
-
-        if matches!(search_type, SearchType::Messages | SearchType::All) {
-            let msgs =
-                crate::db::vector::search_message_vectors(&state.db, &embedding, limit * 2).await?;
-            for (id, score) in msgs {
-                scores.push((id, score, "message".to_string()));
-            }
-        }
-
-        if matches!(search_type, SearchType::Memories | SearchType::All) {
-            let mems =
-                crate::db::vector::search_memory_vectors(&state.db, &embedding, limit * 2).await?;
-            for (id, score) in mems {
-                scores.push((id, score, "memory".to_string()));
-            }
-        }
-
-        scores
-    } else {
-        Vec::new()
-    };
-
-    // Phase 4: RRF Fusion
+    // Score results
     let k = 60.0_f64;
     let mut scored: Vec<(String, f64, String)> = Vec::new(); // (id, score, source)
 
@@ -95,22 +71,11 @@ pub async fn search(
         scored.push((id.clone(), 1.0 / (k + rank as f64), source.clone()));
     }
 
-    for (vid, vscore, source) in &vector_scores {
-        if let Some(existing) = scored
-            .iter_mut()
-            .find(|(id, _, s)| id == vid && s == source)
-        {
-            existing.1 += 1.0 / (k + 1.0);
-        } else {
-            scored.push((vid.clone(), *vscore, source.clone()));
-        }
-    }
-
     // Sort by score descending
     scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     scored.truncate(limit.clamp(1, 100) as usize);
 
-    // Phase 5: Get content for results
+    // Get content for results
     let mut results = Vec::new();
     for (id, score, source) in scored {
         let content = if source == "message" {
@@ -121,12 +86,7 @@ pub async fn search(
                 .map(|m| m.content)
                 .unwrap_or_default()
         } else {
-            crate::db::repos::memories::MemoriesRepo::find_by_id(&state.db, &id)
-                .await
-                .ok()
-                .flatten()
-                .map(|m| m.content)
-                .unwrap_or_default()
+            String::new()
         };
         let created_at = String::new();
         results.push(SearchResult {

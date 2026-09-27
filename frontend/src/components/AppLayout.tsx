@@ -1,26 +1,28 @@
 import React, { useState, useEffect } from "react";
 import { Layout, Typography, Button, Space, Modal } from "antd";
 import {
-  UserOutlined,
   SettingOutlined,
   CalendarOutlined,
   CheckSquareOutlined,
+  BarChartOutlined,
 } from "@ant-design/icons";
 import { ChatView } from "./ChatView";
-import { ProfileEditor } from "./ProfileEditor";
-import { SettingsEditor } from "./SettingsEditor";
+import { SettingsDialog } from "./SettingsDialog";
 import { CalendarView } from "./CalendarView";
 import { TaskView } from "./TaskView";
+import { StatsDashboard } from "../pages/StatsDashboard";
 import { useMainChat } from "../hooks/useMainChat";
-import { useProfile } from "../hooks/useProfile";
 import { useSettings } from "../hooks/useSettings";
 
 const { Header, Content } = Layout;
 const { Text } = Typography;
 
-export const AppLayout: React.FC = () => {
+interface AppLayoutProps {
+  children?: React.ReactNode;
+}
+
+export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
   const mainChat = useMainChat();
-  const profile = useProfile();
   const { settings } = useSettings();
 
   // Apply font-size as CSS variable on root element
@@ -31,10 +33,10 @@ export const AppLayout: React.FC = () => {
       `${fontSize}px`,
     );
   }, [fontSize]);
-  const [profileVisible, setProfileVisible] = useState(false);
   const [settingsVisible, setSettingsVisible] = useState(false);
   const [calendarVisible, setCalendarVisible] = useState(false);
   const [tasksVisible, setTasksVisible] = useState(false);
+  const [statsVisible, setStatsVisible] = useState(false);
 
   return (
     <Layout style={{ minHeight: "100vh" }}>
@@ -66,8 +68,8 @@ export const AppLayout: React.FC = () => {
           />
           <Button
             type="text"
-            icon={<UserOutlined />}
-            onClick={() => setProfileVisible(true)}
+            icon={<BarChartOutlined />}
+            onClick={() => setStatsVisible(true)}
             style={{ color: "rgba(255,255,255,0.65)" }}
           />
           <Button
@@ -86,15 +88,17 @@ export const AppLayout: React.FC = () => {
           overflow: "hidden",
         }}
       >
-        <ChatView
-          messages={mainChat.messages}
-          loading={mainChat.loading}
-          onSendMessage={mainChat.sendMessage}
-          streaming={mainChat.streaming}
-          streamingContent={mainChat.streamingContent}
-          activeTools={mainChat.activeTools}
-          settings={settings}
-        />
+        {children || (
+          <ChatView
+            messages={mainChat.messages}
+            loading={mainChat.loading}
+            onSendMessage={mainChat.sendMessage}
+            streaming={mainChat.streaming}
+            streamingContent={mainChat.streamingContent}
+            activeTools={mainChat.activeTools}
+            settings={settings}
+          />
+        )}
       </Content>
       <Modal
         title="📅 Agenda"
@@ -114,13 +118,16 @@ export const AppLayout: React.FC = () => {
       >
         <TaskView onClose={() => setTasksVisible(false)} />
       </Modal>
-      <ProfileEditor
-        profile={profile.profile}
-        onUpdate={profile.updateProfile}
-        visible={profileVisible}
-        onClose={() => setProfileVisible(false)}
-      />
-      <SettingsEditor
+      <Modal
+        title="📊 Stats"
+        open={statsVisible}
+        onCancel={() => setStatsVisible(false)}
+        footer={null}
+        width={1000}
+      >
+        <StatsDashboard />
+      </Modal>
+      <SettingsDialog
         visible={settingsVisible}
         onClose={() => setSettingsVisible(false)}
       />
