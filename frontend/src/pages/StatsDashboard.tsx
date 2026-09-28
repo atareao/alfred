@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { Row, Col, Spin, Alert, Empty, Tabs } from "antd";
 import { api } from "../api/client";
-import type { StatsSummary, ModelStats, DayStats, ToolStats, TableSize, MemoryStats } from "../types";
+import type { StatsSummary, ModelStats, DayStats, ToolStats, TableSize, MemoryStats, LastApiCall } from "../types";
 import { SummaryCard } from "../components/stats/SummaryCard";
 import { MemoryCard } from "../components/stats/MemoryCard";
 import { ModelChart } from "../components/stats/ModelChart";
@@ -9,6 +9,7 @@ import { DailyChart } from "../components/stats/DailyChart";
 import { ToolsChart } from "../components/stats/ToolsChart";
 import { DbSizesTable } from "../components/stats/DbSizesTable";
 import { RetentionConfig } from "../components/stats/RetentionConfig";
+import { LastApiCallCard } from "../components/stats/LastApiCallCard";
 
 export const StatsDashboard: React.FC = () => {
   const [summary, setSummary] = useState<StatsSummary | null>(null);
@@ -17,6 +18,7 @@ export const StatsDashboard: React.FC = () => {
   const [tools, setTools] = useState<ToolStats[]>([]);
   const [dbSizes, setDbSizes] = useState<TableSize[]>([]);
   const [memory, setMemory] = useState<MemoryStats | null>(null);
+  const [lastCall, setLastCall] = useState<LastApiCall | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedDays, setSelectedDays] = useState(30);
   const [error, setError] = useState<string | null>(null);
@@ -25,7 +27,7 @@ export const StatsDashboard: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      const [summaryData, modelData, dayData, toolsData, dbData, memoryData] =
+      const [summaryData, modelData, dayData, toolsData, dbData, memoryData, lastCallData] =
         await Promise.all([
           api.getStatsSummary(),
           api.getStatsByModel(),
@@ -33,6 +35,7 @@ export const StatsDashboard: React.FC = () => {
           api.getStatsTools(),
           api.getDbSizes(),
           api.getMemoryStats(),
+          api.getLastApiCall(),
         ]);
       setSummary(summaryData);
       setByModel(modelData);
@@ -40,6 +43,7 @@ export const StatsDashboard: React.FC = () => {
       setTools(toolsData);
       setDbSizes(dbData);
       setMemory(memoryData);
+      setLastCall(lastCallData);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load stats");
     } finally {
@@ -154,6 +158,17 @@ export const StatsDashboard: React.FC = () => {
                 </Col>
                 <Col xs={24} lg={8}>
                   <RetentionConfig />
+                </Col>
+              </Row>
+            ),
+          },
+          {
+            key: "ultima-llamada",
+            label: "📡 Última llamada",
+            children: (
+              <Row gutter={[16, 16]}>
+                <Col span={24}>
+                  <LastApiCallCard data={lastCall} loading={loading} />
                 </Col>
               </Row>
             ),

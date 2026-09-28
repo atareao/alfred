@@ -50,6 +50,7 @@ vi.mock("../api/client", () => ({
     getStatsTools: vi.fn(),
     getDbSizes: vi.fn(),
     getMemoryStats: vi.fn(),
+    getLastApiCall: vi.fn(),
     getRetention: vi.fn(),
     setRetention: vi.fn(),
   },
@@ -79,6 +80,7 @@ describe("StatsDashboard", () => {
     vi.mocked(api.getStatsByDay).mockReturnValue(new Promise(() => {}));
     vi.mocked(api.getStatsTools).mockReturnValue(new Promise(() => {}));
     vi.mocked(api.getDbSizes).mockReturnValue(new Promise(() => {}));
+    vi.mocked(api.getLastApiCall).mockReturnValue(new Promise(() => {}));
 
     const { container } = render(<StatsDashboard />);
     const spin = container.querySelector(".ant-spin-spinning");
@@ -93,6 +95,7 @@ describe("StatsDashboard", () => {
     vi.mocked(api.getDbSizes).mockResolvedValue(mockDbSizes);
     vi.mocked(api.getRetention).mockResolvedValue({ days: 30 });
     vi.mocked(api.getMemoryStats).mockResolvedValue(mockMemory);
+    vi.mocked(api.getLastApiCall).mockResolvedValue(null);
 
     render(<StatsDashboard />);
 
@@ -130,6 +133,7 @@ describe("StatsDashboard", () => {
     vi.mocked(api.getStatsByDay).mockResolvedValue([]);
     vi.mocked(api.getStatsTools).mockResolvedValue([]);
     vi.mocked(api.getDbSizes).mockResolvedValue([]);
+    vi.mocked(api.getLastApiCall).mockResolvedValue(null);
 
     render(<StatsDashboard />);
 
@@ -142,6 +146,8 @@ describe("StatsDashboard", () => {
     vi.mocked(api.getStatsByDay).mockRejectedValue(new Error("API error"));
     vi.mocked(api.getStatsTools).mockRejectedValue(new Error("API error"));
     vi.mocked(api.getDbSizes).mockRejectedValue(new Error("API error"));
+    vi.mocked(api.getMemoryStats).mockRejectedValue(new Error("API error"));
+    vi.mocked(api.getLastApiCall).mockRejectedValue(new Error("API error"));
 
     render(<StatsDashboard />);
 
