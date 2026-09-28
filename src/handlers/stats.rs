@@ -7,7 +7,9 @@ use serde_json::Value;
 
 use crate::db::repos::stats::StatsRepo;
 use crate::errors::AppError;
-use crate::models::stats::{DayStats, MemoryStats, ModelStats, StatsSummary, TableSize, ToolStats};
+use crate::models::stats::{
+    DayStats, LastApiCall, MemoryStats, ModelStats, StatsSummary, TableSize, ToolStats,
+};
 use crate::AppState;
 
 // ── Request / Response types ────────────────────────────────────────────────
@@ -115,6 +117,16 @@ pub async fn set_retention_handler(
 pub async fn memory_handler(State(state): State<AppState>) -> Result<Json<MemoryStats>, AppError> {
     let stats = StatsRepo::memory_summary(&state.db).await?;
     Ok(Json(stats))
+}
+
+/// Return the most recent OpenRouter API call stored in-memory.
+///
+/// Returns `None` if no call has been recorded yet.
+pub async fn last_call_handler(
+    State(state): State<AppState>,
+) -> Result<Json<Option<LastApiCall>>, AppError> {
+    let data = state.last_api_call.read().unwrap();
+    Ok(Json(data.clone()))
 }
 
 #[cfg(test)]
@@ -488,5 +500,111 @@ mod tests {
         assert_eq!(res.0.total_tokens, 300);
         assert_eq!(res.0.messages_indexed, 2);
         assert_eq!(res.0.messages_total, 3);
+    }
+
+    // ── last_call_handler ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_last_call_handler_none() {
+        let state = setup_state().await;
+        let res = last_call_handler(State(state)).await.unwrap();
+        assert!(res.0.is_none(), "Expected None when no last call stored");
+    }
+
+    #[tokio::test]
+    async fn test_last_call_handler_with_data() {
+        let state = setup_state().await;
+        // Manually set the last_api_call
+        let last = crate::models::stats::LastApiCall {
+            model: "gpt-4o".into(),
+            request_body: Some(r#"{"model":"gpt-4o"}"#.into()),
+            response_body: Some(r#"{"choices":[{"message":{"content":"Hello"}}]}"#.into()),
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+            cached_tokens: 10,
+            reasoning_tokens: 5,
+            cost: 0.01,
+            duration_ms: Some(200),
+            status: "success".into(),
+            error_message: None,
+            tool_calls: None,
+            created_at: "2026-09-27T10:00:00Z".into(),
+        };
+        *state.last_api_call.write().unwrap() = Some(last);
+
+        let res = last_call_handler(State(state)).await.unwrap();
+        let data = res.0.expect("Expected Some LastApiCall");
+        assert_eq!(data.model, "gpt-4o");
+        assert_eq!(data.request_body, Some(r#"{"model":"gpt-4o"}"#.into()));
+        assert_eq!(data.total_tokens, 150);
+        assert_eq!(data.cost, 0.01);
+        assert_eq!(data.status, "success");
+    }
+
+    /// Integration test via the full HTTP router to prove the Arc is shared.
+    #[tokio::test]
+    async fn test_last_call_via_http_router() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let state = setup_state().await;
+
+        // Save data into state (same as what Orchestrator::save_last_call does)
+        let last = crate::models::stats::LastApiCall {
+            model: "router-test-model".into(),
+            request_body: Some(r#"{"model":"router-test"}"#.into()),
+            response_body: Some(r#"{"choices":[{"message":{"content":"Hi"}}]}"#.into()),
+            prompt_tokens: 50,
+            completion_tokens: 25,
+            total_tokens: 75,
+            cached_tokens: 5,
+            reasoning_tokens: 3,
+            cost: 0.005,
+            duration_ms: Some(150),
+            status: "success".into(),
+            error_message: None,
+            tool_calls: None,
+            created_at: "2026-09-27T12:00:00Z".into(),
+        };
+        *state.last_api_call.write().unwrap() = Some(last);
+
+        // Build the full router and issue an HTTP GET
+        let app = crate::app_with_state(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/stats/llm/last-call")
+                    .header("Content-Type", "application/json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "Expected 200 OK, got {}",
+            response.status()
+        );
+
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body.to_vec()).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&body_str).unwrap();
+
+        assert!(!parsed.is_null(), "Response body should not be null");
+        assert_eq!(parsed["model"], "router-test-model");
+        assert_eq!(parsed["total_tokens"], 75);
+        assert_eq!(parsed["status"], "success");
+        assert_eq!(parsed["request_body"], r#"{"model":"router-test"}"#);
+        assert_eq!(
+            parsed["response_body"],
+            r#"{"choices":[{"message":{"content":"Hi"}}]}"#
+        );
     }
 }

@@ -155,6 +155,23 @@ export interface MemoryStats {
   messages_total: number;
 }
 
+export interface LastApiCall {
+  model: string;
+  request_body: string | null;
+  response_body: string | null;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  cached_tokens: number;
+  reasoning_tokens: number;
+  cost: number;
+  duration_ms: number | null;
+  status: string;
+  error_message: string | null;
+  tool_calls: string | null;
+  created_at: string;
+}
+
 export interface CalendarEvent {
   id: string;
   profile_id: string;

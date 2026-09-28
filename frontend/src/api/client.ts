@@ -2,6 +2,7 @@ import type {
   CalendarEvent,
   ChatInitResponse,
   CreateMessage,
+  LastApiCall,
   MemoryStats,
   Message,
   PaginatedResponse,
@@ -115,4 +116,5 @@ export const api = {
       body: JSON.stringify({ days }),
     }),
   getMemoryStats: () => request<MemoryStats>("/stats/memory"),
+  getLastApiCall: () => request<LastApiCall | null>("/stats/llm/last-call"),
 };

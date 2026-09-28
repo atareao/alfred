@@ -97,12 +97,10 @@ impl OpenRouterProvider {
 
         let prompt_tokens = body["usage"]["prompt_tokens"].as_u64().unwrap_or(0) as u32;
         let completion_tokens = body["usage"]["completion_tokens"].as_u64().unwrap_or(0) as u32;
-        let cached_tokens = body["usage"]["prompt_tokens_details"]
-            ["cached_tokens"]
+        let cached_tokens = body["usage"]["prompt_tokens_details"]["cached_tokens"]
             .as_u64()
             .unwrap_or(0) as u32;
-        let reasoning_tokens = body["usage"]["completion_tokens_details"]
-            ["reasoning_tokens"]
+        let reasoning_tokens = body["usage"]["completion_tokens_details"]["reasoning_tokens"]
             .as_u64()
             .unwrap_or(0) as u32;
         let cost = body["usage"]["cost"].as_f64().unwrap_or(0.0);
@@ -683,12 +681,10 @@ pub fn parse_sse_event(
             let usage = body.get("usage").map(|u| TokenUsage {
                 prompt_tokens: u["prompt_tokens"].as_u64().unwrap_or(0) as u32,
                 completion_tokens: u["completion_tokens"].as_u64().unwrap_or(0) as u32,
-                cached_tokens: u["prompt_tokens_details"]
-                    ["cached_tokens"]
+                cached_tokens: u["prompt_tokens_details"]["cached_tokens"]
                     .as_u64()
                     .unwrap_or(0) as u32,
-                reasoning_tokens: u["completion_tokens_details"]
-                    ["reasoning_tokens"]
+                reasoning_tokens: u["completion_tokens_details"]["reasoning_tokens"]
                     .as_u64()
                     .unwrap_or(0) as u32,
                 cost: u["cost"].as_f64().unwrap_or(0.0),
