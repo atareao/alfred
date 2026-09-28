@@ -2,6 +2,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::SqlitePool;
 use std::sync::Arc;
+use std::sync::RwLock;
+use std::time::Instant;
+
+use crate::models::stats::LastApiCall;
 use tokio::sync::mpsc;
 
 use crate::db::repos::stats::StatsRepo;
@@ -219,6 +223,7 @@ pub struct Orchestrator {
     pub db: SqlitePool,
     pub collapse_tx: Option<mpsc::Sender<String>>,
     pub memory_tx: Option<mpsc::Sender<()>>,
+    pub last_api_call: Arc<RwLock<Option<LastApiCall>>>,
 }
 
 impl Orchestrator {
@@ -232,6 +237,7 @@ impl Orchestrator {
         db: SqlitePool,
         collapse_tx: Option<mpsc::Sender<String>>,
         memory_tx: Option<mpsc::Sender<()>>,
+        last_api_call: Arc<RwLock<Option<LastApiCall>>>,
     ) -> Self {
         Self {
             llm,
@@ -243,7 +249,45 @@ impl Orchestrator {
             db,
             collapse_tx,
             memory_tx,
+            last_api_call,
         }
+    }
+
+    /// Save the last API call data in memory so it can be served by the stats endpoint.
+    #[allow(clippy::too_many_arguments)]
+    fn save_last_call(
+        &self,
+        model: &str,
+        request_body: Option<&str>,
+        response_body: Option<&str>,
+        prompt_tokens: u32,
+        completion_tokens: u32,
+        total_tokens: u32,
+        cached_tokens: u32,
+        reasoning_tokens: u32,
+        cost: f64,
+        duration_ms: Option<i64>,
+        status: &str,
+        error_message: Option<&str>,
+        tool_calls: Option<&str>,
+    ) {
+        let last = LastApiCall {
+            model: model.to_string(),
+            request_body: request_body.map(|s| s.to_string()),
+            response_body: response_body.map(|s| s.to_string()),
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            cached_tokens,
+            reasoning_tokens,
+            cost,
+            duration_ms,
+            status: status.to_string(),
+            error_message: error_message.map(|s| s.to_string()),
+            tool_calls: tool_calls.map(|s| s.to_string()),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+        *self.last_api_call.write().unwrap() = Some(last);
     }
 
     /// Non-streaming entry point: runs the full ReAct loop and returns the
@@ -362,6 +406,7 @@ impl Orchestrator {
                 stream: false,
             };
 
+            let request_body_str = serde_json::to_string(&request).unwrap_or_default();
             let start = std::time::Instant::now();
             let response = match self.llm.chat(request).await {
                 Ok(r) => r,
@@ -385,6 +430,21 @@ impl Orchestrator {
                         None,
                     )
                     .await;
+                    self.save_last_call(
+                        &self.config.model,
+                        None,
+                        None,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0.0,
+                        Some(duration_ms),
+                        "error",
+                        Some(&e.to_string()),
+                        None,
+                    );
                     return Err(e.into());
                 }
             };
@@ -428,6 +488,29 @@ impl Orchestrator {
                 None,
             )
             .await;
+            self.save_last_call(
+                &self.config.model,
+                Some(&request_body_str),
+                Some(&serde_json::to_string(&response).unwrap_or_default()),
+                prompt_tokens as u32,
+                completion_tokens as u32,
+                total_tokens as u32,
+                response
+                    .usage
+                    .as_ref()
+                    .map(|u| u.cached_tokens)
+                    .unwrap_or(0),
+                response
+                    .usage
+                    .as_ref()
+                    .map(|u| u.reasoning_tokens)
+                    .unwrap_or(0),
+                response.usage.as_ref().map(|u| u.cost).unwrap_or(0.0),
+                Some(duration_ms),
+                "success",
+                None,
+                None,
+            );
 
             iterations += 1;
 
@@ -534,8 +617,13 @@ impl Orchestrator {
 
             // Optional reflection
             let reflection: Option<Reflection> = if self.config.enable_reflection {
-                let analyzer = ReflectionAnalyzer::new(self.llm.clone());
-                Some(analyzer.analyze(&messages, &message).await?)
+                let analyzer =
+                    ReflectionAnalyzer::new(self.llm.clone(), self.last_api_call.clone());
+                Some(
+                    analyzer
+                        .analyze(&messages, &message, &self.db, profile_id)
+                        .await?,
+                )
             } else {
                 None
             };
@@ -790,7 +878,9 @@ impl Orchestrator {
                 stream: true,
             };
 
+            let request_body_str = serde_json::to_string(&request).unwrap_or_default();
             let mut stream = self.llm.chat_stream(request).await?;
+            let stream_start = std::time::Instant::now();
 
             iterations += 1;
 
@@ -819,6 +909,7 @@ impl Orchestrator {
                         let tool_calls = response
                             .message
                             .tool_calls
+                            .clone()
                             .or_else(|| tool_calls_from_stream.take());
 
                         // Record stats for this LLM call
@@ -853,13 +944,37 @@ impl Orchestrator {
                                 .map(|u| u.reasoning_tokens as i64)
                                 .unwrap_or(0),
                             response.usage.as_ref().map(|u| u.cost).unwrap_or(0.0),
-                            None, // duration_ms
+                            Some(stream_start.elapsed().as_millis() as i64),
                             "success",
                             None,
                             None,
                             None,
                         )
                         .await;
+
+                        self.save_last_call(
+                            &self.config.model,
+                            Some(&request_body_str),
+                            Some(&serde_json::to_string(&response).unwrap_or_default()),
+                            prompt_tokens as u32,
+                            completion_tokens as u32,
+                            total_tokens as u32,
+                            response
+                                .usage
+                                .as_ref()
+                                .map(|u| u.cached_tokens)
+                                .unwrap_or(0),
+                            response
+                                .usage
+                                .as_ref()
+                                .map(|u| u.reasoning_tokens)
+                                .unwrap_or(0),
+                            response.usage.as_ref().map(|u| u.cost).unwrap_or(0.0),
+                            Some(stream_start.elapsed().as_millis() as i64),
+                            "success",
+                            None,
+                            None,
+                        );
 
                         if let Some(tcs) = tool_calls {
                             let content = content_buffer.clone();
@@ -1122,11 +1237,48 @@ impl Orchestrator {
 
 pub struct ReflectionAnalyzer {
     llm: Arc<dyn LLMProvider>,
+    last_api_call: Arc<RwLock<Option<LastApiCall>>>,
 }
 
 impl ReflectionAnalyzer {
-    pub fn new(llm: Arc<dyn LLMProvider>) -> Self {
-        Self { llm }
+    pub fn new(llm: Arc<dyn LLMProvider>, last_api_call: Arc<RwLock<Option<LastApiCall>>>) -> Self {
+        Self { llm, last_api_call }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn save_last_call(
+        &self,
+        model: &str,
+        request_body: Option<&str>,
+        response_body: Option<&str>,
+        prompt_tokens: u32,
+        completion_tokens: u32,
+        total_tokens: u32,
+        cached_tokens: u32,
+        reasoning_tokens: u32,
+        cost: f64,
+        duration_ms: Option<i64>,
+        status: &str,
+        error_message: Option<&str>,
+        tool_calls: Option<&str>,
+    ) {
+        let last = LastApiCall {
+            model: model.to_string(),
+            request_body: request_body.map(|s| s.to_string()),
+            response_body: response_body.map(|s| s.to_string()),
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            cached_tokens,
+            reasoning_tokens,
+            cost,
+            duration_ms,
+            status: status.to_string(),
+            error_message: error_message.map(|s| s.to_string()),
+            tool_calls: tool_calls.map(|s| s.to_string()),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+        *self.last_api_call.write().unwrap() = Some(last);
     }
 
     /// Ask the LLM to reflect on its own response — checking coherence,
@@ -1135,6 +1287,8 @@ impl ReflectionAnalyzer {
         &self,
         conversation: &[ChatMessage],
         response: &str,
+        db: &SqlitePool,
+        profile_id: &str,
     ) -> Result<Reflection, AgentError> {
         let conv_json = serde_json::to_string(conversation).unwrap_or_default();
 
@@ -1173,8 +1327,64 @@ Respond in JSON format:
             stream: false,
         };
 
+        let request_body_str = serde_json::to_string(&request).unwrap_or_default();
+        let start = Instant::now();
         match self.llm.chat(request).await {
             Ok(resp) => {
+                // Record stats for this LLM call
+                let duration_ms = start.elapsed().as_millis() as i64;
+                let prompt_tokens = resp
+                    .usage
+                    .as_ref()
+                    .map(|u| u.prompt_tokens as i64)
+                    .unwrap_or(0);
+                let completion_tokens = resp
+                    .usage
+                    .as_ref()
+                    .map(|u| u.completion_tokens as i64)
+                    .unwrap_or(0);
+                let total_tokens = prompt_tokens + completion_tokens;
+                let _ = StatsRepo::record_request(
+                    db,
+                    &Uuid::new_v4().to_string(),
+                    "default",
+                    profile_id,
+                    prompt_tokens,
+                    completion_tokens,
+                    total_tokens,
+                    resp.usage
+                        .as_ref()
+                        .map(|u| u.cached_tokens as i64)
+                        .unwrap_or(0),
+                    resp.usage
+                        .as_ref()
+                        .map(|u| u.reasoning_tokens as i64)
+                        .unwrap_or(0),
+                    resp.usage.as_ref().map(|u| u.cost).unwrap_or(0.0),
+                    Some(duration_ms),
+                    "success",
+                    None,
+                    None,
+                    None,
+                )
+                .await;
+
+                self.save_last_call(
+                    "default",
+                    Some(&request_body_str),
+                    Some(&serde_json::to_string(&resp).unwrap_or_default()),
+                    prompt_tokens as u32,
+                    completion_tokens as u32,
+                    total_tokens as u32,
+                    resp.usage.as_ref().map(|u| u.cached_tokens).unwrap_or(0),
+                    resp.usage.as_ref().map(|u| u.reasoning_tokens).unwrap_or(0),
+                    resp.usage.as_ref().map(|u| u.cost).unwrap_or(0.0),
+                    Some(duration_ms),
+                    "success",
+                    None,
+                    None,
+                );
+
                 // Try to parse JSON from the response
                 let content = resp.message.content.trim().to_lowercase();
 
@@ -1237,12 +1447,43 @@ Respond in JSON format:
                     },
                 })
             }
-            Err(_) => Ok(Reflection {
-                is_coherent: true,
-                is_complete: true,
-                needs_clarification: None,
-                suggested_followup: Some("¿Necesitas algo más?".into()),
-            }),
+            Err(e) => {
+                let duration_ms = start.elapsed().as_millis() as i64;
+                let _ = StatsRepo::record_request(
+                    db,
+                    &Uuid::new_v4().to_string(),
+                    "default",
+                    profile_id,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0.0,
+                    Some(duration_ms),
+                    "error",
+                    Some(&e.to_string()),
+                    None,
+                    None,
+                )
+                .await;
+                self.save_last_call(
+                    "default",
+                    None,
+                    None,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0.0,
+                    Some(duration_ms),
+                    "error",
+                    Some(&e.to_string()),
+                    None,
+                );
+                Err(AgentError::LLMError(e.to_string()))
+            }
         }
     }
 }
@@ -1620,6 +1861,7 @@ mod tests {
             pool.clone(),
             None,
             None,
+            Arc::new(RwLock::new(None)),
         );
 
         // 4. Call process_message_stream (no conversation_id needed)
@@ -1760,6 +2002,7 @@ mod tests {
             pool.clone(),
             Some(collapse_tx),
             None,
+            Arc::new(RwLock::new(None)),
         );
 
         // 5. Call process_message_stream with a very long message (2000+ words for ~2660 tokens)
@@ -1873,6 +2116,7 @@ mod tests {
             pool.clone(),
             None,
             Some(memory_tx),
+            Arc::new(RwLock::new(None)),
         );
 
         // 4. Call process_message_stream
@@ -1984,6 +2228,7 @@ mod tests {
             pool.clone(),
             None,
             Some(memory_tx),
+            Arc::new(RwLock::new(None)),
         );
 
         // 4. Call process_message_stream
@@ -2182,6 +2427,7 @@ mod tests {
             pool.clone(),
             None,
             None,
+            Arc::new(RwLock::new(None)),
         );
 
         // 4. Call process_message_stream and capture SSE events
@@ -2436,6 +2682,7 @@ mod tests {
             pool.clone(),
             None,
             None,
+            Arc::new(RwLock::new(None)),
         );
 
         let (tx, mut rx) = mpsc::channel(100);
@@ -2623,6 +2870,7 @@ mod tests {
             pool.clone(),
             None,
             None,
+            Arc::new(RwLock::new(None)),
         );
 
         // 4. Call process_message (non-streaming) with profile-id
@@ -2691,6 +2939,7 @@ mod tests {
             pool.clone(),
             None,
             None,
+            Arc::new(RwLock::new(None)),
         );
 
         // 4. Call process_message_stream (streaming path)
@@ -2861,6 +3110,7 @@ mod tests {
             pool.clone(),
             None,
             None,
+            Arc::new(RwLock::new(None)),
         );
 
         // 5. Call process_message_stream
@@ -3040,6 +3290,7 @@ mod tests {
             pool.clone(),
             None,
             None,
+            Arc::new(RwLock::new(None)),
         );
 
         let result = orchestrator.process_message("profile-1", "hello").await?;
@@ -3051,14 +3302,16 @@ mod tests {
             .fetch_one(&pool)
             .await?;
         assert_eq!(
-            count, 1,
-            "Expected exactly 1 row in llm_requests. RED: record_request is not yet called."
+            count, 2,
+            "Expected 2 rows in llm_requests (chat + reflection)."
         );
 
-        let status: String = sqlx::query_scalar("SELECT status FROM llm_requests")
-            .fetch_one(&pool)
-            .await?;
-        assert_eq!(status, "success");
+        // Both rows should have status 'success'
+        let statuses: Vec<String> =
+            sqlx::query_scalar("SELECT status FROM llm_requests ORDER BY created_at")
+                .fetch_all(&pool)
+                .await?;
+        assert_eq!(statuses, vec!["success".to_string(), "success".to_string()]);
 
         Ok(())
     }
@@ -3082,6 +3335,7 @@ mod tests {
             pool.clone(),
             None,
             None,
+            Arc::new(RwLock::new(None)),
         );
 
         let (tx, _rx) = mpsc::channel(100);
@@ -3122,6 +3376,7 @@ mod tests {
             pool.clone(),
             None,
             None,
+            Arc::new(RwLock::new(None)),
         );
 
         let result = orchestrator.process_message("profile-1", "hello").await;

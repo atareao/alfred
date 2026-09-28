@@ -17,7 +17,7 @@ use axum::routing::{delete, get, put};
 use axum::{extract::State, Json, Router};
 use serde_json::Value;
 use sqlx::SqlitePool;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use tokio::sync::{broadcast, mpsc};
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
@@ -40,6 +40,7 @@ pub struct AppState {
     pub collapse_tx: Option<mpsc::Sender<String>>,
     pub memory_tx: Option<mpsc::Sender<()>>,
     pub shutdown_tx: Option<broadcast::Sender<()>>,
+    pub last_api_call: Arc<RwLock<Option<crate::models::stats::LastApiCall>>>,
 }
 
 impl AppState {
@@ -70,6 +71,7 @@ impl AppState {
             collapse_tx: None,
             memory_tx: None,
             shutdown_tx: None,
+            last_api_call: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -102,6 +104,7 @@ impl AppState {
             collapse_tx: None,
             memory_tx: None,
             shutdown_tx: None,
+            last_api_call: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -196,6 +199,9 @@ impl AppState {
             ..Default::default()
         };
 
+        let last_api_call: Arc<RwLock<Option<crate::models::stats::LastApiCall>>> =
+            Arc::new(RwLock::new(None));
+
         let orchestrator = Arc::new(Orchestrator::new(
             llm_provider,
             tool_registry.clone(),
@@ -205,6 +211,7 @@ impl AppState {
             pool.clone(),
             collapse_tx.clone(),
             memory_tx.clone(),
+            last_api_call.clone(),
         ));
 
         // 7. Create auth config from environment
@@ -230,6 +237,7 @@ impl AppState {
             collapse_tx,
             memory_tx,
             shutdown_tx,
+            last_api_call,
         })
     }
 
@@ -388,6 +396,7 @@ pub async fn app() -> Router {
         collapse_tx: None,
         memory_tx: None,
         shutdown_tx: None,
+        last_api_call: Arc::new(RwLock::new(None)),
     };
     app_with_state(state)
 }

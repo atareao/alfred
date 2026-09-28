@@ -195,7 +195,7 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::{Method, Request, StatusCode};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, RwLock};
     use tower::ServiceExt;
 
     // ------------------------------------------------------------------
@@ -517,6 +517,7 @@ mod tests {
             pool.clone(),
             None,
             None,
+            Arc::new(RwLock::new(None)),
         ));
 
         // 5. Build AppState
@@ -529,6 +530,7 @@ mod tests {
             collapse_tx: None,
             memory_tx: None,
             shutdown_tx: None,
+            last_api_call: Arc::new(RwLock::new(None)),
         };
 
         // 6. Build axum Router

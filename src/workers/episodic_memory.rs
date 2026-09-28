@@ -6,8 +6,10 @@ use sqlx::SqlitePool;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tracing;
+use uuid::Uuid;
 
 use crate::db::repos::memory::MemoryRepo;
+use crate::db::repos::stats::StatsRepo;
 use crate::llm::provider::{ChatMessage, ChatRequest, LLMProvider};
 use crate::models::message::estimate_markdown_tokens_heuristic;
 
@@ -205,7 +207,8 @@ impl EpisodicMemoryWorker {
         }
 
         // 5b. Call LLM
-        let card = match Self::call_llm(&llm_provider, config, &message_block).await {
+        let card = match Self::call_llm(db, "episodic", &llm_provider, config, &message_block).await
+        {
             Some(card) => {
                 // Reset the failure tracker on success
                 LAST_LLM_ATTEMPT.store(0, Ordering::Relaxed);
@@ -410,6 +413,8 @@ impl EpisodicMemoryWorker {
     /// Call the LLM with the archivist prompt and message block.
     /// Parses the structured response into a `MemoryCard`.
     async fn call_llm(
+        db: &SqlitePool,
+        profile_id: &str,
         llm_provider: &Arc<dyn LLMProvider>,
         config: &EpisodicMemoryConfig,
         message_block: &str,
@@ -438,13 +443,73 @@ impl EpisodicMemoryWorker {
             stream: false,
         };
 
+        let start = std::time::Instant::now();
         let response = match llm_provider.chat(request).await {
             Ok(r) => r,
             Err(e) => {
+                let duration_ms = start.elapsed().as_millis() as i64;
+                let _ = StatsRepo::record_request(
+                    db,
+                    &Uuid::new_v4().to_string(),
+                    &config.model,
+                    profile_id,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0.0,
+                    Some(duration_ms),
+                    "error",
+                    Some(&e.to_string()),
+                    None,
+                    None,
+                )
+                .await;
                 tracing::error!(error = %e, "EpisodicMemoryWorker: LLM chat failed");
                 return None;
             }
         };
+
+        // Record stats for this LLM call
+        let duration_ms = start.elapsed().as_millis() as i64;
+        let prompt_tokens = response
+            .usage
+            .as_ref()
+            .map(|u| u.prompt_tokens as i64)
+            .unwrap_or(0);
+        let completion_tokens = response
+            .usage
+            .as_ref()
+            .map(|u| u.completion_tokens as i64)
+            .unwrap_or(0);
+        let total_tokens = prompt_tokens + completion_tokens;
+        let _ = StatsRepo::record_request(
+            db,
+            &Uuid::new_v4().to_string(),
+            &config.model,
+            profile_id,
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            response
+                .usage
+                .as_ref()
+                .map(|u| u.cached_tokens as i64)
+                .unwrap_or(0),
+            response
+                .usage
+                .as_ref()
+                .map(|u| u.reasoning_tokens as i64)
+                .unwrap_or(0),
+            response.usage.as_ref().map(|u| u.cost).unwrap_or(0.0),
+            Some(duration_ms),
+            "success",
+            None,
+            None,
+            None,
+        )
+        .await;
 
         let content = &response.message.content;
         let content_preview = content.chars().take(300).collect::<String>();
