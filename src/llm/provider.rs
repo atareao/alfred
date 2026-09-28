@@ -35,7 +35,7 @@ pub struct ToolDef {
 }
 
 /// Request payload for an LLM chat completion.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatRequest {
     pub model: String,
     pub messages: Vec<ChatMessage>,
@@ -46,17 +46,20 @@ pub struct ChatRequest {
 }
 
 /// Response from an LLM chat completion.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatResponse {
     pub message: ChatMessage,
     pub usage: Option<TokenUsage>,
 }
 
 /// Token usage statistics.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenUsage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
+    pub cached_tokens: u32,
+    pub reasoning_tokens: u32,
+    pub cost: f64,
 }
 
 /// Events emitted during streaming chat completions.

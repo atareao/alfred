@@ -70,20 +70,23 @@ export const ModelChart: React.FC<ModelChartProps> = ({ data, loading }) => {
     },
   };
 
+  const headerStyle = { color: "#ffffff" };
   const columns = [
-    { title: "Model", dataIndex: "model", key: "model" },
-    { title: "Calls", dataIndex: "calls", key: "calls" },
-    { title: "Tokens", dataIndex: "total_tokens", key: "total_tokens" },
+    { title: "Model", dataIndex: "model", key: "model", onHeaderCell: () => ({ style: headerStyle }) },
+    { title: "Calls", dataIndex: "calls", key: "calls", onHeaderCell: () => ({ style: headerStyle }) },
+    { title: "Tokens", dataIndex: "total_tokens", key: "total_tokens", onHeaderCell: () => ({ style: headerStyle }) },
     {
       title: "Cost ($)",
       dataIndex: "total_cost",
       key: "total_cost",
+      onHeaderCell: () => ({ style: headerStyle }),
       render: (val: number) => val.toFixed(6),
     },
     {
       title: "Avg Duration",
       dataIndex: "avg_duration_ms",
       key: "avg_duration_ms",
+      onHeaderCell: () => ({ style: headerStyle }),
       render: (val: number | null) =>
         val != null ? `${val.toFixed(0)} ms` : "N/A",
     },

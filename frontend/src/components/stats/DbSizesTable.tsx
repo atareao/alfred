@@ -28,9 +28,10 @@ export const DbSizesTable: React.FC<DbSizesTableProps> = ({ data, loading }) => 
 
   const sorted = [...data].sort((a, b) => b.rows - a.rows);
 
+  const headerStyle = { color: "#ffffff" };
   const columns = [
-    { title: "Table", dataIndex: "table", key: "table" },
-    { title: "Rows", dataIndex: "rows", key: "rows" },
+    { title: "Table", dataIndex: "table", key: "table", onHeaderCell: () => ({ style: headerStyle }) },
+    { title: "Rows", dataIndex: "rows", key: "rows", onHeaderCell: () => ({ style: headerStyle }) },
   ];
 
   return (

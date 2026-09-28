@@ -59,3 +59,23 @@ pub struct MemoryStats {
     pub messages_indexed: u64,
     pub messages_total: u64,
 }
+
+/// Data from the most recent OpenRouter API call, kept in-memory for
+/// observability via GET /api/stats/llm/last-call.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LastApiCall {
+    pub model: String,
+    pub request_body: Option<String>,
+    pub response_body: Option<String>,
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub total_tokens: u32,
+    pub cached_tokens: u32,
+    pub reasoning_tokens: u32,
+    pub cost: f64,
+    pub duration_ms: Option<i64>,
+    pub status: String,
+    pub error_message: Option<String>,
+    pub tool_calls: Option<String>,
+    pub created_at: String,
+}

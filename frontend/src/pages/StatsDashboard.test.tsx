@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { StatsDashboard } from "./StatsDashboard";
 import { api } from "../api/client";
 
@@ -35,6 +35,13 @@ const mockDbSizes = [
   { table: "users", rows: 100 },
 ];
 
+const mockMemory = {
+  total_memories: 120,
+  total_tokens: 50000,
+  messages_total: 1000,
+  messages_indexed: 800,
+};
+
 vi.mock("../api/client", () => ({
   api: {
     getStatsSummary: vi.fn(),
@@ -43,6 +50,7 @@ vi.mock("../api/client", () => ({
     getStatsTools: vi.fn(),
     getDbSizes: vi.fn(),
     getMemoryStats: vi.fn(),
+    getLastApiCall: vi.fn(),
     getRetention: vi.fn(),
     setRetention: vi.fn(),
   },
@@ -50,7 +58,7 @@ vi.mock("../api/client", () => ({
 
 describe("StatsDashboard", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     Object.defineProperty(window, "matchMedia", {
       writable: true,
       value: vi.fn().mockImplementation((query: string) => ({
@@ -72,6 +80,7 @@ describe("StatsDashboard", () => {
     vi.mocked(api.getStatsByDay).mockReturnValue(new Promise(() => {}));
     vi.mocked(api.getStatsTools).mockReturnValue(new Promise(() => {}));
     vi.mocked(api.getDbSizes).mockReturnValue(new Promise(() => {}));
+    vi.mocked(api.getLastApiCall).mockReturnValue(new Promise(() => {}));
 
     const { container } = render(<StatsDashboard />);
     const spin = container.querySelector(".ant-spin-spinning");
@@ -85,13 +94,22 @@ describe("StatsDashboard", () => {
     vi.mocked(api.getStatsTools).mockResolvedValue(mockTools);
     vi.mocked(api.getDbSizes).mockResolvedValue(mockDbSizes);
     vi.mocked(api.getRetention).mockResolvedValue({ days: 30 });
+    vi.mocked(api.getMemoryStats).mockResolvedValue(mockMemory);
+    vi.mocked(api.getLastApiCall).mockResolvedValue(null);
 
     render(<StatsDashboard />);
 
-    // Wait for data to load
+    // Wait for data to load — Resumen tab is default active
     expect(await screen.findByText("LLM Usage Summary")).toBeInTheDocument();
+    expect(await screen.findByText("🧠 Memory")).toBeInTheDocument();
+
+    // Click "Modelos" tab and verify its content
+    fireEvent.click(screen.getByText("🤖 Modelos"));
     expect(await screen.findByText("Cost by Model")).toBeInTheDocument();
     expect(await screen.findByText("Daily Activity")).toBeInTheDocument();
+
+    // Click "Sistema" tab and verify its content
+    fireEvent.click(screen.getByText("⚙️ Sistema"));
     expect(await screen.findByText("Tool Usage")).toBeInTheDocument();
     expect(await screen.findByText("Database Sizes")).toBeInTheDocument();
     expect(await screen.findByText("Data Retention")).toBeInTheDocument();
@@ -115,6 +133,7 @@ describe("StatsDashboard", () => {
     vi.mocked(api.getStatsByDay).mockResolvedValue([]);
     vi.mocked(api.getStatsTools).mockResolvedValue([]);
     vi.mocked(api.getDbSizes).mockResolvedValue([]);
+    vi.mocked(api.getLastApiCall).mockResolvedValue(null);
 
     render(<StatsDashboard />);
 
@@ -127,6 +146,8 @@ describe("StatsDashboard", () => {
     vi.mocked(api.getStatsByDay).mockRejectedValue(new Error("API error"));
     vi.mocked(api.getStatsTools).mockRejectedValue(new Error("API error"));
     vi.mocked(api.getDbSizes).mockRejectedValue(new Error("API error"));
+    vi.mocked(api.getMemoryStats).mockRejectedValue(new Error("API error"));
+    vi.mocked(api.getLastApiCall).mockRejectedValue(new Error("API error"));
 
     render(<StatsDashboard />);
 

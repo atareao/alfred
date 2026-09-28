@@ -65,9 +65,10 @@ export const ToolsChart: React.FC<ToolsChartProps> = ({ data, loading }) => {
     },
   };
 
+  const headerStyle = { color: "#ffffff" };
   const columns = [
-    { title: "Tool", dataIndex: "tool", key: "tool" },
-    { title: "Count", dataIndex: "count", key: "count" },
+    { title: "Tool", dataIndex: "tool", key: "tool", onHeaderCell: () => ({ style: headerStyle }) },
+    { title: "Count", dataIndex: "count", key: "count", onHeaderCell: () => ({ style: headerStyle }) },
   ];
 
   return (

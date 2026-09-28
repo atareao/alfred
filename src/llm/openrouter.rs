@@ -97,6 +97,13 @@ impl OpenRouterProvider {
 
         let prompt_tokens = body["usage"]["prompt_tokens"].as_u64().unwrap_or(0) as u32;
         let completion_tokens = body["usage"]["completion_tokens"].as_u64().unwrap_or(0) as u32;
+        let cached_tokens = body["usage"]["prompt_tokens_details"]["cached_tokens"]
+            .as_u64()
+            .unwrap_or(0) as u32;
+        let reasoning_tokens = body["usage"]["completion_tokens_details"]["reasoning_tokens"]
+            .as_u64()
+            .unwrap_or(0) as u32;
+        let cost = body["usage"]["cost"].as_f64().unwrap_or(0.0);
 
         Ok(ChatResponse {
             message: ChatMessage {
@@ -109,6 +116,9 @@ impl OpenRouterProvider {
             usage: Some(super::provider::TokenUsage {
                 prompt_tokens,
                 completion_tokens,
+                cached_tokens,
+                reasoning_tokens,
+                cost,
             }),
         })
     }
@@ -658,17 +668,36 @@ pub fn parse_sse_event(
     }
 
     // 7. Process finish_reason (stop OR tool_calls)
+    //
+    // OpenRouter sends TWO events with finish_reason:
+    //   1. Last content chunk: finish_reason but NO usage
+    //   2. Usage chunk:       finish_reason AND usage (just before [DONE])
+    //
+    // We MUST only emit StreamEvent::Done when usage IS present. Otherwise the
+    // orchestrator's stream loop exits on the first Done (usage=None) and never
+    // processes the second event with the real token/cost data.
     if let Some(finish_reason) = choice["finish_reason"].as_str() {
         if finish_reason == "stop" || finish_reason == "tool_calls" {
-            // Extract usage from the body (may be None for tool_calls chunks)
-            if let Some(usage) = body.get("usage") {
-                let prompt_tokens = usage["prompt_tokens"].as_u64().unwrap_or(0) as u32;
-                let completion_tokens = usage["completion_tokens"].as_u64().unwrap_or(0) as u32;
-                acc.usage = Some(TokenUsage {
-                    prompt_tokens,
-                    completion_tokens,
-                });
+            let usage = body.get("usage").map(|u| TokenUsage {
+                prompt_tokens: u["prompt_tokens"].as_u64().unwrap_or(0) as u32,
+                completion_tokens: u["completion_tokens"].as_u64().unwrap_or(0) as u32,
+                cached_tokens: u["prompt_tokens_details"]["cached_tokens"]
+                    .as_u64()
+                    .unwrap_or(0) as u32,
+                reasoning_tokens: u["completion_tokens_details"]["reasoning_tokens"]
+                    .as_u64()
+                    .unwrap_or(0) as u32,
+                cost: u["cost"].as_f64().unwrap_or(0.0),
+            });
+
+            // Only emit Done when usage is present. Without usage this is the
+            // first finish_reason event; skip silently so the stream loop can
+            // consume the second event which carries the real usage data.
+            if usage.is_none() {
+                return Ok(None);
             }
+
+            acc.usage = usage;
 
             // Finalize any accumulated tool calls
             let tool_calls = acc.finalize();
@@ -930,7 +959,7 @@ mod tests {
 
     #[test]
     fn test_parse_sse_done() {
-        let json = r#"{"choices":[{"delta":{},"finish_reason":"stop","index":0}],"usage":{"prompt_tokens":10,"completion_tokens":5}}"#;
+        let json = r#"{"choices":[{"delta":{},"finish_reason":"stop","index":0}],"usage":{"prompt_tokens":10,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":2},"completion_tokens_details":{"reasoning_tokens":1},"cost":0.0015}}"#;
         let mut acc = StreamAccumulator::default();
 
         let event = parse_sse_event(json, &mut acc)
@@ -944,6 +973,9 @@ mod tests {
                     .expect("Done event should carry usage information");
                 assert_eq!(usage.prompt_tokens, 10);
                 assert_eq!(usage.completion_tokens, 5);
+                assert_eq!(usage.cached_tokens, 2);
+                assert_eq!(usage.reasoning_tokens, 1);
+                assert!((usage.cost - 0.0015).abs() < f64::EPSILON);
             }
             other => panic!("Expected StreamEvent::Done, got {:?}", other),
         }
@@ -1031,7 +1063,7 @@ mod tests {
         let _ = parse_sse_event(c2, &mut acc).expect("chunk 2 should not error");
 
         // Final event with usage
-        let done = r#"{"choices":[{"delta":{},"finish_reason":"stop","index":0}],"usage":{"prompt_tokens":42,"completion_tokens":7}}"#;
+        let done = r#"{"choices":[{"delta":{},"finish_reason":"stop","index":0}],"usage":{"prompt_tokens":42,"completion_tokens":7,"prompt_tokens_details":{"cached_tokens":3},"completion_tokens_details":{"reasoning_tokens":2},"cost":0.003}}"#;
         let event = parse_sse_event(done, &mut acc)
             .expect("done event should not error")
             .expect("expected Some(StreamEvent) for finish_reason");
@@ -1048,6 +1080,18 @@ mod tests {
                 assert_eq!(
                     usage.completion_tokens, 7,
                     "completion_tokens should come from the last chunk with usage"
+                );
+                assert_eq!(
+                    usage.cached_tokens, 3,
+                    "cached_tokens should come from the last chunk with usage"
+                );
+                assert_eq!(
+                    usage.reasoning_tokens, 2,
+                    "reasoning_tokens should come from the last chunk with usage"
+                );
+                assert!(
+                    (usage.cost - 0.003).abs() < f64::EPSILON,
+                    "cost should come from the last chunk with usage"
                 );
             }
             other => panic!("Expected StreamEvent::Done, got {:?}", other),
@@ -1099,19 +1143,24 @@ mod tests {
 
     #[test]
     fn test_parse_sse_finish_reason_tool_calls_no_delta() {
-        // SSE line with EMPTY delta and finish_reason="tool_calls"
-        let json = r#"{"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}]}"#;
+        // SSE line with EMPTY delta, finish_reason="tool_calls", AND usage
+        // (simulating the second event from OpenRouter with usage data).
+        let json = r#"{"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}],"usage":{"prompt_tokens":10,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":0},"cost":0.0}}"#;
         let mut acc = StreamAccumulator::default();
 
         let event = parse_sse_event(json, &mut acc)
             .expect("parse_sse_event should not error for finish_reason tool_calls")
-            .expect("expected Some(StreamEvent) for finish_reason tool_calls");
+            .expect("expected Some(StreamEvent) for finish_reason tool_calls with usage");
 
         match event {
             StreamEvent::Done(response) => {
                 assert!(
                     response.message.tool_calls.is_none(),
                     "expected tool_calls = None when accumulator is empty"
+                );
+                assert!(
+                    response.usage.is_some(),
+                    "expected usage to be present in Done event"
                 );
             }
             other => panic!("Expected StreamEvent::Done, got {:?}", other),
@@ -1131,11 +1180,12 @@ mod tests {
             usage: None,
         };
 
-        // Process finish_reason "tool_calls" SSE line (empty delta)
-        let json = r#"{"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}]}"#;
+        // Process finish_reason "tool_calls" SSE line with usage
+        // (simulating the second event from OpenRouter).
+        let json = r#"{"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}],"usage":{"prompt_tokens":15,"completion_tokens":8,"prompt_tokens_details":{"cached_tokens":1},"completion_tokens_details":{"reasoning_tokens":0},"cost":0.002}}"#;
         let event = parse_sse_event(json, &mut acc)
             .expect("parse_sse_event should not error")
-            .expect("expected Some(StreamEvent) for finish_reason tool_calls");
+            .expect("expected Some(StreamEvent) for finish_reason tool_calls with usage");
 
         match event {
             StreamEvent::Done(response) => {
@@ -1150,6 +1200,11 @@ mod tests {
                     "arguments should be parsed as JSON object"
                 );
                 assert_eq!(tool_calls[0].arguments["city"], "Madrid");
+
+                // Verify usage is present
+                let usage = response.usage.expect("usage should be present");
+                assert_eq!(usage.prompt_tokens, 15);
+                assert_eq!(usage.completion_tokens, 8);
             }
             other => panic!("Expected StreamEvent::Done, got {:?}", other),
         }
@@ -1176,11 +1231,11 @@ mod tests {
             usage: None,
         };
 
-        // Process finish_reason "tool_calls" SSE line
-        let json = r#"{"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}]}"#;
+        // Process finish_reason "tool_calls" SSE line with usage
+        let json = r#"{"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}],"usage":{"prompt_tokens":20,"completion_tokens":10,"prompt_tokens_details":{"cached_tokens":2},"completion_tokens_details":{"reasoning_tokens":1},"cost":0.004}}"#;
         let event = parse_sse_event(json, &mut acc)
             .expect("parse_sse_event should not error")
-            .expect("expected Some(StreamEvent) for finish_reason tool_calls");
+            .expect("expected Some(StreamEvent) for finish_reason tool_calls with usage");
 
         match event {
             StreamEvent::Done(response) => {
@@ -1191,6 +1246,10 @@ mod tests {
                 assert_eq!(tool_calls.len(), 2);
                 assert_eq!(tool_calls[0].name, "weather");
                 assert_eq!(tool_calls[1].name, "geo");
+
+                let usage = response.usage.expect("usage should be present");
+                assert_eq!(usage.prompt_tokens, 20);
+                assert_eq!(usage.completion_tokens, 10);
             }
             other => panic!("Expected StreamEvent::Done, got {:?}", other),
         }

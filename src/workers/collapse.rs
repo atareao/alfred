@@ -5,9 +5,11 @@ use tokio::task::JoinHandle;
 use tracing;
 
 use crate::db::repos::messages::MessagesRepo;
+use crate::db::repos::stats::StatsRepo;
 use crate::db::DbPool;
 use crate::llm::provider::{ChatMessage, ChatRequest, LLMProvider};
 use crate::models::message::estimate_markdown_tokens_heuristic;
+use std::time::Instant;
 
 /// Background worker that collapses long messages by sending them to an LLM
 /// for summarisation.
@@ -74,10 +76,51 @@ impl CollapseWorker {
                     };
 
                     // 3. Call LLM
+                    let start = Instant::now();
                     match llm_provider.chat(request).await {
                         Ok(response) => {
+                            let duration_ms = start.elapsed().as_millis() as i64;
                             let collapsed = response.message.content;
                             let collapsed_tokens = estimate_markdown_tokens_heuristic(&collapsed);
+
+                            // Record stats
+                            let prompt_tokens = response
+                                .usage
+                                .as_ref()
+                                .map(|u| u.prompt_tokens as i64)
+                                .unwrap_or(0);
+                            let completion_tokens = response
+                                .usage
+                                .as_ref()
+                                .map(|u| u.completion_tokens as i64)
+                                .unwrap_or(0);
+                            let total_tokens = prompt_tokens + completion_tokens;
+                            let _ = StatsRepo::record_request(
+                                &db,
+                                &uuid::Uuid::new_v4().to_string(),
+                                &model,
+                                "background",
+                                prompt_tokens,
+                                completion_tokens,
+                                total_tokens,
+                                response
+                                    .usage
+                                    .as_ref()
+                                    .map(|u| u.cached_tokens as i64)
+                                    .unwrap_or(0),
+                                response
+                                    .usage
+                                    .as_ref()
+                                    .map(|u| u.reasoning_tokens as i64)
+                                    .unwrap_or(0),
+                                response.usage.as_ref().map(|u| u.cost).unwrap_or(0.0),
+                                Some(duration_ms),
+                                "success",
+                                None,
+                                None,
+                                None,
+                            )
+                            .await;
 
                             // 4. Update DB
                             let update_result = sqlx::query(
@@ -96,6 +139,25 @@ impl CollapseWorker {
                             }
                         }
                         Err(e) => {
+                            let duration_ms = start.elapsed().as_millis() as i64;
+                            let _ = StatsRepo::record_request(
+                                &db,
+                                &uuid::Uuid::new_v4().to_string(),
+                                &model,
+                                "background",
+                                0,
+                                0,
+                                0,
+                                0,
+                                0,
+                                0.0,
+                                Some(duration_ms),
+                                "error",
+                                Some(&e.to_string()),
+                                None,
+                                None,
+                            )
+                            .await;
                             tracing::error!(message_id = %message_id, error = %e, "CollapseWorker LLM call failed");
                         }
                     }
@@ -140,6 +202,9 @@ mod tests {
                 usage: Some(TokenUsage {
                     prompt_tokens: 100,
                     completion_tokens: 50,
+                    cached_tokens: 0,
+                    reasoning_tokens: 0,
+                    cost: 0.0,
                 }),
             })
         }
