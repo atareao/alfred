@@ -1,4 +1,13 @@
 # Changelog
+## [0.8.0] - 2026-09-29
+
+### Dependencies
+
+- Upgrade axum 0.8, sqlx 0.9 and adapt breaking changes
+
+### Documentation
+
+- Update READMEs and openspec spec for dependency upgrade
 ## [0.7.0] - 2026-09-29
 
 ### Bug Fixes
