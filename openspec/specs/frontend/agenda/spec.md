@@ -1,11 +1,13 @@
 # frontend/agenda Specification
 
 ## Purpose
-TBD - created by archiving change complete-agenda. Update Purpose after archive.
+Interfaz de agenda de Valet: componente de calendario con vistas de día, semana y mes, creación, edición y eliminación de eventos, categorías con colores y filtrado por categoría.
 
 ## Requirements
 
 ### Requirement: Calendar view component
+
+El componente SHALL mostrar un calendario de Ant Design con vistas mensual, semanal y diaria, permitiendo crear, editar y eliminar eventos y filtrarlos por categoría.
 
 New React component for agenda visualization using Ant Design Calendar with day/week/month views.
 

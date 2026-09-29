@@ -6,6 +6,8 @@ Gestión del repositorio de mensajes de conversación. Creado tras archivar fix-
 ## Requirements
 
 ### Requirement: list_all devuelve los mensajes más recientes
+
+`list_all` SHALL devolver como máximo `limit` mensajes, empezando por los más recientes y en orden cronológico ascendente.
 **Given** la base de datos tiene mensajes  
 **When** se llama `list_all(pool, limit, None)`  
 **Then** devuelve como máximo `limit` mensajes, empezando por los más recientes, en orden cronológico ascendente  
@@ -23,6 +25,8 @@ Gestión del repositorio de mensajes de conversación. Creado tras archivar fix-
 **And** `next_cursor` no es None
 
 ### Requirement: Paginación hacia atrás con cursor
+
+`list_all` SHALL soportar paginación hacia atrás mediante un cursor, devolviendo los mensajes anteriores y un nuevo cursor o `None`.
 **Given** se ha cargado una página de mensajes  
 **When** se llama `list_all(pool, limit, Some(cursor))` con cursor = timestamp del más antiguo  
 **Then** devuelve los mensajes anteriores al cursor, en orden cronológico ascendente  

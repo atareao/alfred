@@ -1,7 +1,7 @@
 # messages Specification
 
 ## Purpose
-TBD - created by archiving change fix-tools-used-persistence. Update Purpose after archive.
+API y contratos para persistir el campo opcional `tools_used` en los mensajes, desde el handler HTTP hasta el struct `CreateMessage` y la interfaz TypeScript del frontend.
 
 ## Requirements
 

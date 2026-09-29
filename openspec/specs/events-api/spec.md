@@ -1,11 +1,13 @@
 # events-api Specification
 
 ## Purpose
-TBD - created by archiving change events-rest-api. Update Purpose after archive.
+API REST de eventos de Valet: endpoints CRUD para listar por rango de fechas, crear, actualizar y eliminar eventos.
 
 ## Requirements
 
 ### Requirement: Events REST API CRUD endpoints
+
+La API SHALL exponer endpoints CRUD bajo `/api/events` para listar por rango de fechas, crear, actualizar y eliminar eventos.
 
 #### Scenario: List events in date range
 **Given** un evento existe con start_time="2026-09-25T10:00:00Z" en la BD  

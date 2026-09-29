@@ -1,11 +1,13 @@
 # orchestrator/profile-injection Specification
 
 ## Purpose
-TBD - created by archiving change complete-agenda. Update Purpose after archive.
+Inyección server-side del `profile_id` en las llamadas a herramientas, para que el LLM no tenga que solicitarlo al usuario, junto con descripciones de herramientas enriquecidas con sinónimos en español.
 
 ## Requirements
 
 ### Requirement: Inject profile_id server-side instead of via LLM
+
+El orquestador SHALL inyectar `profile_id` desde la sesión autenticada en los argumentos de cada tool call antes de ejecutarla.
 
 Currently every tool requires `profile_id` as a parameter that the LLM must supply. This forces the LLM to ask the user for their profile_id, which creates confusing conversations and breaks the user experience. The fix is to inject `profile_id` from the authenticated session in the orchestrator, before tool execution.
 

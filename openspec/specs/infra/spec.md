@@ -1,5 +1,9 @@
 # Infraestructura: Docker y Despliegue
 
+## Purpose
+
+Infraestructura de despliegue de Valet: empaquetado Docker multi-stage que compila el backend Rust (musl) y el frontend Vite, embebiendo los assets en un único binario, además del compose de desarrollo y el stack TLS basado en rustls.
+
 ## Contratos
 
 ### Docker Compose (docker-compose.yml)
@@ -62,9 +66,13 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # → NO depende de openssl-sys, native-tls, ni libssl-dev
 ```
 
-## Escenarios
+## Requirements
 
-### Docker build produce imagen con frontend embebido
+### Requirement: Docker build produce imagen con frontend embebido
+
+El build SHALL producir una imagen con el frontend compilado embebido en `/app/static` y el binario musl respondiendo en el puerto 3000.
+
+#### Scenario: Docker build produce imagen con frontend embebido
 **Given** el directorio del proyecto con src/, Cargo.toml, Cargo.lock y frontend/  
 **When** se ejecuta `docker build -t valet .`  
 **Then** la imagen se construye sin errores  
@@ -72,14 +80,22 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 **And** el binario compilado con musl responde en el puerto 3000  
 **And** la imagen pesa ~30 MB
 
-### Docker compose levanta un único servicio
+### Requirement: Docker compose levanta un único servicio
+
+`docker compose up -d` SHALL levantar únicamente el servicio `valet`, que sirve la API y el SPA en el puerto 3000.
+
+#### Scenario: Docker compose levanta un único servicio
 **Given** docker-compose.yml con las variables de entorno necesarias  
 **When** se ejecuta `docker compose up -d`  
 **Then** el servicio valet responde en localhost:3000/api/health  
 **And** el servicio valet sirve el frontend SPA en localhost:3000/  
 **And** no existe el servicio frontend en el compose
 
-### reqwest usa rustls-tls (sin openssl)
+### Requirement: reqwest usa rustls-tls (sin openssl)
+
+La dependencia `reqwest` SHALL usar `rustls-tls` sin depender de openssl.
+
+#### Scenario: reqwest usa rustls-tls (sin openssl)
 **Given** Cargo.toml con `default-features = false, features = ["json", "rustls-tls"]`  
 **When** se ejecuta `cargo tree -i openssl-sys`  
 **Then** el comando devuelve "package ID specification openssl-sys matched no packages"  

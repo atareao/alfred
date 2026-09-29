@@ -1,36 +1,57 @@
 # orchestrator/agent Specification
 
 ## Purpose
-TBD - created by archiving change fix-system-prompt-markdown. Update Purpose after archive.
+Bucle ReAct del agente de Valet: uso del system prompt desde la base de datos, tolerancia a errores de herramientas, límite de reintentos, entrega incremental vía chat_stream, prioridad de los tool_calls del evento Done y registro de estadísticas de cada llamada al LLM.
 
 ## Requirements
 
 ### Requirement: System prompt template uses Markdown and emojis
-**Given** la configuración por defecto del orquestador  
-**When** se carga `OrchestratorConfig::default()`  
-**Then** el `system_prompt_template` contiene instrucciones de Markdown  
-**And** contiene "Emojis" y formato rico
+**Given** una base de datos migrada con el prompt sembrado en `settings.system_prompt`
+**When** el orquestador construye la petición al LLM
+**Then** SHALL leer `system_prompt` de la tabla `settings`
+**And** SHALL usar ese valor como mensaje de sistema
+**And** SHALL NOT usar ningún template hardcodeado en `OrchestratorConfig`
+**And** el prompt SHALL contener instrucciones de Markdown, "Emojis" y formato rico
+**And** si `system_prompt` está ausente o vacío, SHALL usar un fallback mínimo genérico y loguear un warning
 
 #### Scenario: System prompt incluye personaje de mayordomo
-**Given** la configuración por defecto  
-**When** se accede a `system_prompt_template`  
-**Then** contiene "mayordomo británico"  
-**And** contiene **"usted"**  
+**Given** la base de datos migrada
+**When** se lee `settings.system_prompt`
+**Then** contiene "asistente personal británico"
+**And** contiene "usted"
 **And** contiene "caballero"
 
 #### Scenario: System prompt tiene modo conciso y expandido
-**Given** la configuración por defecto  
-**When** se accede a `system_prompt_template`  
-**Then** contiene "Modo por defecto: conciso"  
-**And** contiene "expandido"
+**Given** la base de datos migrada
+**When** se lee `settings.system_prompt`
+**Then** contiene "Modo Conciso (Predeterminado)"
+**And** contiene "Expandido"
 
 #### Scenario: System prompt permite Markdown completo y emojis
-**Given** la configuración por defecto  
-**When** se accede a `system_prompt_template`  
-**Then** contiene "Markdown"  
-**And** contiene "emojis" o "Emojis"
+**Given** la base de datos migrada
+**When** se lee `settings.system_prompt`
+**Then** contiene "Markdown"
+**And** contiene "Emojis"
+
+#### Scenario: process_message usa el prompt de la BD
+**Given** un orquestador con `settings.system_prompt = "Prompt de prueba"`
+**When** se llama `process_message()`
+**Then** el mensaje de sistema enviado al LLM es "Prompt de prueba"
+
+#### Scenario: process_message_stream usa el prompt de la BD
+**Given** un orquestador con `settings.system_prompt = "Prompt de prueba"`
+**When** se llama `process_message_stream()`
+**Then** el mensaje de sistema enviado al LLM es "Prompt de prueba"
+
+#### Scenario: Fallback mínimo si falta el prompt
+**Given** un orquestador cuya tabla `settings` no tiene `system_prompt`
+**When** se construye la petición al LLM
+**Then** se usa un fallback mínimo genérico no vacío
+**And** se loguea un warning indicando que falta el prompt
 
 ### Requirement: Tool execution errors do not break the ReAct loop
+
+El orquestador SHALL convertir los errores de ejecución de herramientas en un `ToolResult { success: false }` y continuar el bucle ReAct.
 **Given** el orquestador ejecuta un tool call
 **When** `registry.execute()` retorna `Err(ToolError)` (e.g. timeout, parse error)
 **Then** el error NO DEBE propagarse con `?` rompiendo el loop
@@ -61,6 +82,8 @@ TBD - created by archiving change fix-system-prompt-markdown. Update Purpose aft
 **And** el tool result se pasa al LLM normalmente
 
 ### Requirement: Per-tool max retry limit of 3 in ReAct loop
+
+El orquestador SHALL limitar a 3 las llamadas a una misma herramienta por bucle ReAct y continuar el bucle tras alcanzar el límite.
 **Given** el orquestador ejecuta el ReAct loop
 **When** un tool es invocado 3 veces o más en el mismo loop
 **Then** NO DEBE ejecutarse el tool otra vez
@@ -88,6 +111,8 @@ TBD - created by archiving change fix-system-prompt-markdown. Update Purpose aft
 **And** "weather" aún puede ejecutarse
 
 ### Requirement: Orchestrator uses chat_stream for incremental response delivery
+
+El orquestador SHALL usar `self.llm.chat_stream()` en la iteración final y emitir cada fragmento como `SSEEvent::Chunk`.
 
 **Given** el orquestador procesando `process_message_stream()`  
 **When** se alcanza la iteración final del ReAct loop (sin tool calls)  
@@ -130,6 +155,8 @@ TBD - created by archiving change fix-system-prompt-markdown. Update Purpose aft
 
 ### Requirement: Tool error logging
 
+El orquestador SHALL registrar a nivel `error!` los errores de herramientas con nombre, argumentos y mensaje completo.
+
 All tool execution errors must be logged with maximum detail including
 tool name, arguments, and the full error message (Display + Debug).
 
@@ -149,6 +176,8 @@ When a tool has been called 3 times in the same ReAct loop, the orchestrator
 must log a warning with the tool name and call count.
 
 ### Requirement: Done event tool_calls take precedence over stream events
+
+El orquestador SHALL usar los `tool_calls` del evento Done (con argumentos completos) y caer en los del stream solo cuando el Done no los traiga.
 
 #### Scenario: Done event tool_calls have full arguments
 **Given** a Done event with `response.message.tool_calls = Some([...])` containing

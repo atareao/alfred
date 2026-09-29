@@ -50,7 +50,6 @@ export function useSettings(): UseSettingsReturn {
   const resetToDefaults = useCallback(async () => {
     await updateSettings({
       max_window_tokens: "10000",
-      system_prompt: "",
     });
   }, [updateSettings]);
 

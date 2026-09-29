@@ -1,11 +1,13 @@
 # db/repos Specification
 
 ## Purpose
-TBD - created by archiving change sql-window-history. Update Purpose after archive.
+Especificación de los repositorios de datos de Valet: mensajes con presupuesto de tokens y paginación, ajustes, y agregación de métricas de uso de LLM (resumen, por modelo, series diarias, herramientas, tamaños de tabla, export CSV y purga por retención).
 
 ## Requirements
 
 ### Requirement: MessagesRepo::list_by_token_budget SHALL select messages by token budget
+
+El repositorio SHALL devolver los mensajes más recientes cuya suma de tokens no supere el presupuesto indicado, en orden cronológico ascendente.
 
 **Given** una conversación con mensajes almacenados en DB  
 **When** se llama `MessagesRepo::list_by_token_budget(conn, conversation_id, max_tokens)`  
@@ -59,6 +61,13 @@ TBD - created by archiving change sql-window-history. Update Purpose after archi
 
 ### Requirement: SettingsRepo SHALL seed message_page_size default
 
+La migración SHALL sembrar el setting `message_page_size` con el valor por defecto `50`.
+
+**Given** una base de datos recién migrada
+**When** se consulta `SettingsRepo::get(conn, "message_page_size")`
+**Then** devuelve `Some("50")`
+
+#### Scenario: Setting por defecto disponible tras migrar
 **Given** una base de datos recién migrada
 **When** se consulta `SettingsRepo::get(conn, "message_page_size")`
 **Then** devuelve `Some("50")`
@@ -70,7 +79,14 @@ TBD - created by archiving change sql-window-history. Update Purpose after archi
 **Then** la función SHALL haber sido eliminada
 **And** sus tests SHALL haber sido eliminados
 
+#### Scenario: list_recent ya no existe
+**Given** el código base actual
+**When** se busca `list_recent` en `MessagesRepo`
+**Then** no existe la función ni sus tests
+
 ### Requirement: StatsRepo SHALL provide LLM usage aggregation queries
+
+El repositorio SHALL exponer `StatsRepo::summary(pool)` devolviendo un `StatsSummary` con los totales de llamadas, tokens, coste y errores.
 
 **Given** una tabla `llm_requests` con datos poblados
 **When** se llama a `StatsRepo::summary(pool)`
@@ -100,6 +116,8 @@ TBD - created by archiving change sql-window-history. Update Purpose after archi
 
 ### Requirement: StatsRepo SHALL provide per-model breakdown
 
+El repositorio SHALL exponer `StatsRepo::by_model(pool)` devolviendo un `ModelStats` por modelo ordenado por coste descendente.
+
 **Given** una tabla `llm_requests` con datos de múltiples modelos
 **When** se llama a `StatsRepo::by_model(pool)`
 **Then** devuelve `Vec<ModelStats>` con un elemento por modelo, cada uno con:
@@ -112,6 +130,8 @@ TBD - created by archiving change sql-window-history. Update Purpose after archi
 **Then** devuelve 2 filas ordenadas por coste descendente
 
 ### Requirement: StatsRepo SHALL provide daily time series
+
+El repositorio SHALL exponer `StatsRepo::by_day(pool, days)` devolviendo un `DayStats` por día ordenado por fecha ascendente.
 
 **Given** una tabla `llm_requests` con datos de varios días
 **When** se llama a `StatsRepo::by_day(pool, days)`
@@ -126,6 +146,8 @@ TBD - created by archiving change sql-window-history. Update Purpose after archi
 
 ### Requirement: StatsRepo SHALL provide tool call frequency
 
+El repositorio SHALL exponer `StatsRepo::tools_summary(pool)` devolviendo la frecuencia de uso de cada herramienta.
+
 **Given** una tabla `llm_requests` con tool_calls poblados
 **When** se llama a `StatsRepo::tools_summary(pool)`
 **Then** devuelve `Vec<ToolStats>` con cada tool y su frecuencia de uso
@@ -136,6 +158,8 @@ TBD - created by archiving change sql-window-history. Update Purpose after archi
 **Then** get_weather: 3, search_web: 2
 
 ### Requirement: StatsRepo SHALL provide database table sizes
+
+El repositorio SHALL exponer `StatsRepo::db_sizes(pool)` devolviendo el número de filas de cada tabla.
 
 **Given** una base de datos con tablas pobladas
 **When** se llama a `StatsRepo::db_sizes(pool)`
@@ -149,6 +173,8 @@ messages, profiles, memories, events, tasks, notes, contacts, reminders, meal_pl
 
 ### Requirement: StatsRepo SHALL provide CSV export with all OpenRouter fields
 
+El repositorio SHALL exponer `StatsRepo::export_csv(pool)` devolviendo un CSV con todas las columnas de `llm_requests`.
+
 **Given** una tabla `llm_requests` con datos
 **When** se llama a `StatsRepo::export_csv(pool)`
 **Then** devuelve un String con formato CSV con cabeceras:
@@ -161,6 +187,8 @@ messages, profiles, memories, events, tasks, notes, contacts, reminders, meal_pl
 **And** cada línea incluye cost, cached_tokens, reasoning_tokens
 
 ### Requirement: StatsRepo SHALL purge data older than retention period
+
+El repositorio SHALL exponer `StatsRepo::purge_old(pool, days)` eliminando los registros anteriores al periodo de retención y devolviendo cuántos borró.
 
 **Given** una tabla `llm_requests` con datos de 60 días
 **When** se llama a `StatsRepo::purge_old(pool, 30)`

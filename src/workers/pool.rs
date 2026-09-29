@@ -11,6 +11,11 @@ use tokio::task::JoinHandle;
 
 use crate::llm::provider::LLMProvider;
 
+/// Minimal collapse prompt used only when `settings.collapse_prompt` is
+/// missing or empty. The real prompt is seeded by migration
+/// `20260929000001_prompts.sql` and can be customised from the UI.
+const DEFAULT_COLLAPSE_PROMPT_FALLBACK: &str = "Resume el siguiente texto de forma concisa.";
+
 /// Container for all background worker tasks.
 ///
 /// Each field holds an optional [`JoinHandle`] for the corresponding worker.
@@ -214,27 +219,41 @@ impl WorkerPool {
             let collapse_model = _config.collapse_model.clone();
 
             let collapse_prompt = {
-                // Read collapse_prompt from settings synchronously for now
-                let mut collapse_prompt = "Resume el siguiente texto manteniendo la información clave, los datos importantes y el contexto necesario. Sé conciso.".to_string();
-
-                // Spawn a separate task to read settings async and store the result
+                // Read collapse_prompt from settings synchronously for now.
+                // The migration seeds the real value; use a minimal fallback
+                // if it is missing, empty, or unreadable.
                 let db_for_prompt = db.clone();
                 let prompt_future = async move {
-                    crate::db::repos::settings::SettingsRepo::get(&db_for_prompt, "collapse_prompt")
-                        .await
-                        .ok()
-                        .flatten()
-                        .unwrap_or_else(|| "Resume el siguiente texto manteniendo la información clave, los datos importantes y el contexto necesario. Sé conciso.".to_string())
+                    match crate::db::repos::settings::SettingsRepo::get(
+                        &db_for_prompt,
+                        "collapse_prompt",
+                    )
+                    .await
+                    {
+                        Ok(Some(p)) if !p.trim().is_empty() => p,
+                        Ok(_) => {
+                            tracing::warn!(
+                                "settings.collapse_prompt missing or empty; using minimal fallback"
+                            );
+                            DEFAULT_COLLAPSE_PROMPT_FALLBACK.to_string()
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "failed to read settings.collapse_prompt; using minimal fallback"
+                            );
+                            DEFAULT_COLLAPSE_PROMPT_FALLBACK.to_string()
+                        }
+                    }
                 };
 
-                // We need to block on this because `start()` is not async
-                // Use tokio::runtime::Handle to run the future on the current runtime
+                // We need to block on this because `start()` is not async.
+                // Use tokio::runtime::Handle to run the future on the current runtime.
                 if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                    collapse_prompt =
-                        tokio::task::block_in_place(|| handle.block_on(prompt_future));
+                    tokio::task::block_in_place(|| handle.block_on(prompt_future))
+                } else {
+                    DEFAULT_COLLAPSE_PROMPT_FALLBACK.to_string()
                 }
-
-                collapse_prompt
             };
 
             let mut shutdown_rx = shutdown_tx.subscribe();
@@ -545,6 +564,62 @@ mod tests {
             "The real CollapseWorker should have set collapsed_content, \
              but the placeholder only logs — this test will FAIL (RED)"
         );
+
+        pool_workers.shutdown().await;
+    }
+
+    /// Given a DB without `collapse_prompt`, when the pool starts and a long
+    /// message is sent, the collapse worker must use a minimal fallback prompt.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_pool_falls_back_when_collapse_prompt_missing() {
+        let pool = test_db().await;
+        crate::db::repos::settings::SettingsRepo::delete(&pool, "collapse_prompt")
+            .await
+            .unwrap();
+
+        let long_content = "x".repeat(8000);
+        let msg = MessagesRepo::create(
+            &pool,
+            "user",
+            &long_content,
+            None,
+            None,
+            None,
+            None,
+            2000,
+            None,
+        )
+        .await
+        .unwrap();
+        let msg_id = msg.id.clone();
+
+        let calls: Arc<Mutex<Vec<ChatRequest>>> = Arc::new(Mutex::new(Vec::new()));
+        let provider: Arc<dyn crate::llm::provider::LLMProvider> = Arc::new(MockPoolLLM {
+            calls: calls.clone(),
+        });
+
+        let config = test_config();
+        let mut pool_workers = WorkerPool::start(pool.clone(), &config, provider);
+
+        if let Some(tx) = &pool_workers.collapse_tx {
+            tx.send(msg_id.clone()).await.unwrap();
+        } else {
+            panic!("collapse_tx should be Some");
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        {
+            let captured = calls.lock().unwrap();
+            assert!(
+                !captured.is_empty(),
+                "Collapse worker should have called the LLM"
+            );
+            assert_eq!(
+                captured[0].messages[0].content, DEFAULT_COLLAPSE_PROMPT_FALLBACK,
+                "A minimal fallback must be used when collapse_prompt is missing"
+            );
+        }
 
         pool_workers.shutdown().await;
     }

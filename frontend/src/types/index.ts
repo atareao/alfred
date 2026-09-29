@@ -25,6 +25,8 @@ export interface CreateMessage {
 export interface Settings {
   max_window_tokens: string;
   system_prompt: string;
+  archivist_prompt: string;
+  collapse_prompt: string;
   [key: string]: string;
 }
 

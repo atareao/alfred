@@ -51,20 +51,13 @@ impl SettingsRepo {
     }
 
     /// Seed default settings values.
+    ///
+    /// Note: `system_prompt`, `archivist_prompt` and `collapse_prompt` are
+    /// seeded by migration `20260929000001_prompts.sql`, not here.
     pub async fn seed_defaults(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         sqlx::query("INSERT OR IGNORE INTO settings (key, value) VALUES (?1, ?2)")
             .bind("max_window_tokens")
             .bind("10000")
-            .execute(pool)
-            .await?;
-        sqlx::query("INSERT OR IGNORE INTO settings (key, value) VALUES (?1, ?2)")
-            .bind("system_prompt")
-            .bind("")
-            .execute(pool)
-            .await?;
-        sqlx::query("INSERT OR IGNORE INTO settings (key, value) VALUES (?1, ?2)")
-            .bind("collapse_prompt")
-            .bind("Resume el siguiente texto manteniendo la información clave, los datos importantes y el contexto necesario. Sé conciso.")
             .execute(pool)
             .await?;
         sqlx::query("INSERT OR IGNORE INTO settings (key, value) VALUES (?1, ?2)")

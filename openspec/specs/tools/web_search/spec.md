@@ -7,6 +7,8 @@ Búsqueda web en tiempo real usando Brave Search API, permitiendo al LLM consult
 
 ### Requirement: Búsqueda web con Brave Search API
 
+La tool SHALL leer `brave_search_api_key` de settings y llamar a la API de Brave Search con el header `X-Subscription-Token`.
+
 **Given** un `WebSearchTool`
 **When** se ejecuta `web_search` con una consulta
 **Then** la tool DEBE leer `brave_search_api_key` de la tabla `settings` (SettingsRepo)
@@ -37,6 +39,8 @@ Búsqueda web en tiempo real usando Brave Search API, permitiendo al LLM consult
 
 ### Requirement: Formato de resultados
 
+La tool SHALL extraer hasta 5 resultados de `web.results`, cada uno con `title`, `url` y `description`.
+
 **Given** una respuesta exitosa de Brave Search
 **When** se procesan los resultados
 **Then** DEBE extraer hasta 5 resultados del campo `web.results`
@@ -48,6 +52,8 @@ Búsqueda web en tiempo real usando Brave Search API, permitiendo al LLM consult
 **Then** DEBE retornar `ToolResult` con `data` conteniendo array vacío
 
 ### Requirement: Tool interface
+
+`WebSearchTool` SHALL implementar el trait `Tool` con nombre `web_search`, permiso `NoConfirm` y parámetro requerido `query`.
 
 **Given** `WebSearchTool` implementa el trait `Tool`
 **When** se consulta su metadata

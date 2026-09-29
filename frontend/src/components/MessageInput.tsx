@@ -16,7 +16,7 @@ export interface MessageInputHandle {
 export const MessageInput = forwardRef<MessageInputHandle, MessageInputProps>(
   ({ onSend, disabled }, ref) => {
     const [value, setValue] = useState("");
-    const inputRef = React.useRef<HTMLTextAreaElement>(null);
+    const inputRef = React.useRef<React.ComponentRef<typeof TextArea>>(null);
 
     useImperativeHandle(ref, () => ({
       focus: () => inputRef.current?.focus(),
@@ -39,7 +39,7 @@ export const MessageInput = forwardRef<MessageInputHandle, MessageInputProps>(
     return (
       <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
         <TextArea
-          ref={inputRef as React.Ref<any>}
+          ref={inputRef}
           value={value}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={handleKeyDown}

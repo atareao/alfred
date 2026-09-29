@@ -31,8 +31,8 @@ export function useProfile() {
       const updated = await api.updateProfile(data);
       setProfile(updated);
       setError(null);
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
       throw err;
     } finally {
       setLoading(false);

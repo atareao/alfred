@@ -1,7 +1,7 @@
 # message Specification
 
 ## Purpose
-TBD - created by archiving change message-schema-enrichment. Update Purpose after archive.
+Modelo de mensaje enriquecido de Valet: estimación heurística de tokens Markdown, umbral de colapso configurable, nuevas columnas de migración y campos opcionales de ubicación y herramientas usadas.
 
 ## Requirements
 
