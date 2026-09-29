@@ -27,11 +27,86 @@ pub struct ToolCall {
 }
 
 /// Definition of a tool that can be provided to the LLM.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// # Serialization
+///
+/// This type serializes as:
+/// ```json
+/// {"type": "function", "function": {"name": "...", "description": "...", "parameters": {...}}}
+/// ```
+/// which is the format expected by OpenAI-compatible APIs (including OpenRouter).
+///
+/// # Deserialization
+///
+/// Deserialization supports both the serialized form (with `type`/`function` wrapper) and
+/// the flat form (`name`, `description`, `parameters` directly) for backward compatibility.
+#[derive(Debug, Clone)]
 pub struct ToolDef {
     pub name: String,
     pub description: String,
     pub parameters: Value,
+}
+
+impl serde::Serialize for ToolDef {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut s = serializer.serialize_struct("ToolDef", 2)?;
+        s.serialize_field("type", "function")?;
+        let function = serde_json::json!({
+            "name": self.name,
+            "description": self.description,
+            "parameters": self.parameters,
+        });
+        s.serialize_field("function", &function)?;
+        s.end()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ToolDef {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // Accept both:
+        //   1. Flat format: {"name", "description", "parameters"}
+        //   2. Wrapped format: {"type": "function", "function": {"name", ...}}
+        let v = serde_json::Value::deserialize(deserializer)?;
+        
+        // Try wrapped format first (function key exists)
+        if let Some(func) = v.get("function") {
+            if let (Some(name), Some(description), Some(parameters)) =
+                (func.get("name").and_then(|s| s.as_str()),
+                 func.get("description").and_then(|s| s.as_str()),
+                 func.get("parameters"))
+            {
+                return Ok(ToolDef {
+                    name: name.to_string(),
+                    description: description.to_string(),
+                    parameters: parameters.clone(),
+                });
+            }
+        }
+        
+        // Fall back to flat format (name key exists at top level)
+        if let (Some(name), Some(description), Some(parameters)) =
+            (v.get("name").and_then(|s| s.as_str()),
+             v.get("description").and_then(|s| s.as_str()),
+             v.get("parameters"))
+        {
+            return Ok(ToolDef {
+                name: name.to_string(),
+                description: description.to_string(),
+                parameters: parameters.clone(),
+            });
+        }
+        
+        Err(serde::de::Error::custom(
+            "expected ToolDef with name, description, and parameters (flat or wrapped)",
+        ))
+    }
 }
 
 /// Request payload for an LLM chat completion.

@@ -4,7 +4,7 @@ import type { SSEStreamEvent, BrowserContext } from "../types";
 
 export interface UseSSEOptions {
   onChunk?: (content: string) => void;
-  onDone?: (messageId: string, userMessageId?: string) => void;
+  onDone?: (messageId: string, userMessageId?: string, location?: string | null, tools_used?: string, user_location?: string, user_created_at?: string) => void;
   onToolCall?: (name: string, args: unknown) => void;
   onToolResult?: (name: string, success: boolean) => void;
   onError?: (message: string) => void;
@@ -98,6 +98,10 @@ export function useSSE() {
                     options.onDone?.(
                       event.message_id || "",
                       event.user_message_id,
+                      event.location,
+                      event.tools_used,
+                      event.user_location,
+                      event.user_created_at,
                     );
                     break;
                   case "error":

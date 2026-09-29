@@ -170,19 +170,7 @@ impl LLMProvider for OpenRouterProvider {
             body["max_tokens"] = serde_json::json!(max_t);
         }
         if let Some(tools) = &request.tools {
-            body["tools"] = serde_json::json!(tools
-                .iter()
-                .map(|t| {
-                    serde_json::json!({
-                        "type": "function",
-                        "function": {
-                            "name": t.name,
-                            "description": t.description,
-                            "parameters": t.parameters,
-                        }
-                    })
-                })
-                .collect::<Vec<_>>());
+            body["tools"] = serde_json::to_value(tools).unwrap_or_default();
         }
 
         tracing::debug!(
@@ -347,19 +335,7 @@ impl LLMProvider for OpenRouterProvider {
             body["max_tokens"] = serde_json::json!(max_t);
         }
         if let Some(tools) = &request.tools {
-            body["tools"] = serde_json::json!(tools
-                .iter()
-                .map(|t| {
-                    serde_json::json!({
-                        "type": "function",
-                        "function": {
-                            "name": t.name,
-                            "description": t.description,
-                            "parameters": t.parameters,
-                        }
-                    })
-                })
-                .collect::<Vec<_>>());
+            body["tools"] = serde_json::to_value(tools).unwrap_or_default();
         }
 
         tracing::debug!(
@@ -615,6 +591,7 @@ pub fn parse_sse_event(
     let delta = &choice["delta"];
 
     // 5. Process tool_calls
+    tracing::debug!(delta_tool_calls = ?delta["tool_calls"], "📦 SSE delta tool_calls check");
     if let Some(tool_calls) = delta["tool_calls"].as_array() {
         for tc in tool_calls {
             let index = tc["index"].as_u64().unwrap_or(0) as usize;
@@ -641,6 +618,7 @@ pub fn parse_sse_event(
 
                     // If this is a "header" chunk (has id + name), emit a ToolCall event immediately
                     if !id.is_empty() && !name.is_empty() {
+                        tracing::debug!(tool_index = %index, tool_id = %id, tool_name = %name, "📦 SSE emitting ToolCall event");
                         return Ok(Some(StreamEvent::ToolCall(ToolCall {
                             id,
                             name,
@@ -676,6 +654,7 @@ pub fn parse_sse_event(
     // We MUST only emit StreamEvent::Done when usage IS present. Otherwise the
     // orchestrator's stream loop exits on the first Done (usage=None) and never
     // processes the second event with the real token/cost data.
+    tracing::debug!(finish_reason = ?choice["finish_reason"], partial_count = %acc.partial_tool_calls.len(), "📦 SSE finish_reason check");
     if let Some(finish_reason) = choice["finish_reason"].as_str() {
         if finish_reason == "stop" || finish_reason == "tool_calls" {
             let usage = body.get("usage").map(|u| TokenUsage {
@@ -701,6 +680,7 @@ pub fn parse_sse_event(
 
             // Finalize any accumulated tool calls
             let tool_calls = acc.finalize();
+            tracing::debug!(tool_calls_count = ?tool_calls.as_ref().map(|t| t.len()), "📦 SSE finalize tool_calls");
 
             return Ok(Some(StreamEvent::Done(ChatResponse {
                 message: ChatMessage {

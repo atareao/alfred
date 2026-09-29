@@ -138,3 +138,37 @@ TBD - created by archiving change message-schema-enrichment. Update Purpose afte
 **Given** un mensaje con `location = "Barcelona"`  
 **When** `find_by_id(msg_id)` es llamado  
 **Then** el mensaje devuelto SHALL incluir `location = Some("Barcelona")`
+
+### Requirement: Message model SHALL include optional tools_used field
+
+**Given** un mensaje almacenado en la base de datos  
+**When** se recupera via API  
+**Then** el campo `tools_used` SHALL ser `Option<String>`  
+**And** SHALL ser `null` cuando no hay herramientas utilizadas  
+**And** SHALL contener el string formateado con las herramientas usadas (ej. `"(2) calendar::get_events, weather::get_weather"`) cuando hay herramientas
+
+#### Scenario: tools_used se persiste al crear mensaje assistant con herramientas
+**Given** un mensaje assistant con herramientas usadas  
+**When** `MessagesRepo::create()` es llamado con `tools_used = Some("(2) calendar::get_events, weather::get_weather")`  
+**Then** el mensaje creado SHALL incluir `tools_used = Some("(2) calendar::get_events, weather::get_weather")`
+
+#### Scenario: tools_used es null cuando no hay herramientas
+**Given** un mensaje assistant sin herramientas  
+**When** `MessagesRepo::create()` es llamado con `tools_used = None`  
+**Then** el mensaje creado SHALL tener `tools_used = None`
+
+#### Scenario: Migration añade columna tools_used idempotentemente
+**Given** una base de datos con tabla `messages` existente  
+**When** `run_migrations()` se ejecuta  
+**Then** la tabla SHALL tener columna `tools_used TEXT` nullable  
+**And** ejecutar migrations dos veces SHALL NO fallar
+
+#### Scenario: LIST devuelve tools_used
+**Given** un mensaje con `tools_used = "(2) calendar::get_events"`  
+**When** `list_all()` es llamado  
+**Then** el mensaje devuelto SHALL incluir `tools_used = Some("(2) calendar::get_events")`
+
+#### Scenario: find_by_id devuelve tools_used
+**Given** un mensaje con `tools_used = "weather::get_weather"`  
+**When** `find_by_id(msg_id)` es llamado  
+**Then** el mensaje devuelto SHALL incluir `tools_used = Some("weather::get_weather")`

@@ -17,6 +17,7 @@ impl MessagesRepo {
         tool_calls: Option<&Value>,
         tool_results: Option<&Value>,
         location: Option<&str>,
+        tools_used: Option<&str>,
         collapse_threshold: usize,
         on_collapse_needed: Option<Box<dyn Fn(String) + Send>>,
     ) -> Result<Message, sqlx::Error> {
@@ -27,8 +28,8 @@ impl MessagesRepo {
         let tokens = estimate_markdown_tokens_heuristic(content);
 
         sqlx::query(
-            "INSERT INTO messages (id, role, content, tool_calls, tool_results, location, tokens_count, created_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO messages (id, role, content, tool_calls, tool_results, location, tools_used, tokens_count, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         )
         .bind(&id)
         .bind(role)
@@ -36,6 +37,7 @@ impl MessagesRepo {
         .bind(&tc)
         .bind(&tr)
         .bind(location)
+        .bind(tools_used)
         .bind(tokens as i64)
         .bind(&now)
         .execute(pool)
@@ -60,6 +62,7 @@ impl MessagesRepo {
             is_indexed: false,
             summary_ref: None,
             location: location.map(|s| s.to_string()),
+            tools_used: tools_used.map(|s| s.to_string()),
             created_at: now,
         })
     }
@@ -67,7 +70,7 @@ impl MessagesRepo {
     pub async fn find_by_id(pool: &SqlitePool, id: &str) -> Result<Option<Message>, sqlx::Error> {
         let row = sqlx::query(
             "SELECT id, role, content, tool_calls, tool_results, \
-             tokens_count, collapsed_content, collapsed_tokens_count, is_indexed, summary_ref, location, created_at \
+             tokens_count, collapsed_content, collapsed_tokens_count, is_indexed, summary_ref, location, tools_used, created_at \
              FROM messages WHERE id = ?1",
         )
         .bind(id)
@@ -90,7 +93,8 @@ impl MessagesRepo {
                     is_indexed: r.get(8),
                     summary_ref: r.get(9),
                     location: r.get(10),
-                    created_at: r.get(11),
+                    tools_used: r.get(11),
+                    created_at: r.get(12),
                 }))
             }
             None => Ok(None),
@@ -108,7 +112,7 @@ impl MessagesRepo {
             Some(c) => {
                 sqlx::query(
                     "SELECT id, role, content, tool_calls, tool_results, \
-                     tokens_count, collapsed_content, collapsed_tokens_count, is_indexed, summary_ref, location, created_at \
+                     tokens_count, collapsed_content, collapsed_tokens_count, is_indexed, summary_ref, location, tools_used, created_at \
 FROM messages WHERE created_at < ?1 \
                       ORDER BY created_at DESC LIMIT ?2",
                 )
@@ -120,7 +124,7 @@ FROM messages WHERE created_at < ?1 \
             None => {
                 sqlx::query(
                     "SELECT id, role, content, tool_calls, tool_results, \
-                     tokens_count, collapsed_content, collapsed_tokens_count, is_indexed, summary_ref, location, created_at \
+                     tokens_count, collapsed_content, collapsed_tokens_count, is_indexed, summary_ref, location, tools_used, created_at \
                      FROM messages \
                      ORDER BY created_at DESC LIMIT ?1",
                 )
@@ -146,7 +150,8 @@ FROM messages WHERE created_at < ?1 \
                 is_indexed: r.get(8),
                 summary_ref: r.get(9),
                 location: r.get(10),
-                created_at: r.get(11),
+                tools_used: r.get(11),
+                created_at: r.get(12),
             });
         }
 
@@ -177,7 +182,7 @@ FROM messages WHERE created_at < ?1 \
                        CASE WHEN collapsed_content IS NOT NULL THEN collapsed_tokens_count ELSE tokens_count END AS effective_tokens,
                        tool_calls, tool_results,
                        collapsed_content, collapsed_tokens_count,
-                       is_indexed, summary_ref, location, created_at,
+                       is_indexed, summary_ref, location, tools_used, created_at,
                        SUM(CASE WHEN collapsed_content IS NOT NULL THEN collapsed_tokens_count ELSE tokens_count END)
                            OVER (ORDER BY created_at DESC ROWS UNBOUNDED PRECEDING) AS cumulative_tokens
                 FROM messages
@@ -185,7 +190,7 @@ FROM messages WHERE created_at < ?1 \
             SELECT id, role, effective_content,
                    tool_calls, tool_results,
                    effective_tokens, collapsed_content, collapsed_tokens_count,
-                   is_indexed, summary_ref, location, created_at
+                   is_indexed, summary_ref, location, tools_used, created_at
             FROM RankedMessages
             WHERE cumulative_tokens <= ?1
             ORDER BY created_at ASC",
@@ -210,7 +215,8 @@ FROM messages WHERE created_at < ?1 \
                 is_indexed: r.get(8),
                 summary_ref: r.get(9),
                 location: r.get(10),
-                created_at: r.get(11),
+                tools_used: r.get(11),
+                created_at: r.get(12),
             });
         }
         Ok(messages)
@@ -252,6 +258,7 @@ mod tests {
                 collapsed_tokens_count INTEGER NOT NULL DEFAULT 0,
                 is_indexed INTEGER NOT NULL DEFAULT 0,
                 summary_ref TEXT,
+                tools_used TEXT,
                 created_at TEXT NOT NULL
             )",
         )
@@ -264,8 +271,8 @@ mod tests {
     #[tokio::test]
     async fn test_create_message() -> Result<(), Box<dyn std::error::Error>> {
         let pool = setup_pool().await?;
-        let msg =
-            MessagesRepo::create(&pool, "user", "Hello", None, None, None, 2000, None).await?;
+        let msg = MessagesRepo::create(&pool, "user", "Hello", None, None, None, None, 2000, None)
+            .await?;
         assert!(!msg.id.is_empty());
         assert_eq!(msg.role, "user");
         assert_eq!(msg.content, "Hello");
@@ -282,6 +289,7 @@ mod tests {
             "assistant",
             "Let me check",
             Some(&tool_calls),
+            None,
             None,
             None,
             2000,
@@ -305,8 +313,19 @@ mod tests {
     #[tokio::test]
     async fn test_list_all() -> Result<(), Box<dyn std::error::Error>> {
         let pool = setup_pool().await?;
-        MessagesRepo::create(&pool, "user", "First", None, None, None, 2000, None).await?;
-        MessagesRepo::create(&pool, "assistant", "Second", None, None, None, 2000, None).await?;
+        MessagesRepo::create(&pool, "user", "First", None, None, None, None, 2000, None).await?;
+        MessagesRepo::create(
+            &pool,
+            "assistant",
+            "Second",
+            None,
+            None,
+            None,
+            None,
+            2000,
+            None,
+        )
+        .await?;
         let (msgs, cursor) = MessagesRepo::list_all(&pool, 10, None).await?;
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0].content, "First");
@@ -319,9 +338,9 @@ mod tests {
     #[tokio::test]
     async fn test_list_all_with_pagination() -> Result<(), Box<dyn std::error::Error>> {
         let pool = setup_pool().await?;
-        MessagesRepo::create(&pool, "user", "Msg 1", None, None, None, 2000, None).await?;
-        MessagesRepo::create(&pool, "user", "Msg 2", None, None, None, 2000, None).await?;
-        MessagesRepo::create(&pool, "user", "Msg 3", None, None, None, 2000, None).await?;
+        MessagesRepo::create(&pool, "user", "Msg 1", None, None, None, None, 2000, None).await?;
+        MessagesRepo::create(&pool, "user", "Msg 2", None, None, None, None, 2000, None).await?;
+        MessagesRepo::create(&pool, "user", "Msg 3", None, None, None, None, 2000, None).await?;
 
         let (page1, cursor) = MessagesRepo::list_all(&pool, 2, None).await?;
         assert_eq!(page1.len(), 2);
@@ -342,7 +361,8 @@ mod tests {
         let pool = setup_pool().await?;
         for i in 1..=55 {
             let content = format!("Msg {}", i);
-            MessagesRepo::create(&pool, "user", &content, None, None, None, 2000, None).await?;
+            MessagesRepo::create(&pool, "user", &content, None, None, None, None, 2000, None)
+                .await?;
         }
 
         let (msgs, cursor) = MessagesRepo::list_all(&pool, 50, None).await?;
@@ -359,7 +379,8 @@ mod tests {
         let pool = setup_pool().await?;
         for i in 1..=55 {
             let content = format!("Msg {}", i);
-            MessagesRepo::create(&pool, "user", &content, None, None, None, 2000, None).await?;
+            MessagesRepo::create(&pool, "user", &content, None, None, None, None, 2000, None)
+                .await?;
         }
 
         let (page1, cursor) = MessagesRepo::list_all(&pool, 50, None).await?;
@@ -387,6 +408,7 @@ mod tests {
             None,
             None,
             Some("Madrid"),
+            None,
             2000,
             None,
         )
@@ -399,8 +421,8 @@ mod tests {
     #[tokio::test]
     async fn test_create_message_without_location() -> Result<(), Box<dyn std::error::Error>> {
         let pool = setup_pool().await?;
-        let msg =
-            MessagesRepo::create(&pool, "user", "Hello", None, None, None, 2000, None).await?;
+        let msg = MessagesRepo::create(&pool, "user", "Hello", None, None, None, None, 2000, None)
+            .await?;
         assert_eq!(msg.location, None);
 
         Ok(())
@@ -416,6 +438,7 @@ mod tests {
             None,
             None,
             Some("Barcelona"),
+            None,
             2000,
             None,
         )
@@ -431,7 +454,7 @@ mod tests {
     #[tokio::test]
     async fn test_delete_all() -> Result<(), Box<dyn std::error::Error>> {
         let pool = setup_pool().await?;
-        MessagesRepo::create(&pool, "user", "Msg", None, None, None, 2000, None).await?;
+        MessagesRepo::create(&pool, "user", "Msg", None, None, None, None, 2000, None).await?;
         let deleted = MessagesRepo::delete_all(&pool).await?;
         assert_eq!(deleted, 1);
 
@@ -444,8 +467,8 @@ mod tests {
     async fn test_create_message_computes_tokens() -> Result<(), Box<dyn std::error::Error>> {
         let pool = setup_pool().await?;
         let content = "Hello, how are you? This is a test message.";
-        let msg =
-            MessagesRepo::create(&pool, "user", content, None, None, None, 2000, None).await?;
+        let msg = MessagesRepo::create(&pool, "user", content, None, None, None, None, 2000, None)
+            .await?;
         assert!(
             msg.tokens_count > 0,
             "tokens_count should be > 0, got {}",
@@ -466,8 +489,8 @@ mod tests {
     async fn test_create_message_short_no_collapse() -> Result<(), Box<dyn std::error::Error>> {
         let pool = setup_pool().await?;
         let content = "Short message.";
-        let msg =
-            MessagesRepo::create(&pool, "user", content, None, None, None, 2000, None).await?;
+        let msg = MessagesRepo::create(&pool, "user", content, None, None, None, None, 2000, None)
+            .await?;
         assert!(
             msg.collapsed_content.is_none(),
             "Short messages should not have collapsed_content"
@@ -502,6 +525,7 @@ mod tests {
             &pool,
             "user",
             &long_content,
+            None,
             None,
             None,
             None,
@@ -547,12 +571,42 @@ mod tests {
         // ~2000 tokens: 1504 words * 1.33 = 2000
         let content_2k = "b ".repeat(1504);
 
-        let msg1 =
-            MessagesRepo::create(&pool, "user", &content_1k, None, None, None, 99999, None).await?;
-        let msg2 =
-            MessagesRepo::create(&pool, "user", &content_2k, None, None, None, 99999, None).await?;
-        let msg3 =
-            MessagesRepo::create(&pool, "user", &content_1k, None, None, None, 99999, None).await?;
+        let msg1 = MessagesRepo::create(
+            &pool,
+            "user",
+            &content_1k,
+            None,
+            None,
+            None,
+            None,
+            99999,
+            None,
+        )
+        .await?;
+        let msg2 = MessagesRepo::create(
+            &pool,
+            "user",
+            &content_2k,
+            None,
+            None,
+            None,
+            None,
+            99999,
+            None,
+        )
+        .await?;
+        let msg3 = MessagesRepo::create(
+            &pool,
+            "user",
+            &content_1k,
+            None,
+            None,
+            None,
+            None,
+            99999,
+            None,
+        )
+        .await?;
 
         let result = MessagesRepo::list_by_token_budget(&pool, 3500).await?;
 
@@ -577,10 +631,30 @@ mod tests {
         // ~500 tokens: ceil(1736/3.5) + 4 = 500
         let content_500 = "a".repeat(1736);
 
-        let msg1 = MessagesRepo::create(&pool, "user", &content_500, None, None, None, 99999, None)
-            .await?;
-        let msg2 = MessagesRepo::create(&pool, "user", &content_500, None, None, None, 99999, None)
-            .await?;
+        let msg1 = MessagesRepo::create(
+            &pool,
+            "user",
+            &content_500,
+            None,
+            None,
+            None,
+            None,
+            99999,
+            None,
+        )
+        .await?;
+        let msg2 = MessagesRepo::create(
+            &pool,
+            "user",
+            &content_500,
+            None,
+            None,
+            None,
+            None,
+            99999,
+            None,
+        )
+        .await?;
 
         let result = MessagesRepo::list_by_token_budget(&pool, 2000).await?;
 
@@ -598,8 +672,18 @@ mod tests {
 
         // Create a message with ~3000 tokens
         let content_3k = "a".repeat(10486); // ceil(10486/3.5) + 4 = 3000
-        let msg =
-            MessagesRepo::create(&pool, "user", &content_3k, None, None, None, 99999, None).await?;
+        let msg = MessagesRepo::create(
+            &pool,
+            "user",
+            &content_3k,
+            None,
+            None,
+            None,
+            None,
+            99999,
+            None,
+        )
+        .await?;
 
         // Simulate collapsing: set collapsed fields via raw SQL
         let collapsed_text = "Short collapsed summary";
@@ -633,11 +717,12 @@ mod tests {
         let pool = setup_pool().await?;
 
         let content = "Some message content";
-        MessagesRepo::create(&pool, "user", content, None, None, None, 99999, None).await?;
+        MessagesRepo::create(&pool, "user", content, None, None, None, None, 99999, None).await?;
         MessagesRepo::create(
             &pool,
             "assistant",
             "response",
+            None,
             None,
             None,
             None,

@@ -76,6 +76,7 @@ pub async fn create_message(
         body.tool_calls.as_ref(),
         body.tool_results.as_ref(),
         location.as_deref(),
+        body.tools_used.as_deref(),
         2000,
         collapse_callback,
     )
@@ -121,6 +122,7 @@ mod tests {
                 &state.db,
                 "user",
                 &format!("Message {}", i),
+                None,
                 None,
                 None,
                 None,

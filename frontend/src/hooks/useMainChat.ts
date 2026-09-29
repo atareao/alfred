@@ -152,27 +152,25 @@ export function useMainChat() {
               window.dispatchEvent(new CustomEvent("tasks-changed"));
             }
           },
-          onDone: (messageId: string, userMessageId?: string) => {
+          onDone: (messageId: string, userMessageId?: string, location?: string | null, tools_used?: string, user_location?: string, user_created_at?: string) => {
             console.log(
               "[useMainChat] Stream done. Total content length:",
               assistantContent.length,
             );
-            // Append tool usage footer to assistant content
-            if (usedTools.length > 0) {
-              assistantContent += `\n\n---\n🔧 ${usedTools.join(" · ")}`;
-            }
             // Replace temp user message id with real one instead of removing it
             setMessages((prev) => {
               const assistant: Message = {
                 id: messageId || "msg-" + Date.now(),
                 role: "assistant",
                 content: assistantContent,
+                location: location || null,
+                tools_used: tools_used || undefined,
                 created_at: new Date().toISOString(),
               };
               return [
                 ...prev.map((m) =>
                   m.id === optimistic.id && userMessageId
-                    ? { ...m, id: userMessageId }
+                    ? { ...m, id: userMessageId, location: user_location ?? m.location, created_at: user_created_at ?? m.created_at }
                     : m,
                 ),
                 assistant,
