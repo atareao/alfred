@@ -1,4 +1,13 @@
 # Changelog
+## [0.8.1] - 2026-09-29
+
+### Documentation
+
+- *(openspec)* Archive fix-tools-used-persistence and cleanup-clippy-dead-deps
+
+### Miscellaneous Tasks
+
+- Fix clippy lints and remove unused dev-dependency
 ## [0.8.0] - 2026-09-29
 
 ### Dependencies
