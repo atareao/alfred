@@ -37,13 +37,8 @@ async fn test_migrations_creates_llm_requests_table() {
     // Verify all expected columns exist with correct types
     #[derive(sqlx::FromRow)]
     struct ColumnInfo {
-        cid: i32,
         name: String,
-        #[allow(dead_code)]
-        #[sqlx(rename = "type")]
-        type_name: String,
         notnull: bool,
-        #[allow(dead_code)]
         dflt_value: Option<String>,
         pk: bool,
     }

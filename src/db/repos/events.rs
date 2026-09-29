@@ -538,7 +538,7 @@ mod tests {
         assert_eq!(found.title, "Reunión");
         assert_eq!(found.scope, "shared");
         assert_eq!(found.category, "meeting");
-        assert_eq!(found.all_day, false);
+        assert!(!found.all_day);
         assert_eq!(found.rrule, None);
         assert_eq!(found.reminder_minutes_before, Some(15));
 

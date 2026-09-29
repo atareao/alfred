@@ -42,7 +42,6 @@ path = "src/bin/seed.rs"
 vec0 = ["sqlite-vec"]
 
 [dev-dependencies]
-axum-test-helper = "0.4"
 futures = "0.3"
 serial_test = "4"
 tower = { version = "0.5", features = ["util"] }

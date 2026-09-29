@@ -324,7 +324,6 @@ mod tests {
     use crate::llm::provider::{ChatMessage, ChatRequest, ChatResponse, LLMError, TokenUsage};
     use async_trait::async_trait;
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-    use sqlx::SqlitePool;
     use std::sync::{Arc, Mutex};
 
     /// Create a minimal [`DbPool`] with an in-memory database for tests.

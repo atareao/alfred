@@ -841,7 +841,6 @@ mod tests {
         LAST_LLM_ATTEMPT.store(0, Ordering::Relaxed);
 
         let db = test_db().await;
-        let db = test_db().await;
         let (memory_tx, memory_rx) = mpsc::channel::<()>(16);
         let (shutdown_tx, shutdown_rx) = broadcast::channel::<()>(1);
 
@@ -1199,8 +1198,10 @@ mod tests {
 
         EpisodicMemoryWorker::evaluate(&db, provider, &EpisodicMemoryConfig::default()).await;
 
-        let calls = chat_calls.lock().unwrap();
-        assert!(!calls.is_empty(), "LLM should have been called");
+        {
+            let calls = chat_calls.lock().unwrap();
+            assert!(!calls.is_empty(), "LLM should have been called");
+        }
 
         // Memory card should have been created
         assert_eq!(count_memory(&db).await, 1, "One memory card should exist");
@@ -1281,12 +1282,14 @@ mod tests {
         );
 
         // 2. Embedding was generated
-        let embed_calls = embed_calls.lock().unwrap();
-        assert!(!embed_calls.is_empty(), "LLM embed should have been called");
-        assert!(
-            embed_calls[0].contains("FECHA/CONTEXTO"),
-            "Embedding input should be the ficha text"
-        );
+        {
+            let embed_calls = embed_calls.lock().unwrap();
+            assert!(!embed_calls.is_empty(), "LLM embed should have been called");
+            assert!(
+                embed_calls[0].contains("FECHA/CONTEXTO"),
+                "Embedding input should be the ficha text"
+            );
+        }
 
         // 3. Memory row exists
         assert_eq!(count_memory(&db).await, 1, "Should have one memory row");

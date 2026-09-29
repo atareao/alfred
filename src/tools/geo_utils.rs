@@ -104,8 +104,6 @@ pub async fn reverse_geocode(lat: f64, lon: f64) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_cache_key_precision() {
         // Verify the rounding gives consistent keys for nearby coordinates

@@ -2541,13 +2541,10 @@ mod tests {
 
         // 5. Collect all SSE events with a timeout
         let mut events: Vec<SSEEvent> = Vec::new();
-        loop {
-            match tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await {
-                Ok(Some(event)) => {
-                    events.push(event);
-                }
-                Ok(None) | Err(_) => break,
-            }
+        while let Ok(Some(event)) =
+            tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await
+        {
+            events.push(event);
         }
 
         // 6. Verify the event sequence — this SHOULD work once the `?` is
