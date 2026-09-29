@@ -1,4 +1,13 @@
 # Changelog
+## [0.9.0] - 2026-09-29
+
+### Features
+
+- *(prompts)* Load system prompts from DB via migration
+
+### Miscellaneous Tasks
+
+- Normalize openspec specs, add eslint config and fix flaky test
 ## [0.8.1] - 2026-09-29
 
 ### Documentation
