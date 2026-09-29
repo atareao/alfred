@@ -30,7 +30,9 @@ impl UnifiedSearchTool {
             fts_table,
             fts_table,
         );
-        let rows = sqlx::query(&sql)
+        // SAFETY: `fts_table`/`source` are hard-coded by the caller (`search`),
+        // and `quote` escapes the source literal. `query`/`limit` are bound below.
+        let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(query)
             .bind(limit as i64)
             .fetch_all(&self.db)

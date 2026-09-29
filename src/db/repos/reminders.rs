@@ -68,7 +68,8 @@ impl RemindersRepo {
 
         sql.push_str(" ORDER BY datetime ASC");
 
-        let mut query = sqlx::query(&sql).bind(profile_id);
+        // SAFETY: `sql` only concatenates literal fragments; values are bound below.
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(profile_id);
         if let Some(s) = status {
             query = query.bind(s);
         }
