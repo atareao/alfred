@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 // ---------------------------------------------------------------------------
@@ -41,7 +41,9 @@ vi.mock("../hooks/useSettings", () => ({
   useSettings: vi.fn(() => ({
     settings: {
       max_window_tokens: "10000",
-      system_prompt: "",
+      system_prompt: "Eres Valet",
+      archivist_prompt: "Eres un archivista",
+      collapse_prompt: "Resume el texto",
       font_size: "16",
       message_page_size: "50",
       openweather_api_key: "",
@@ -122,13 +124,159 @@ describe("SettingsDialog", () => {
     expect(screen.getByText("Tamaño de página")).toBeInTheDocument();
   });
 
-  it("renders Prompt tab with textarea", async () => {
+  it("renders Prompts tab with System, Archivist and Collapse sub-tabs", async () => {
     const user = userEvent.setup();
     render(<SettingsDialog visible={true} onClose={vi.fn()} />);
 
-    await user.click(screen.getByText("Prompt"));
+    await user.click(screen.getByText("Prompts"));
 
-    expect(screen.getByText("System Prompt")).toBeInTheDocument();
+    expect(screen.getByText("System")).toBeInTheDocument();
+    expect(screen.getByText("Archivist")).toBeInTheDocument();
+    expect(screen.getByText("Collapse")).toBeInTheDocument();
+  });
+
+  it("shows system_prompt when opening the System sub-tab", async () => {
+    const user = userEvent.setup();
+    render(<SettingsDialog visible={true} onClose={vi.fn()} />);
+
+    await user.click(screen.getByText("Prompts"));
+    await user.click(screen.getByText("System"));
+
+    expect(screen.getByLabelText("System Prompt")).toHaveValue("Eres Valet");
+  });
+
+  it("shows archivist_prompt when opening the Archivist sub-tab", async () => {
+    const user = userEvent.setup();
+    render(<SettingsDialog visible={true} onClose={vi.fn()} />);
+
+    await user.click(screen.getByText("Prompts"));
+    await user.click(screen.getByText("Archivist"));
+
+    expect(screen.getByLabelText("Archivist Prompt")).toHaveValue(
+      "Eres un archivista",
+    );
+  });
+
+  it("shows collapse_prompt when opening the Collapse sub-tab", async () => {
+    const user = userEvent.setup();
+    render(<SettingsDialog visible={true} onClose={vi.fn()} />);
+
+    await user.click(screen.getByText("Prompts"));
+    await user.click(screen.getByText("Collapse"));
+
+    expect(screen.getByLabelText("Collapse Prompt")).toHaveValue(
+      "Resume el texto",
+    );
+  });
+
+  it("saves the three prompts together via updateSettings", async () => {
+    const user = userEvent.setup();
+    mockUpdateSettings.mockResolvedValue(undefined);
+    render(<SettingsDialog visible={true} onClose={vi.fn()} />);
+
+    await user.click(screen.getByText("Prompts"));
+
+    const system = screen.getByLabelText("System Prompt");
+    await user.clear(system);
+    await user.type(system, "Nuevo system");
+
+    const archivist = screen.getByLabelText("Archivist Prompt");
+    await user.clear(archivist);
+    await user.type(archivist, "Nuevo archivist");
+
+    const collapse = screen.getByLabelText("Collapse Prompt");
+    await user.clear(collapse);
+    await user.type(collapse, "Nuevo collapse");
+
+    const form = system.closest("form") as HTMLFormElement;
+    await user.click(within(form).getByRole("button", { name: /guardar/i }));
+
+    await waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          system_prompt: "Nuevo system",
+          archivist_prompt: "Nuevo archivist",
+          collapse_prompt: "Nuevo collapse",
+        }),
+      );
+    });
+  });
+
+  it("keeps the loaded prompts when saving from the Interfaz tab", async () => {
+    const user = userEvent.setup();
+    mockUpdateSettings.mockResolvedValue(undefined);
+    render(<SettingsDialog visible={true} onClose={vi.fn()} />);
+
+    await user.click(screen.getByText("Interfaz"));
+
+    const fontSize = screen.getByLabelText("Tamaño de fuente");
+    await user.clear(fontSize);
+    await user.type(fontSize, "20");
+
+    const form = fontSize.closest("form") as HTMLFormElement;
+    await user.click(within(form).getByRole("button", { name: /guardar/i }));
+
+    await waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          font_size: "20",
+          system_prompt: "Eres Valet",
+          archivist_prompt: "Eres un archivista",
+          collapse_prompt: "Resume el texto",
+        }),
+      );
+    });
+  });
+
+  it("keeps interface settings when saving from the Prompts tab", async () => {
+    const user = userEvent.setup();
+    mockUpdateSettings.mockResolvedValue(undefined);
+    render(<SettingsDialog visible={true} onClose={vi.fn()} />);
+
+    await user.click(screen.getByText("Prompts"));
+
+    const system = screen.getByLabelText("System Prompt");
+    const form = system.closest("form") as HTMLFormElement;
+    await user.click(within(form).getByRole("button", { name: /guardar/i }));
+
+    await waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          font_size: "16",
+          max_window_tokens: "10000",
+          message_page_size: "50",
+          system_prompt: "Eres Valet",
+          archivist_prompt: "Eres un archivista",
+          collapse_prompt: "Resume el texto",
+        }),
+      );
+    });
+  });
+
+  it("editing only the Archivist prompt keeps the other prompts unchanged", async () => {
+    const user = userEvent.setup();
+    mockUpdateSettings.mockResolvedValue(undefined);
+    render(<SettingsDialog visible={true} onClose={vi.fn()} />);
+
+    await user.click(screen.getByText("Prompts"));
+    await user.click(screen.getByText("Archivist"));
+
+    const archivist = screen.getByLabelText("Archivist Prompt");
+    await user.clear(archivist);
+    await user.type(archivist, "Nuevo archivist");
+
+    const form = archivist.closest("form") as HTMLFormElement;
+    await user.click(within(form).getByRole("button", { name: /guardar/i }));
+
+    await waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          archivist_prompt: "Nuevo archivist",
+          system_prompt: "Eres Valet",
+          collapse_prompt: "Resume el texto",
+        }),
+      );
+    });
   });
 
   it("renders API Keys tab with three password fields", async () => {

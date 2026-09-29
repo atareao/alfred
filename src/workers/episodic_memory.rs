@@ -55,20 +55,11 @@ impl Default for EpisodicMemoryConfig {
     }
 }
 
-/// Archivist prompt used to synthesise episodic memory cards from raw
-/// message blocks.
-const ARCHIVIST_PROMPT: &str = r#"System: Eres un archivista de memoria para un asistente personal.
-Tu tarea es leer la siguiente conversación y redactar una FICHA DE MEMORIA concisa (entre 150 y 300 palabras).
-
-Devuelve la ficha en este formato exacto:
-
-- FECHA/CONTEXTO: [Fecha o tema general del bloque]
-- TEMAS TRATADOS: [Lista de conceptos clave, tecnologías o archivos mencionados]
-- HECHOS Y DECISIONES: [Qué se hizo, qué problemas se resolvieron, datos concretos (puertos, IPs, comandos, variables, nombres de archivos)]
-- SÍNTESIS: [Un resumen narrativo corto de lo que pasó en esta interacción]
-
-Conversación a procesar:
-{{ BLOQUE_DE_MENSAJES }}"#;
+/// Minimal archivist prompt used only when `settings.archivist_prompt` is
+/// missing or empty. The real prompt lives in the database (seeded by
+/// migration `20260929000001_prompts.sql`) and must contain the
+/// `{{ BLOQUE_DE_MENSAJES }}` placeholder.
+const DEFAULT_ARCHIVIST_PROMPT_FALLBACK: &str = "System: Eres un archivista de memoria. Resume la conversación en una ficha concisa.\n\nConversación a procesar:\n{{ BLOQUE_DE_MENSAJES }}";
 
 /// Tracks the Unix timestamp (in seconds) of the last failed LLM call.
 /// Used to avoid rapid retries when the LLM returns unparseable responses.
@@ -419,7 +410,26 @@ impl EpisodicMemoryWorker {
         config: &EpisodicMemoryConfig,
         message_block: &str,
     ) -> Option<MemoryCard> {
-        let system_content = ARCHIVIST_PROMPT.replace("{{ BLOQUE_DE_MENSAJES }}", message_block);
+        // The archivist prompt lives in `settings` (seeded by migration); fall
+        // back to a minimal prompt if it is missing, empty, or unreadable.
+        let archivist_prompt =
+            match crate::db::repos::settings::SettingsRepo::get(db, "archivist_prompt").await {
+                Ok(Some(p)) if !p.trim().is_empty() => p,
+                Ok(_) => {
+                    tracing::warn!(
+                        "settings.archivist_prompt missing or empty; using minimal fallback"
+                    );
+                    DEFAULT_ARCHIVIST_PROMPT_FALLBACK.to_string()
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "failed to read settings.archivist_prompt; using minimal fallback"
+                    );
+                    DEFAULT_ARCHIVIST_PROMPT_FALLBACK.to_string()
+                }
+            };
+        let system_content = archivist_prompt.replace("{{ BLOQUE_DE_MENSAJES }}", message_block);
 
         tracing::debug!(
             prompt_preview = %system_content.chars().take(200).collect::<String>(),
@@ -764,6 +774,12 @@ mod tests {
     // ─── Test helpers ─────────────────────────────────────────────────────
 
     async fn test_db() -> SqlitePool {
+        // Reset the module-global LLM rate limiter so tests are order-independent.
+        // `test_evaluate_unparseable_response_does_not_create_memory` sets this to
+        // `now()` on failure; without a reset, a subsequent `evaluate()` test could
+        // hit the 60s cooldown and skip the LLM call (flaky test).
+        LAST_LLM_ATTEMPT.store(0, Ordering::Relaxed);
+
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect_with(
@@ -1350,6 +1366,71 @@ mod tests {
         assert!(
             overlap_indexed,
             "Overlap message should still be indexed (was indexed before)"
+        );
+    }
+
+    // ─── Archivist prompt from settings ──────────────────────────────────
+
+    #[tokio::test]
+    async fn test_call_llm_uses_custom_archivist_prompt_and_substitutes_placeholder() {
+        let db = test_db().await;
+        crate::db::repos::settings::SettingsRepo::set(
+            &db,
+            "archivist_prompt",
+            "CUSTOM ARCHIVIST {{ BLOQUE_DE_MENSAJES }}",
+        )
+        .await
+        .unwrap();
+
+        let mock = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE);
+        let chat_calls = mock.chat_calls.clone();
+        let provider = mock.wrap();
+
+        EpisodicMemoryWorker::call_llm(
+            &db,
+            "episodic",
+            &provider,
+            &EpisodicMemoryConfig::default(),
+            "MSG_BLOCK_123",
+        )
+        .await;
+
+        let calls = chat_calls.lock().unwrap();
+        assert_eq!(calls.len(), 1, "LLM should have been called once");
+        assert_eq!(
+            calls[0].messages[0].content, "CUSTOM ARCHIVIST MSG_BLOCK_123",
+            "The custom archivist prompt must be used and the placeholder substituted"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_call_llm_falls_back_when_archivist_prompt_missing() {
+        let db = test_db().await;
+        // The migration seeds `archivist_prompt`; remove it to force the fallback.
+        crate::db::repos::settings::SettingsRepo::delete(&db, "archivist_prompt")
+            .await
+            .unwrap();
+
+        let mock = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE);
+        let chat_calls = mock.chat_calls.clone();
+        let provider = mock.wrap();
+
+        EpisodicMemoryWorker::call_llm(
+            &db,
+            "episodic",
+            &provider,
+            &EpisodicMemoryConfig::default(),
+            "MSG_BLOCK_123",
+        )
+        .await;
+
+        let calls = chat_calls.lock().unwrap();
+        assert!(!calls.is_empty(), "LLM should have been called");
+        let expected =
+            DEFAULT_ARCHIVIST_PROMPT_FALLBACK.replace("{{ BLOQUE_DE_MENSAJES }}", "MSG_BLOCK_123");
+        assert_eq!(
+            calls[0].messages[0].content, expected,
+            "A minimal fallback must be used, with the placeholder substituted"
         );
     }
 

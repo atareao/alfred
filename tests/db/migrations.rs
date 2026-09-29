@@ -188,3 +188,138 @@ async fn test_idempotent_includes_new_tables() {
         );
     }
 }
+
+// ── Prompts migration (20260929000001_prompts.sql) ─────────────────────────
+
+/// Reads the prompts migration SQL from disk.
+fn prompts_migration_sql() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("migrations/20260929000001_prompts.sql");
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()))
+}
+
+/// Reads a single setting value, panicking if the key is missing.
+async fn setting_value(pool: &SqlitePool, key: &str) -> String {
+    sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?1")
+        .bind(key)
+        .fetch_one(pool)
+        .await
+        .unwrap_or_else(|e| panic!("Failed to read setting '{key}': {e}"))
+}
+
+/// Asserts that `run_migrations` seeds a non-empty `system_prompt`.
+#[tokio::test]
+async fn test_migration_seeds_system_prompt() {
+    let pool = setup().await;
+
+    let value = setting_value(&pool, "system_prompt").await;
+    assert!(!value.is_empty(), "system_prompt should not be empty");
+    assert!(
+        value.contains("asistente personal británico"),
+        "system_prompt should contain the British assistant personality"
+    );
+}
+
+/// Asserts that `run_migrations` seeds the archivist prompt with its placeholder.
+#[tokio::test]
+async fn test_migration_seeds_archivist_prompt() {
+    let pool = setup().await;
+
+    let value = setting_value(&pool, "archivist_prompt").await;
+    assert!(!value.is_empty(), "archivist_prompt should not be empty");
+    assert!(
+        value.contains("archivista de memoria"),
+        "archivist_prompt should contain 'archivista de memoria'"
+    );
+    assert!(
+        value.contains("{{ BLOQUE_DE_MENSAJES }}"),
+        "archivist_prompt should contain the message block placeholder"
+    );
+}
+
+/// Asserts that `run_migrations` seeds the collapse prompt.
+#[tokio::test]
+async fn test_migration_seeds_collapse_prompt() {
+    let pool = setup().await;
+
+    let value = setting_value(&pool, "collapse_prompt").await;
+    assert!(!value.is_empty(), "collapse_prompt should not be empty");
+    assert!(
+        value.contains("Resume el siguiente texto"),
+        "collapse_prompt should contain 'Resume el siguiente texto'"
+    );
+}
+
+/// An old database with an empty `system_prompt` gets backfilled by the migration.
+#[tokio::test]
+async fn test_migration_fills_empty_system_prompt() {
+    let pool = setup().await;
+
+    sqlx::query("UPDATE settings SET value = '' WHERE key = 'system_prompt'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let sql = prompts_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let value = setting_value(&pool, "system_prompt").await;
+    assert!(
+        !value.is_empty(),
+        "system_prompt should be backfilled when it was empty"
+    );
+}
+
+/// A non-empty custom `system_prompt` is preserved by the migration.
+#[tokio::test]
+async fn test_migration_respects_custom_system_prompt() {
+    let pool = setup().await;
+
+    sqlx::query(
+        "UPDATE settings SET value = 'Mi prompt personalizado' WHERE key = 'system_prompt'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let sql = prompts_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let value = setting_value(&pool, "system_prompt").await;
+    assert_eq!(
+        value, "Mi prompt personalizado",
+        "A non-empty custom system_prompt must be preserved"
+    );
+}
+
+/// Running the prompts migration twice is idempotent and keeps one row per key.
+#[tokio::test]
+async fn test_migration_prompts_idempotent() {
+    let pool = setup().await;
+
+    let sql = prompts_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    for key in &["system_prompt", "archivist_prompt", "collapse_prompt"] {
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM settings WHERE key = ?1")
+            .bind(key)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 1, "Expected exactly one row for key '{key}'");
+    }
+}

@@ -7,17 +7,9 @@ use std::collections::HashMap;
 use crate::AppState;
 
 pub async fn get_settings(State(state): State<AppState>) -> Json<HashMap<String, String>> {
-    let mut settings = crate::db::repos::settings::SettingsRepo::get_all(&state.db)
+    let settings = crate::db::repos::settings::SettingsRepo::get_all(&state.db)
         .await
         .unwrap_or_default();
-
-    // Include the default system prompt so the frontend can display it as a placeholder
-    if let Some(orchestrator) = &state.orchestrator {
-        settings.insert(
-            "system_prompt_default".to_string(),
-            orchestrator.config.system_prompt_template.clone(),
-        );
-    }
 
     Json(settings)
 }
