@@ -1,106 +1,152 @@
-# 🧠 Valet — Life Operating System
+# 🎩 Valet
 
-Un asistente ejecutivo y de vida personal auto-hospedado para el hogar. Diseñado para parejas o convivientes, Valet gestiona el tiempo, la productividad, la alimentación, las relaciones y la rutina diaria.
+[Español](README.es.md)
 
-## Características
+The AI personal assistant with an attitude.
 
-- **💬 Chat con IA**: Orquestador con ciclo ReAct, memoria de 3 capas (sesión, vectorial, perfil)
-- **📅 Agenda y Tareas**: Gestión de eventos, tareas y recordatorios con scope shared/personal
-- **🌤️ Clima y Geo**: Clima por coordenadas, geocoding (Nominatim), búsqueda de lugares (Overpass OSM)
-- **🍽️ Comidas**: Planificación semanal de menús y lista de la compra
-- **🎯 Hábitos**: Seguimiento de rachas diarias/semanales
-- **🔍 Búsqueda Unificada**: FTS5 en todas las dimensiones
-- **🔒 Privado**: Datos locales en SQLite, auto-hospedado con PocketID
-- **🔔 Proactivo**: Briefing matutino, detección de conflictos, preparación de viajes
-- **📱 PWA**: Frontend React + Ant Design, responsive
+Valet is a customizable, hyper-focused personal AI designed to handle your daily workflows, tasks, and queries. Built for speed and utility, it serves you with precision—and a healthy dose of dry, razor-sharp British wit.
 
-## 🧠 Memoria Episódica
+Self-hosted and local-first: your data lives in SQLite on your own machine, and the assistant answers with the manners of a competent butler and the patience of none.
 
-Valet cuenta con un sistema de memoria episódica de dos capas:
+## 🗂️ Features
 
-- **Capa A (mensajes en bruto)**: Tabla `messages` con cada interacción usuario↔asistente
-- **Capa B (fichas episódicas)**: Tabla `memory` con resúmenes sintéticos generados por un LLM secundario
+- **🫖 Chat with AI**: Orchestrator with a ReAct loop and layered memory (session, episodic, profile)
+- **🕰️ Calendar and Tasks**: Events, tasks and reminders with `shared`/`personal` scope
+- **🗺️ Weather and Geo**: Weather by coordinates, geocoding (Nominatim), place search (Overpass OSM)
+- **🍽️ Meals**: Weekly menu planning and shopping list
+- **🎯 Habits**: Daily and weekly streak tracking
+- **🧐 Unified Search**: FTS5 across every dimension
+- **🗝️ Private**: Local SQLite data, self-hosted, optional PocketID auth
+- **🔔 Proactive**: Morning briefing, conflict detection, travel preparation
+- **📱 Responsive UI**: React + Ant Design frontend that works on desktop and mobile
 
-El worker `EpisodicMemoryWorker` se dispara al insertar un mensaje (o cada 30 min como respaldo):
-1. Acumula mensajes sin indexar hasta ~2000 tokens
-2. Añade ±2 mensajes de solapamiento para contexto
-3. Envía el bloque a un LLM secundario con prompt de archivista
-4. Genera una ficha estructurada (FECHA, TEMAS, HECHOS, SÍNTESIS)
-5. Almacena la ficha + embedding vectorial en `memory` + `vec_memory`
-6. Marca los mensajes como indexados
+## 🧠 Episodic Memory
 
-En el chat, el orquestador usa **RAG**: genera embedding de la consulta del usuario, busca en `vec_memory` por similitud coseno, e inyecta las fichas más relevantes en el contexto (respetando un presupuesto de tokens).
+Valet keeps a two-layer episodic memory:
 
-## Stack
+- **Layer A (raw messages)**: the `messages` table holds every user↔assistant interaction
+- **Layer B (episodic cards)**: the `memory` table holds synthetic summaries produced by a secondary LLM
 
-| Capa | Tecnología |
-|------|-----------|
-| Backend | Rust + Axum |
-| Frontend | TypeScript + React + Antd + Vite |
-| Base de datos | SQLite + FTS5 + sqlite-vec |
-| Auth | PocketID (OIDC self-hosted) |
-| LLM | OpenRouter / Ollama (fallback) |
-| Contenedores | Docker + Docker Compose |
+The `EpisodicMemoryWorker` fires when a message is inserted (with a 30-minute fallback timer):
 
-## Requisitos
+1. Accumulates unindexed messages up to ~2000 tokens
+2. Adds ±2 messages of overlap for context
+3. Sends the block to a secondary LLM with an archivist prompt
+4. Produces a structured card (`DATE`, `TOPICS`, `FACTS`, `SYNTHESIS`)
+5. Stores the card plus its vector embedding in `memory` and `vec_memory`
+6. Marks those messages as indexed
+
+During chat, the orchestrator uses **RAG**: it embeds the user query, searches `vec_memory` by cosine similarity, and injects the most relevant cards into the context within a token budget.
+
+## 🧱 Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Backend | Rust + Axum 0.7 + Tokio + sqlx |
+| Frontend | TypeScript + React 18 + Ant Design 5 + Vite |
+| Database | SQLite + FTS5 + sqlite-vec |
+| Auth | PocketID (self-hosted OIDC), optional |
+| LLM | OpenRouter (primary) / Ollama (fallback) |
+| Containers | Docker + Docker Compose (Podman for local dev) |
+
+## 📋 Requirements
 
 - Rust 1.82+
 - Node.js 22+
-- SQLite 3.45+ (con FTS5)
-- Docker + Docker Compose (opcional)
+- SQLite 3.45+ (with FTS5)
+- Docker or Podman + Compose (optional)
 
-## Inicio rápido
+## 🚀 Quick Start
+
+The recommended entrypoint is [`just`](https://github.com/casey/just):
 
 ```bash
-# 1. Clonar
-git clone https://github.com/tu-usuario/valet-ai.git
-cd valet
+# 1. Clone
+git clone https://github.com/atareao/valet-ai.git
+cd valet-ai
 
-# 2. Backend
+# 2. Configure
+cp .env.example .env
+# edit .env and add at least OPENROUTER_API_KEY
+
+# 3. Run with Podman (rebuilds the image)
+just dev
+# or with Docker
+just dev-docker
+
+# Server: http://localhost:3000
+```
+
+### Running without containers
+
+```bash
+# Backend
 cp .env.example .env
 cargo run
 
-# 3. Frontend (otra terminal)
+# Frontend (second terminal)
 cd frontend
 npm install
 npm run dev
 ```
 
-## Configuración
+## ⚙️ Configuration
 
-Variables de entorno principales (ver `.env.example`):
+Environment variables are read once at startup (see `src/config.rs`) with sensible defaults. The main ones (see `.env.example`):
 
-| Variable | Descripción | Default |
+| Variable | Description | Default |
 |----------|-------------|---------|
-| `DATABASE_URL` | Ruta a la BD SQLite | `valet.db` |
-| `OPENROUTER_API_KEY` | API key de OpenRouter | — |
-| `OPENWEATHER_API_KEY` | API key de OpenWeather | — |
-| `AUTH_ENABLED` | Habilitar autenticación | `false` |
-| `LOG_LEVEL` | Nivel de log | `info` |
-| `BRIEFING_TIME` | Hora del briefing | `08:15` |
-| `MEMORY_BATCH_TOKENS` | Tokens acumulados para trigger de ficha episódica | `2000` |
-| `MEMORY_INACTIVITY_MINUTES` | Minutos de inactividad para forzar ficha | `30` |
-| `MEMORY_OVERLAP` | Mensajes de solapamiento (±) en el bloque | `2` |
-| `MEMORY_POLL_INTERVAL_MINUTES` | Intervalo del timer de respaldo | `30` |
-| `MEMORY_MODEL` | Modelo LLM para generar fichas | `mistralai/mistral-small` |
-| `RAG_BUDGET_TOKENS` | Presupuesto de tokens para RAG en el chat | `2000` |
+| `HOST` | Bind address | `0.0.0.0` |
+| `PORT` | HTTP port | `3000` |
+| `DATABASE_URL` | Path to the SQLite database | `valet.db` |
+| `LOG_LEVEL` | Log level | `info` |
+| `OPENROUTER_API_KEY` | OpenRouter API key | — |
+| `OPENROUTER_MODEL` | Primary chat model | `anthropic/claude-sonnet-20241022` |
+| `OPENROUTER_BASE_URL` | OpenRouter API base URL | `https://openrouter.ai/api/v1` |
+| `OLLAMA_BASE_URL` | Ollama fallback base URL | `http://localhost:11434` |
+| `OLLAMA_MODEL` | Ollama fallback model | `llama3.2:3b` |
+| `AUTH_ENABLED` | Enable PocketID authentication | `false` |
+| `AUTH_ISSUER_URL` | OIDC issuer URL | `http://localhost:8080` |
+| `AUTH_CLIENT_ID` | OIDC client ID | — |
+| `AUTH_CLIENT_SECRET` | OIDC client secret | — |
+| `AUTH_REDIRECT_URL` | OIDC redirect URL | `http://localhost:3000/auth/callback` |
+| `JWT_SECRET` | Secret for signing session tokens | — |
+| `OPENWEATHER_API_KEY` | OpenWeather API key | — |
+| `GOOGLE_PLACES_API_KEY` | Google Places API key | — |
+| `BRAVE_SEARCH_API_KEY` | Brave Search API key | — |
+| `BRIEFING_TIME` | Morning briefing time | `08:15` |
+| `CONSOLIDATION_TIME` | Nightly consolidation time | `23:00` |
+| `TRAVEL_PREP_DAYS_BEFORE` | Days ahead to prepare travel | `3` |
+| `COLLAPSE_THRESHOLD_TOKENS` | Tokens before context collapse | `2000` |
+| `COLLAPSE_MODEL` | Model used for context collapse | `mistralai/mistral-small-24b-instruct-2501` |
+| `MEMORY_BATCH_TOKENS` | Accumulated tokens to trigger an episodic card | `2000` |
+| `MEMORY_INACTIVITY_MINUTES` | Idle minutes before forcing a card | `30` |
+| `MEMORY_OVERLAP` | Overlap messages (±) in the block | `2` |
+| `MEMORY_POLL_INTERVAL_MINUTES` | Fallback timer interval | `30` |
+| `MEMORY_MODEL` | Model used to generate episodic cards | `mistralai/mistral-small-24b-instruct-2501` |
+| `RAG_BUDGET_TOKENS` | Token budget for chat RAG | `2000` |
 
-## Producción
+## 🏭 Production
+
+`docker-compose.prod.yml` splits the stack into backend, a standalone nginx frontend, and PocketID.
 
 ```bash
-# Variables requeridas
+# Required variables
 export OPENROUTER_API_KEY="sk-..."
-export JWT_SECRET="cambiar-en-produccion"
+export AUTH_ISSUER_URL="https://auth.example.com"
+export AUTH_CLIENT_ID="valet"
+export AUTH_CLIENT_SECRET="..."
+export JWT_SECRET="change-me-in-production"
 
-# Levantar
+# Start
 docker compose -f docker-compose.prod.yml up -d
 ```
 
-## Arquitectura
+## 🏛️ Architecture
 
 ```
 ┌─────────────────────────────────────────────────┐
-│                   Frontend PWA                   │
+│                 Frontend (SPA)                   │
 │            (React + Antd + Vite)                 │
 └─────────────────────┬───────────────────────────┘
                       │ HTTP/SSE
@@ -108,8 +154,8 @@ docker compose -f docker-compose.prod.yml up -d
 │               Rust Server (Axum)                 │
 │                                                  │
 │  ┌─────────────┐  ┌──────────┐  ┌────────────┐  │
-│  │ Orquestador │  │ Memoria  │  │  Tools     │  │
-│  │ (ReAct)     │  │ (3 capas)│  │  (8 dim.)  │  │
+│  │ Orchestrator│  │  Memory  │  │   Tools    │  │
+│  │   (ReAct)   │  │ (layered)│  │   (14)     │  │
 │  └─────────────┘  └──────────┘  └────────────┘  │
 │                                                  │
 │  ┌──────────────────────────────────────────┐    │
@@ -118,23 +164,53 @@ docker compose -f docker-compose.prod.yml up -d
 └──────────────────────────────────────────────────┘
 ```
 
-## API — Stats
+The orchestrator exposes 14 tools from `src/tools/`: `calendar`, `contacts`, `current_location`, `current_time`, `geo`, `google_places`, `habits`, `knowledge`, `meals`, `reminders`, `tasks`, `unified_search`, `weather`, `web_search`.
 
-| Método | Ruta | Descripción |
-|--------|------|-------------|
-| GET | `/api/stats/memory` | Estadísticas de memoria episódica |
+Background workers in `src/workers/`: `briefing`, `collapse`, `conflict_detector`, `episodic_memory`, `memory_worker`, `pool`, `stats_cleanup`, `travel_prep`.
 
-## Tests
+## 🔌 API
+
+| Method | Route | Description |
+|--------|-------|-------------|
+| GET | `/api/health` | Health check |
+| POST | `/api/chat/stream` | Chat with SSE streaming |
+| POST | `/api/approval/:request_id` | Resolve a tool approval request |
+| GET | `/api/chat/init` | Initial chat state |
+| GET/POST | `/api/messages` | List / create messages |
+| GET | `/api/messages/:msg_id` | Get a message |
+| GET/POST | `/api/memories` | List / create memories |
+| DELETE | `/api/memories/:id` | Delete a memory |
+| GET/PUT | `/api/profile` | Get / update the profile |
+| GET/PUT | `/api/settings` | Get / update settings |
+| GET | `/api/tools` | List tools |
+| PUT | `/api/tools/:id/toggle` | Enable / disable a tool |
+| GET | `/api/search` | Unified search |
+| GET | `/api/export` | Export data |
+| — | `/api/events/*`, `/api/tasks/*` | Events and tasks CRUD |
+| GET | `/api/stats/memory` | Episodic memory statistics |
+| GET | `/api/stats/llm/summary` | LLM usage summary |
+| GET | `/api/stats/llm/by-model`, `/api/stats/llm/by-day` | LLM usage breakdowns |
+| GET | `/api/stats/llm/tools`, `/api/stats/llm/last-call` | Tool usage and last call |
+| GET | `/api/stats/db/sizes` | Database table sizes |
+| GET | `/api/stats/llm/export` | Export LLM stats as CSV |
+
+## 🧪 Development and Tests
 
 ```bash
 # Backend
-cargo test
-cargo clippy -- -D warnings
+just test          # cargo test (510 tests)
+just clippy        # cargo clippy -- -D warnings
+just fmt           # cargo fmt --check
 
 # Frontend
-cd frontend && npx tsc --noEmit && npx vitest run
+just frontend-check   # tsc --noEmit + vite build
+
+# Everything
+just check-all
 ```
 
-## Licencia
+Available `just` recipes: `dev`, `dev-docker`, `check-all`, `test`, `clippy`, `fmt`, `frontend-check`, `check-spec`, `clean`, `help`.
+
+## 📜 License
 
 MIT
