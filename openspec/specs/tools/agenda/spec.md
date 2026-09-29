@@ -1,11 +1,13 @@
 # tools/agenda Specification
 
 ## Purpose
-TBD - created by archiving change complete-agenda. Update Purpose after archive.
+Tool de agenda de Valet: operaciones de eventos (crear, actualizar, eliminar, listar por categoría), esquema unificado basado en `start` + `duration`, soporte de campos nuevos y permiso de aprobación explícita para el borrado.
 
 ## Requirements
 
 ### Requirement: Calendar tool — add delete_event, list_by_category, support new fields
+
+La tool `calendar` SHALL soportar `delete_event` y `list_by_category` y los campos `category`, `all_day`, `rrule` y `reminder_minutes_before`.
 
 Extender la tool `calendar` con nuevas operaciones y soporte para los campos añadidos (category, all_day, rrule, reminder).
 
@@ -88,6 +90,8 @@ Then it still returns success (idempotent)
 
 ### Requirement: Calendar tool — change delete_event permission to ExplicitApproval
 
+La tool `calendar` SHALL declarar `ExplicitApproval` como permiso para `delete_event`.
+
 Deleting events is destructive — it should require confirmation.
 
 ```rust
@@ -106,6 +110,8 @@ Then the guardrail check returns `ExplicitApproval`
 And the orchestrator pauses to ask the user
 
 ### Requirement: Calendar tool — update_event supports start_time/end_time
+
+`update_event` SHALL aceptar y persistir `start` y `end` para reprogramar eventos.
 
 The `update_event` operation must accept and persist `start` and `end` parameters so the LLM can reschedule events.
 
@@ -165,6 +171,8 @@ Then the event's start_time and end_time are updated
 And the response includes the updated event
 
 ### Requirement: Calendar tool — unified schema: remove `end` and `date`
+
+Todas las operaciones SHALL usar `start` + `duration` (minutos) para definir rangos temporales, eliminando `end` y `date` del schema.
 
 Todas las operaciones usan `start` + `duration` (minutos) para definir rangos temporales.
 Se eliminan `end` y `date` del schema.

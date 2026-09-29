@@ -20,6 +20,18 @@ export interface SettingsDialogProps {
   onClose: () => void;
 }
 
+export interface SettingsFormValues {
+  font_size: number;
+  max_window_tokens: number;
+  system_prompt: string;
+  archivist_prompt: string;
+  collapse_prompt: string;
+  message_page_size: number;
+  openweather_api_key: string;
+  google_places_api_key: string;
+  brave_search_api_key: string;
+}
+
 export const SettingsDialog: React.FC<SettingsDialogProps> = ({
   visible,
   onClose,
@@ -45,6 +57,8 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
         font_size: parseInt(settings.font_size || "16"),
         max_window_tokens: parseInt(settings.max_window_tokens || "10000"),
         system_prompt: settings.system_prompt || "",
+        archivist_prompt: settings.archivist_prompt || "",
+        collapse_prompt: settings.collapse_prompt || "",
         message_page_size: parseInt(settings.message_page_size || "50"),
         openweather_api_key: settings.openweather_api_key || "",
         google_places_api_key: settings.google_places_api_key || "",
@@ -82,24 +96,26 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     }
   };
 
-  const handleSettingsSubmit = async (values: {
-    font_size: number;
-    max_window_tokens: number;
-    system_prompt: string;
-    message_page_size: number;
-    openweather_api_key: string;
-    google_places_api_key: string;
-    brave_search_api_key: string;
-  }) => {
+  const handleSettingsSubmit = async (
+    values: Partial<SettingsFormValues>,
+  ) => {
     try {
       await updateSettings({
-        font_size: values.font_size.toString(),
-        max_window_tokens: values.max_window_tokens.toString(),
-        system_prompt: values.system_prompt,
-        message_page_size: values.message_page_size.toString(),
-        openweather_api_key: values.openweather_api_key || "",
-        google_places_api_key: values.google_places_api_key || "",
-        brave_search_api_key: values.brave_search_api_key || "",
+        font_size: (
+          values.font_size ?? parseInt(settings?.font_size || "16")
+        ).toString(),
+        max_window_tokens: (
+          values.max_window_tokens ?? parseInt(settings?.max_window_tokens || "10000")
+        ).toString(),
+        system_prompt: values.system_prompt ?? settings?.system_prompt ?? "",
+        archivist_prompt: values.archivist_prompt ?? settings?.archivist_prompt ?? "",
+        collapse_prompt: values.collapse_prompt ?? settings?.collapse_prompt ?? "",
+        message_page_size: (
+          values.message_page_size ?? parseInt(settings?.message_page_size || "50")
+        ).toString(),
+        openweather_api_key: values.openweather_api_key ?? settings?.openweather_api_key ?? "",
+        google_places_api_key: values.google_places_api_key ?? settings?.google_places_api_key ?? "",
+        brave_search_api_key: values.brave_search_api_key ?? settings?.brave_search_api_key ?? "",
       });
       message.success("Ajustes guardados");
       onClose();
@@ -115,7 +131,6 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
       settingsForm.setFieldsValue({
         font_size: 16,
         max_window_tokens: 10000,
-        system_prompt: "",
         message_page_size: 50,
         openweather_api_key: "",
         google_places_api_key: "",
@@ -241,8 +256,8 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
             ),
           },
           {
-            key: "prompt",
-            label: "Prompt",
+            key: "prompts",
+            label: "Prompts",
             children: settingsLoading ? (
               renderSettingsLoading()
             ) : (
@@ -251,18 +266,49 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                 layout="vertical"
                 onFinish={handleSettingsSubmit}
               >
-                <Form.Item
-                  label="System Prompt"
-                  name="system_prompt"
-                >
-                  <TextArea
-                    rows={10}
-                    placeholder={
-                      settings?.system_prompt_default ||
-                      "Dejar vacío para usar el prompt por defecto"
-                    }
-                  />
-                </Form.Item>
+                <Tabs
+                  items={[
+                    {
+                      key: "system",
+                      label: "System",
+                      forceRender: true,
+                      children: (
+                        <Form.Item
+                          label="System Prompt"
+                          name="system_prompt"
+                        >
+                          <TextArea rows={10} />
+                        </Form.Item>
+                      ),
+                    },
+                    {
+                      key: "archivist",
+                      label: "Archivist",
+                      forceRender: true,
+                      children: (
+                        <Form.Item
+                          label="Archivist Prompt"
+                          name="archivist_prompt"
+                        >
+                          <TextArea rows={10} />
+                        </Form.Item>
+                      ),
+                    },
+                    {
+                      key: "collapse",
+                      label: "Collapse",
+                      forceRender: true,
+                      children: (
+                        <Form.Item
+                          label="Collapse Prompt"
+                          name="collapse_prompt"
+                        >
+                          <TextArea rows={10} />
+                        </Form.Item>
+                      ),
+                    },
+                  ]}
+                />
                 <Button type="primary" htmlType="submit" loading={saving}>
                   Guardar
                 </Button>

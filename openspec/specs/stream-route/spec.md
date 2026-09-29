@@ -6,6 +6,8 @@ Rutas SSE para streaming de chat. Contiene el endpoint `POST /api/chat/stream`.
 ## Requirements
 
 ### Requirement: profile_id must resolve from DB, not be hardcoded
+
+El handler SHALL resolver el `profile_id` desde la tabla `profiles` (vía `ProfilesRepo::get_or_create`) y SHALL NOT usar un ID hardcodeado.
 **Given** una base de datos sin perfil con id="profile-1"  
 **When** se llama a `POST /api/chat/stream`  
 **Then** el profile_id inyectado en los tool calls debe ser un ID real existente en la tabla `profiles`

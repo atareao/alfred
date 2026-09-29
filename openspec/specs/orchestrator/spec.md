@@ -1,11 +1,13 @@
 # orchestrator Specification
 
 ## Purpose
-TBD - created by archiving change sql-window-history. Update Purpose after archive.
+Orquestador de Valet: carga del historial de conversación por presupuesto de tokens y almacenamiento de las herramientas usadas como metadatos del mensaje en lugar de incrustarlas en el contenido.
 
 ## Requirements
 
 ### Requirement: Orchestrator SHALL use list_by_token_budget instead of SessionWindow
+
+El orquestador SHALL cargar el historial con `MessagesRepo::list_by_token_budget()` y SHALL NOT usar `SessionWindow`.
 
 **Given** un orquestador procesando un mensaje  
 **When** se construye el array de mensajes para el LLM  
