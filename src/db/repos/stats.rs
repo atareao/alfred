@@ -173,7 +173,10 @@ impl StatsRepo {
 
         for table in &tables {
             let sql = format!("SELECT COUNT(*) FROM \"{table}\"");
-            let count: i64 = sqlx::query_scalar(&sql).fetch_one(pool).await?;
+            // SAFETY: `table` comes from the hard-coded `tables` array above.
+            let count: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+                .fetch_one(pool)
+                .await?;
             sizes.push(TableSize {
                 table: table.to_string(),
                 rows: count as u64,

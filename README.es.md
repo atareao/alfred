@@ -42,7 +42,7 @@ En el chat, el orquestador usa **RAG**: genera el embedding de la consulta del u
 
 | Capa | Tecnología |
 |------|-----------|
-| Backend | Rust + Axum 0.7 + Tokio + sqlx |
+| Backend | Rust + Axum 0.8 + Tokio + sqlx 0.9 |
 | Frontend | TypeScript + React 18 + Ant Design 5 + Vite |
 | Base de datos | SQLite + FTS5 + sqlite-vec |
 | Auth | PocketID (OIDC self-hosted), opcional |
@@ -51,7 +51,7 @@ En el chat, el orquestador usa **RAG**: genera el embedding de la consulta del u
 
 ## 📋 Requisitos
 
-- Rust 1.82+
+- Rust 1.94+
 - Node.js 22+
 - SQLite 3.45+ (con FTS5)
 - Docker o Podman + Compose (opcional)
@@ -174,16 +174,16 @@ Workers en segundo plano en `src/workers/`: `briefing`, `collapse`, `conflict_de
 |--------|------|-------------|
 | GET | `/api/health` | Health check |
 | POST | `/api/chat/stream` | Chat con streaming SSE |
-| POST | `/api/approval/:request_id` | Resolver una petición de aprobación de herramienta |
+| POST | `/api/approval/{request_id}` | Resolver una petición de aprobación de herramienta |
 | GET | `/api/chat/init` | Estado inicial del chat |
 | GET/POST | `/api/messages` | Listar / crear mensajes |
-| GET | `/api/messages/:msg_id` | Obtener un mensaje |
+| GET | `/api/messages/{msg_id}` | Obtener un mensaje |
 | GET/POST | `/api/memories` | Listar / crear memorias |
-| DELETE | `/api/memories/:id` | Borrar una memoria |
+| DELETE | `/api/memories/{id}` | Borrar una memoria |
 | GET/PUT | `/api/profile` | Obtener / actualizar el perfil |
 | GET/PUT | `/api/settings` | Obtener / actualizar ajustes |
 | GET | `/api/tools` | Listar herramientas |
-| PUT | `/api/tools/:id/toggle` | Activar / desactivar una herramienta |
+| PUT | `/api/tools/{id}/toggle` | Activar / desactivar una herramienta |
 | GET | `/api/search` | Búsqueda unificada |
 | GET | `/api/export` | Exportar datos |
 | — | `/api/events/*`, `/api/tasks/*` | CRUD de eventos y tareas |
@@ -198,7 +198,7 @@ Workers en segundo plano en `src/workers/`: `briefing`, `collapse`, `conflict_de
 
 ```bash
 # Backend
-just test          # cargo test (510 tests)
+just test          # cargo test (599 tests)
 just clippy        # cargo clippy -- -D warnings
 just fmt           # cargo fmt --check
 

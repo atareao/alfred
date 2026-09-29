@@ -11,7 +11,7 @@ pub fn routes() -> Router<AppState> {
             get(tasks::list_tasks).post(tasks::create_task),
         )
         .route(
-            "/api/tasks/:id",
+            "/api/tasks/{id}",
             put(tasks::update_task).delete(tasks::delete_task),
         )
 }

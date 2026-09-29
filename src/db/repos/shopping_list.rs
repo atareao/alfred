@@ -32,14 +32,18 @@ impl ShoppingListRepo {
 
         sql.push_str(" ORDER BY category, item");
 
+        // SAFETY: `sql` only concatenates literal fragments; values are bound below.
         let rows = if let Some(cat) = category {
-            sqlx::query(&sql)
+            sqlx::query(sqlx::AssertSqlSafe(sql))
                 .bind(profile_id)
                 .bind(cat)
                 .fetch_all(pool)
                 .await?
         } else {
-            sqlx::query(&sql).bind(profile_id).fetch_all(pool).await?
+            sqlx::query(sqlx::AssertSqlSafe(sql))
+                .bind(profile_id)
+                .fetch_all(pool)
+                .await?
         };
 
         let items: Vec<ShoppingItem> = rows
