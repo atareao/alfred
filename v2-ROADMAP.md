@@ -1,4 +1,4 @@
-# Alfred v2 — Roadmap
+# Valet v2 — Roadmap
 
 > Nuevas dimensiones para el Life Operating System: gestión de contenido editorial,
 > bitácora personal y bitácora de proyectos.
@@ -9,7 +9,7 @@
 
 ### Visión
 
-Alfred gestiona todo el ciclo de vida del contenido de **atareao.es**: podcast, artículos del blog, tutoriales, vídeos de YouTube. Desde la idea inicial hasta la publicación, todo orquestado desde una conversación con Alfred.
+Valet gestiona todo el ciclo de vida del contenido de **atareao.es**: podcast, artículos del blog, tutoriales, vídeos de YouTube. Desde la idea inicial hasta la publicación, todo orquestado desde una conversación con Valet.
 
 ### Dimensiones de contenido
 
@@ -24,33 +24,33 @@ Alfred gestiona todo el ciclo de vida del contenido de **atareao.es**: podcast, 
 
 ```
 1. 💡 IDEA
-   │  "Alfred, tengo una idea para un artículo sobre Podman"
-   │  Alfred guarda la idea y sugiere formato (podcast / artículo / vídeo)
+   │  "Valet, tengo una idea para un artículo sobre Podman"
+   │  Valet guarda la idea y sugiere formato (podcast / artículo / vídeo)
    │
    ▼
 2. 🔬 INVESTIGACIÓN
-   │  "Alfred, investiga sobre Podman 5.0"
-   │  Alfred busca en web (SearXNG), docs oficiales, repos GitHub
+   │  "Valet, investiga sobre Podman 5.0"
+   │  Valet busca en web (SearXNG), docs oficiales, repos GitHub
    │  Genera un brief con fuentes, novedades, ejemplos clave
    │
    ▼
 3. 📝 GUION / ESCRITURA
-   │  "Alfred, escribe el guion del podcast"
-   │  Alfred genera guion estructurado siguiendo la house style
+   │  "Valet, escribe el guion del podcast"
+   │  Valet genera guion estructurado siguiendo la house style
    │  Incluye: intro, desarrollo, ejemplos prácticos, despedida
    │  Para artículos: genera borrador con SEO titles y meta description
    │
    ▼
 4. 👁️ REVISIÓN
-   │  "Alfred, revisa el artículo"
-   │  Alfred aplica: blog-avoid-ai, blog-house-style, blog-edit
+   │  "Valet, revisa el artículo"
+   │  Valet aplica: blog-avoid-ai, blog-house-style, blog-edit
    │  Sugiere mejoras, detecta AI-isms, verifica código de ejemplo
    │  Ciclo de revisión hasta aprobación
    │
    ▼
 5. 🎬 PRODUCCIÓN
-   │  "Alfred, prepara los metadatos del episodio"
-   │  Alfred genera:
+   │  "Valet, prepara los metadatos del episodio"
+   │  Valet genera:
    │    • Título y descripción para YouTube (SEO)
    │    • Título y descripción para Spotify
    │    • Miniaturas (prompt para DALL-E / Midjourney)
@@ -59,8 +59,8 @@ Alfred gestiona todo el ciclo de vida del contenido de **atareao.es**: podcast, 
    │
    ▼
 6. 🚀 PUBLICACIÓN
-   │  "Alfred, publica el artículo"
-   │  Alfred:
+   │  "Valet, publica el artículo"
+   │  Valet:
    │    • Sube a WordPress vía REST API
    │    • Programa publicación en fecha/hora
    │    • Actualiza redes sociales
@@ -68,8 +68,8 @@ Alfred gestiona todo el ciclo de vida del contenido de **atareao.es**: podcast, 
    │
    ▼
 7. 📊 SEGUIMIENTO
-   │  "Alfred, qué tal funcionó el último artículo"
-   │  Alfred consulta analytics (si están disponibles)
+   │  "Valet, qué tal funcionó el último artículo"
+   │  Valet consulta analytics (si están disponibles)
    │  Muestra visitas, reproducciones, engagement
 ```
 
@@ -98,7 +98,7 @@ Alfred gestiona todo el ciclo de vida del contenido de **atareao.es**: podcast, 
 
 ### Visión
 
-Una **bitácora personal** (journal/diario) que Alfred mantiene de forma proactiva. No es solo "escribir notas" — es un sistema que captura el día a día, extrae aprendizajes, y construye una narrativa personal.
+Una **bitácora personal** (journal/diario) que Valet mantiene de forma proactiva. No es solo "escribir notas" — es un sistema que captura el día a día, extrae aprendizajes, y construye una narrativa personal.
 
 ### Diferencias con notes existente
 
@@ -106,20 +106,20 @@ Una **bitácora personal** (journal/diario) que Alfred mantiene de forma proacti
 |---------|-------------|---------------|
 | Propósito | Notas rápidas, ideas sueltas | Narrativa personal diaria |
 | Estructura | Libre, categorías | Fechas, estados de ánimo, logros |
-| Proactividad | Solo creación manual | Alfred pregunta "¿Cómo fue tu día?" |
+| Proactividad | Solo creación manual | Valet pregunta "¿Cómo fue tu día?" |
 | Integración | Aislada | Se alimenta de eventos, hábitos, clima |
-| Reflexión | No | Alfred sugiere patrones, celebra rachas |
+| Reflexión | No | Valet sugiere patrones, celebra rachas |
 
 ### Flujo
 
 ```
-20:00 — Alfred pregunta: "¿Cómo fue tu día?"
+20:00 — Valet pregunta: "¿Cómo fue tu día?"
          │
          ▼
 Usuario responde: "Bien, terminé el proyecto X, pero tuve dolor de cabeza"
          │
          ▼
-Alfred estructura la entrada:
+Valet estructura la entrada:
   • Fecha: 2026-09-24
   • Ánimo: 😊 (positivo)
   • Logros: Proyecto X completado
@@ -128,7 +128,7 @@ Alfred estructura la entrada:
   • Tags: trabajo, salud
          │
          ▼
-Alfred guarda en `journal_entries` y extrae hechos para memoria
+Valet guarda en `journal_entries` y extrae hechos para memoria
 ```
 
 ### Schema propuesto
@@ -187,7 +187,7 @@ Un **sistema de seguimiento de proyectos** que va más allá de las tareas. Cada
 ```json
 {
   "id": "proj-abc",
-  "name": "Alfred v2",
+  "name": "Valet v2",
   "status": "in_progress",    // "idea", "planning", "active", "paused", "done", "abandoned"
   "vision": "Un asistente que...",
   "start_date": "2026-09-01",
@@ -315,13 +315,13 @@ CREATE TABLE project_entries (
 
 ### Visión
 
-Sistema de telemetría para entender cómo se usa Alfred, detectar problemas, y guiar decisiones de mejora. No es un mero logging — es un panel de control del asistente.
+Sistema de telemetría para entender cómo se usa Valet, detectar problemas, y guiar decisiones de mejora. No es un mero logging — es un panel de control del asistente.
 
 ### Tres capas
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                   PANEL DE CONTROL ALFRED                   │
+│                   PANEL DE CONTROL VALET                   │
 │           (Dashboard web integrado en el frontend)           │
 ├─────────────────────────────────────────────────────────────┤
 │                                                             │
@@ -394,10 +394,10 @@ CREATE TABLE telemetry_metrics (
 
 ### 4.4 Dashboard (frontend)
 
-Nueva sección en la UI de Alfred:
+Nueva sección en la UI de Valet:
 
 ```
-🧠 Alfred
+🧠 Valet
 ├── 💬 Chat
 ├── ⚙️ Perfil
 ├── 🧠 Memoria
@@ -441,17 +441,17 @@ Nueva sección en la UI de Alfred:
 
 | Tool | Operaciones | Descripción |
 |------|-------------|-------------|
-| `stats` | `get_summary`, `get_tool_ranking`, `get_performance`, `get_logs` | Alfred puede auto-diagnosticarse: "¿Qué tal estoy funcionando?" |
+| `stats` | `get_summary`, `get_tool_ranking`, `get_performance`, `get_logs` | Valet puede auto-diagnosticarse: "¿Qué tal estoy funcionando?" |
 
 ### Integración con el orquestador
 
-El objetivo es que el propio Alfred pueda **auto-mejorarse**:
+El objetivo es que el propio Valet pueda **auto-mejorarse**:
 
 ```
-Usuario: "Alfred, notas algo raro en tu rendimiento"
+Usuario: "Valet, notas algo raro en tu rendimiento"
   │
   ▼
-Alfred llama a stats → detecta latencia alta en OpenRouter
+Valet llama a stats → detecta latencia alta en OpenRouter
   │
   ▼
 "Estoy notando latencia alta con OpenRouter (3.2s media).

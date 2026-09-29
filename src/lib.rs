@@ -369,7 +369,7 @@ pub fn app_with_state(state: AppState) -> Router {
 /// returns a ready-to-use [`Router`].
 ///
 /// Used by integration tests (e.g. `tests/api/health.rs`) that call
-/// `alfred::app()` without wiring their own state.
+/// `valet::app()` without wiring their own state.
 pub async fn app() -> Router {
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     let pool = SqlitePoolOptions::new()
@@ -417,7 +417,7 @@ mod tests {
         env::set_var("OPENROUTER_MODEL", "test/model");
 
         let tmp_dir = env::temp_dir();
-        let db_filename = "alfred_test_shutdown_tx.db";
+        let db_filename = "valet_test_shutdown_tx.db";
         let db_path = tmp_dir.join(db_filename);
         let _ = std::fs::remove_file(&db_path);
 
@@ -441,8 +441,8 @@ mod tests {
 
         // Teardown
         let _ = std::fs::remove_file(&db_path);
-        let _ = std::fs::remove_file(tmp_dir.join("alfred_test_shutdown_tx.db-wal"));
-        let _ = std::fs::remove_file(tmp_dir.join("alfred_test_shutdown_tx.db-shm"));
+        let _ = std::fs::remove_file(tmp_dir.join("valet_test_shutdown_tx.db-wal"));
+        let _ = std::fs::remove_file(tmp_dir.join("valet_test_shutdown_tx.db-shm"));
 
         env::remove_var("OPENROUTER_API_KEY");
         env::remove_var("OPENROUTER_MODEL");

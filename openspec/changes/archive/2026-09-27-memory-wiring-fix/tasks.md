@@ -17,6 +17,6 @@
 - [x] 2.4 REFACTOR: verificar `cargo clippy -- -D warnings` y `cargo test` completo
 
 ### Fase 3: Verificación final
-- [x] 3.1 Ejecutar suite completa: `cargo test --package alfred`
+- [x] 3.1 Ejecutar suite completa: `cargo test --package valet`
 - [x] 3.2 Ejecutar linter: `cargo clippy --all-targets -- -D warnings`
 - [ ] 3.3 Archivar change proposal con `openspec archive memory-wiring-fix`

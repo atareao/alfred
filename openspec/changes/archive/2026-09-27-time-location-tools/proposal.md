@@ -1,7 +1,7 @@
-# Change Proposal: Time and Location Tools for Alfred
+# Change Proposal: Time and Location Tools for Valet
 
 ## Intent
-Add two new tools (`get_current_time`, `get_current_location`) so Alfred can answer "¿qué hora es?" and "¿dónde estoy?" with accurate, up-to-date information instead of guessing or complaining.
+Add two new tools (`get_current_time`, `get_current_location`) so Valet can answer "¿qué hora es?" and "¿dónde estoy?" with accurate, up-to-date information instead of guessing or complaining.
 
 ## Scope
 - Extract `format_browser_timestamp`, `DIAS`, `MESES`, `momento_del_dia` from `src/orchestrator/agent.rs` into a shared module `src/tools/time_format.rs`

@@ -12,9 +12,9 @@ use super::provider::{
 };
 
 /// Application name sent to OpenRouter for identification.
-const APP_NAME: &str = "Alfred";
+const APP_NAME: &str = "Valet";
 /// Application URL sent to OpenRouter for identification.
-const APP_URL: &str = "https://github.com/atareao/alfred";
+const APP_URL: &str = "https://github.com/atareao/valet-ai";
 
 /// Configuration for the OpenRouter LLM provider.
 #[derive(Debug, Clone)]
@@ -1329,7 +1329,7 @@ mod tests {
             .and_then(|v| v.to_str().ok());
         assert_eq!(
             referer,
-            Some("https://github.com/atareao/alfred"),
+            Some("https://github.com/atareao/valet-ai"),
             "Missing or incorrect HTTP-Referer header"
         );
 
@@ -1339,7 +1339,7 @@ mod tests {
             .or_else(|| headers.get("x-title"))
             .or_else(|| headers.get("X-title"))
             .and_then(|v| v.to_str().ok());
-        assert_eq!(title, Some("Alfred"), "Missing or incorrect X-Title header");
+        assert_eq!(title, Some("Valet"), "Missing or incorrect X-Title header");
     }
 
     // -----------------------------------------------------------------------

@@ -1,6 +1,6 @@
-use alfred::config::Config;
-use alfred::{app_with_state, AppState};
 use tracing_subscriber::EnvFilter;
+use valet::config::Config;
+use valet::{app_with_state, AppState};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -21,7 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Spawn the stats cleanup worker (runs hourly, purges old llm_requests)
     let pool = state.db.clone();
-    tokio::spawn(alfred::workers::stats_cleanup::run_cleanup_worker(pool));
+    tokio::spawn(valet::workers::stats_cleanup::run_cleanup_worker(pool));
 
     // Build the application router
     let router = app_with_state(state);
@@ -30,7 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = format!("{}:{}", config.host, config.port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
 
-    tracing::info!("Alfred server listening on {addr}");
+    tracing::info!("Valet server listening on {addr}");
 
     axum::serve(listener, router).await?;
 
@@ -39,9 +39,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
-    use alfred::AppState;
     use serial_test::serial;
     use std::env;
+    use valet::AppState;
 
     /// Verify that the production initialisation path
     /// (`AppState::new_with_orchestrator`) correctly wires up every
@@ -72,7 +72,7 @@ mod tests {
         env::set_var("JWT_SECRET", "test-jwt-secret");
 
         let tmp_dir = env::temp_dir();
-        let db_filename = "alfred_test_production_state.db";
+        let db_filename = "valet_test_production_state.db";
         let db_path = tmp_dir.join(db_filename);
         // Remove any stale database from a previous (failed) run
         let _ = std::fs::remove_file(&db_path);
@@ -80,7 +80,7 @@ mod tests {
         // -----------------------------------------------------------------
         // Act: use the SAME entry point that main() SHOULD call
         // -----------------------------------------------------------------
-        use alfred::config::Config;
+        use valet::config::Config;
 
         // Create a Config with test values
         let mut test_config = Config::from_env();
@@ -126,8 +126,8 @@ mod tests {
         // Teardown: remove the temporary database + WAL/SHM artifacts
         // -----------------------------------------------------------------
         let _ = std::fs::remove_file(&db_path);
-        let _ = std::fs::remove_file(tmp_dir.join("alfred_test_production_state.db-wal"));
-        let _ = std::fs::remove_file(tmp_dir.join("alfred_test_production_state.db-shm"));
+        let _ = std::fs::remove_file(tmp_dir.join("valet_test_production_state.db-wal"));
+        let _ = std::fs::remove_file(tmp_dir.join("valet_test_production_state.db-shm"));
 
         // Clean up environment variables so they don't leak into other tests
         env::remove_var("OPENROUTER_API_KEY");

@@ -5,7 +5,7 @@
 Cuando OpenRouter devuelve un error HTTP (ej. 400 Bad Request), el error que llega al log es:
 
 ```
-ERROR alfred::orchestrator::agent: ❌ Orchestrator error error=HTTP error: HTTP 400
+ERROR valet::orchestrator::agent: ❌ Orchestrator error error=HTTP error: HTTP 400
 ```
 
 Esto no da ninguna pista sobre **por qué** falló. OpenRouter (y otras APIs) devuelven un cuerpo JSON con el detalle del error, pero el provider lo descarta porque retorna el error antes de leer el body.

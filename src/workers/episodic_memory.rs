@@ -829,7 +829,7 @@ mod tests {
     const SAMPLE_LLM_RESPONSE: &str = "\
 - FECHA/CONTEXTO: 26 de septiembre de 2026 — Configuración de infraestructura
 - TEMAS TRATADOS: Podman, Docker Compose, PostgreSQL, configuración de red, variables de entorno
-- HECHOS Y DECISIONES: Se configuró Podman con docker-compose.yml. Se expuso el puerto 5432 para PostgreSQL. Se decidió usar la red `alfred_net` con driver bridge. Se estableció la variable `POSTGRES_DB=alfred`.
+- HECHOS Y DECISIONES: Se configuró Podman con docker-compose.yml. Se expuso el puerto 5432 para PostgreSQL. Se decidió usar la red `valet_net` con driver bridge. Se estableció la variable `POSTGRES_DB=valet`.
 - SÍNTESIS: El equipo configuró el entorno de desarrollo con Podman, definiendo los servicios de base de datos y aplicación en un docker-compose.yml. Se resolvieron problemas de conexión entre contenedores ajustando las redes virtuales.";
 
     // ─── 3.1 / 3.2: Worker loop ───────────────────────────────────────────

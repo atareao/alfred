@@ -61,7 +61,7 @@ pub async fn stream_message(
     if state.orchestrator.is_none() {
         tracing::warn!("Orchestrator is None, using fallback stub response");
         let event = SSEEvent::Chunk {
-            content: "Hello from Alfred!".to_string(),
+            content: "Hello from Valet!".to_string(),
         };
         let stream =
             futures::stream::once(async move { Ok(Event::default().data(event.to_json_string())) });

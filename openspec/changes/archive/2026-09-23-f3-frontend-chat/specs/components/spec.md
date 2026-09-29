@@ -8,7 +8,7 @@
 │              │                              │
 │  ┌────────┐  │  ┌─────────────────────────┐ │
 │  │ 💬     │  │  │    ChatView             │ │
-│  │ Alfred │  │  │                         │ │
+│  │ Valet │  │  │                         │ │
 │  ├────────┤  │  │   MessageBubble (user)  │ │
 │  │ 🌤️     │  │  │   MessageBubble (asst)  │ │
 │  │ Tiempo │  │  │   MessageBubble (system)│ │
@@ -24,12 +24,12 @@
 
 El layout debe:
 - Sidebar fijo a la izquierda (280px, colapsable a 80px)
-- **Primer item**: Main Chat "💬 Alfred" — siempre visible, no se puede cerrar
+- **Primer item**: Main Chat "💬 Valet" — siempre visible, no se puede cerrar
 - **Items siguientes**: Chats efímeros "🌤️ Tiempo en Nardó" — con X para cerrar
 - **Al final**: Perfil "⚙️" — abre ProfileEditor
 - El chat activo se resalta en el menú
 - Al hacer clic en un chat efímero, el ChatView muestra sus mensajes
-- Al hacer clic en "Alfred", vuelve al main chat
+- Al hacer clic en "Valet", vuelve al main chat
 
 ## ADDED: ChatView
 
@@ -40,7 +40,7 @@ interface ChatViewProps {
   hasMore: boolean;
   onLoadMore: () => void;
   onSendMessage: (content: string) => void;
-  title: string;           // "Alfred" o título del chat efímero
+  title: string;           // "Valet" o título del chat efímero
 }
 ```
 
@@ -130,7 +130,7 @@ export default defineConfig({
 ### Scenario: Main chat is always visible
 - **Given** the app loads
 - **When** the sidebar renders
-- **Then** "💬 Alfred" is the first item and cannot be closed
+- **Then** "💬 Valet" is the first item and cannot be closed
 
 ### Scenario: Ephemeral chat appears in sidebar
 - **Given** an ephemeral chat is created

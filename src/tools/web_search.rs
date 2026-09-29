@@ -54,7 +54,7 @@ impl WebSearchTool {
     /// the settings database on each `execute` call.
     pub fn new(db: SqlitePool) -> Self {
         let client = reqwest::Client::builder()
-            .user_agent("alfred/1.0")
+            .user_agent("valet/1.0")
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .expect("Failed to build reqwest Client");

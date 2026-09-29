@@ -131,7 +131,7 @@ TBD - created by archiving change collapse-worker. Update Purpose after archive.
 **And** `shutdown_tx` SHALL be retained in `AppState`
 
 #### Scenario: Worker pool runs on startup
-**Given** Alfred is started  
+**Given** Valet is started  
 **When** the server begins listening  
 **Then** the Briefing worker SHALL still be running  
 **And** the Conflict-detector worker SHALL still be running  

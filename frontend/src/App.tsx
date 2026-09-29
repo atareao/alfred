@@ -1,12 +1,12 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { ConfigProvider } from "antd";
-import { alfredTheme } from "./theme";
+import { valetTheme } from "./theme";
 import { AppLayout } from "./components/AppLayout";
 
 function App() {
   return (
     <BrowserRouter>
-      <ConfigProvider theme={alfredTheme}>
+      <ConfigProvider theme={valetTheme}>
         <Routes>
           <Route path="*" element={<AppLayout />} />
         </Routes>

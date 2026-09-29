@@ -1,4 +1,4 @@
-# PLAN — Alfred (Asistente Inteligente)
+# PLAN — Valet (Asistente Inteligente)
 
 **Project Manager:** IA + Lorenzo Carbonell
 **Start Date:** 2026-09-01
@@ -10,7 +10,7 @@
 
 ## Executive Summary
 
-Alfred es un asistente inteligente conversacional con stack **Rust (Axum) + React + SQLite (SQLx)**. Procesa mensajes con streaming vía SSE, ejecuta herramientas (tools) registradas, e inyecta contexto de perfil automáticamente. Usa OpenSpec (SDD) + TDD como metodología de desarrollo.
+Valet es un asistente inteligente conversacional con stack **Rust (Axum) + React + SQLite (SQLx)**. Procesa mensajes con streaming vía SSE, ejecuta herramientas (tools) registradas, e inyecta contexto de perfil automáticamente. Usa OpenSpec (SDD) + TDD como metodología de desarrollo.
 
 **Arquitectura:** Monolito backend Rust con frontend React embebido. Despliegue con Podman/Docker. Base de datos SQLite por perfil. Las tools se registran en un `ToolRegistry` y el orquestador (`agent.rs`) las invoca según la respuesta del LLM.
 

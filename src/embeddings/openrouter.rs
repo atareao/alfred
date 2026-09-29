@@ -5,9 +5,9 @@ use serde::{Deserialize, Serialize};
 use crate::embeddings::provider::{EmbeddingError, EmbeddingProvider};
 
 /// Application name sent to OpenRouter for identification.
-const APP_NAME: &str = "Alfred";
+const APP_NAME: &str = "Valet";
 /// Application URL sent to OpenRouter for identification.
-const APP_URL: &str = "https://github.com/atareao/alfred";
+const APP_URL: &str = "https://github.com/atareao/valet-ai";
 
 #[derive(Debug, Serialize)]
 struct OpenRouterEmbedRequest {
@@ -151,13 +151,13 @@ mod tests {
             .or_else(|| headers.get("http-referer"))
             .or_else(|| headers.get("Http-Referer"))
             .and_then(|v| v.to_str().ok());
-        assert_eq!(referer, Some("https://github.com/atareao/alfred"));
+        assert_eq!(referer, Some("https://github.com/atareao/valet-ai"));
 
         let title = headers
             .get("X-Title")
             .or_else(|| headers.get("x-title"))
             .or_else(|| headers.get("X-title"))
             .and_then(|v| v.to_str().ok());
-        assert_eq!(title, Some("Alfred"));
+        assert_eq!(title, Some("Valet"));
     }
 }

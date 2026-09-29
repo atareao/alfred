@@ -37,7 +37,7 @@ impl ProfilesRepo {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         )
         .bind(&id)
-        .bind("Alfred User")
+        .bind("Valet User")
         .bind(Option::<String>::None)
         .bind(&default_prefs)
         .bind(&now)
@@ -47,7 +47,7 @@ impl ProfilesRepo {
 
         Ok(Profile {
             id,
-            name: "Alfred User".to_string(),
+            name: "Valet User".to_string(),
             avatar_url: None,
             preferences: json!({}),
             created_at: now.clone(),
@@ -118,7 +118,7 @@ mod tests {
     async fn test_get_or_create_creates_default() -> Result<(), Box<dyn std::error::Error>> {
         let pool = setup().await?;
         let profile = ProfilesRepo::get_or_create(&pool).await.unwrap();
-        assert_eq!(profile.name, "Alfred User");
+        assert_eq!(profile.name, "Valet User");
         assert!(profile.avatar_url.is_none());
 
         Ok(())
@@ -154,7 +154,7 @@ mod tests {
     async fn test_update_profile_partial_no_name() -> Result<(), Box<dyn std::error::Error>> {
         let pool = setup().await?;
         let profile = ProfilesRepo::update(&pool, None, None, Some(&json!({"lang": "es"}))).await?;
-        assert_eq!(profile.name, "Alfred User");
+        assert_eq!(profile.name, "Valet User");
         assert_eq!(profile.preferences["lang"], "es");
 
         Ok(())

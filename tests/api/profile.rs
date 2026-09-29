@@ -27,7 +27,7 @@ async fn test_update_profile() {
     let resp = app
         .put("/api/profile")
         .json(&json!({
-            "name": "Alfred User",
+            "name": "Valet User",
             "preferences": {"theme": "dark"}
         }))
         .send()
@@ -35,7 +35,7 @@ async fn test_update_profile() {
 
     assert_eq!(resp.status(), 200);
     let body = resp.json::<serde_json::Value>().await;
-    assert_eq!(body["name"], "Alfred User");
+    assert_eq!(body["name"], "Valet User");
     assert_eq!(body["preferences"]["theme"], "dark");
 }
 

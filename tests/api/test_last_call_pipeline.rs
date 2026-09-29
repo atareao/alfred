@@ -10,10 +10,10 @@ use serde_json::Value;
 #[tokio::test]
 async fn test_last_call_full_pipeline() {
     // 1. Create state
-    let state = alfred::AppState::new_in_memory().await;
+    let state = valet::AppState::new_in_memory().await;
     
     // 2. Save data (simulating what Orchestrator::save_last_call does)
-    let last = alfred::models::stats::LastApiCall {
+    let last = valet::models::stats::LastApiCall {
         model: "test-model-from-orchestrator".into(),
         request_body: Some("{\"model\":\"test\"}".into()),
         response_body: Some("{\"choices\":[]}".into()),
@@ -32,7 +32,7 @@ async fn test_last_call_full_pipeline() {
     *state.last_api_call.write().unwrap() = Some(last);
     
     // 3. Build app and issue HTTP request
-    let app = alfred::app_with_state(state);
+    let app = valet::app_with_state(state);
     let response = app
         .oneshot(
             Request::builder()

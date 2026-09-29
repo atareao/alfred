@@ -4,8 +4,8 @@ use uuid::Uuid;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let db_path = std::env::var("DATABASE_URL").unwrap_or_else(|_| "alfred.db".into());
-    let pool = alfred::db::init_db(&db_path).await?;
+    let db_path = std::env::var("DATABASE_URL").unwrap_or_else(|_| "valet.db".into());
+    let pool = valet::db::init_db(&db_path).await?;
 
     seed_profiles(&pool).await?;
     seed_events(&pool).await?;

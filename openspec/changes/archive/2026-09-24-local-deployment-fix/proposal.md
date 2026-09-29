@@ -2,7 +2,7 @@
 
 ## Why
 
-El `main.rs` actual hardcodea todos los valores: usa `"alfred.db"` como path de base de datos, no inicializa el orquestador ni los tools ni el LLM provider (todo es `None`), y bindea a `0.0.0.0:3000` fijo. Esto significa que el servidor arranca pero **no puede procesar mensajes de chat** porque el orquestador nunca se crea.
+El `main.rs` actual hardcodea todos los valores: usa `"valet.db"` como path de base de datos, no inicializa el orquestador ni los tools ni el LLM provider (todo es `None`), y bindea a `0.0.0.0:3000` fijo. Esto significa que el servidor arranca pero **no puede procesar mensajes de chat** porque el orquestador nunca se crea.
 
 Además, `docker-compose.yml` (dev) no pasa las variables de entorno necesarias (`OPENROUTER_API_KEY`, `AUTH_ENABLED`) al backend.
 
@@ -23,7 +23,7 @@ Además, `docker-compose.yml` (dev) no pasa las variables de entorno necesarias 
 ### docker-compose.yml (dev)
 - Añadir `OPENROUTER_API_KEY=${OPENROUTER_API_KEY}` y `OPENWEATHER_API_KEY=${OPENWEATHER_API_KEY}`
 - Añadir `AUTH_ENABLED=false` (sin PocketID en dev)
-- Añadir volumen `alfred_data` para persistencia de SQLite
+- Añadir volumen `valet_data` para persistencia de SQLite
 
 ### .env (nuevo)
 - Template con variables esenciales para desarrollo local

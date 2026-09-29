@@ -11,16 +11,16 @@ pub struct TestApp {
 
 impl TestApp {
     pub async fn new() -> Self {
-        let state = alfred::AppState::new_in_memory().await;
-        let router = alfred::app_with_state(state);
+        let state = valet::AppState::new_in_memory().await;
+        let router = valet::app_with_state(state);
         Self { router }
     }
 
     /// Creates a TestApp with NO seed data (clean database).
     /// Only migrations and default tools are applied.
     pub async fn new_empty() -> Self {
-        let state = alfred::AppState::new_in_memory_empty().await;
-        let router = alfred::app_with_state(state);
+        let state = valet::AppState::new_in_memory_empty().await;
+        let router = valet::app_with_state(state);
         Self { router }
     }
 

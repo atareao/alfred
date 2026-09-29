@@ -42,7 +42,7 @@ impl Default for OrchestratorConfig {
             enable_reflection: true,
             system_prompt_template:
                 r#"# Personalidad y Rol
-Eres **Alfred**, un asistente personal británico, extremadamente eficiente, impecable en sus formas pero con un carácter seco, irónico, sarcástico y burlesco. Posees un humor negro y ácido refinado. No sufres con gusto la ineptitud ni las preguntas obvias, aunque cumples tus tareas de forma impecable.
+Eres **Valet**, un asistente personal británico, extremadamente eficiente, impecable en sus formas pero con un carácter seco, irónico, sarcástico y burlesco. Posees un humor negro y ácido refinado. No sufres con gusto la ineptitud ni las preguntas obvias, aunque cumples tus tareas de forma impecable.
 
 # Principios de Interacción y Tono
 1. **Estilo Británico:** Mantén un tono flemático, flemático-sardónico y sofisticado. Utiliza expresiones o vocabulario con matices británicos cuando sea natural (e.g., *frightfully*, *splendid*, *bloody*, *my dear*, *indeed*).
@@ -112,6 +112,7 @@ Cuando usted hace una pregunta —por más obvia que sea—, extraigo los térmi
 * Le entrego únicamente lo que necesita saber, ahorrándole el fatídico esfuerzo de pensar. 🎩"#.into(),
         }
     }
+}
 
 // ---------------------------------------------------------------------------
 // Response types
@@ -1709,31 +1710,30 @@ mod tests {
         assert_eq!(config.max_iterations, 10);
         assert_eq!(config.max_tokens_per_turn, 4096);
         assert!(config.enable_reflection);
-        assert!(config.system_prompt_template.contains("Alfred"));
+        assert!(config.system_prompt_template.contains("Valet"));
         // New persona: mayordomo, conciso por defecto, expandido a petición
         assert!(
             config
                 .system_prompt_template
-                .contains("mayordomo británico"),
-            "debe definirse como mayordomo"
+                .contains("asistente personal británico"),
+            "debe definirse como asistente británico"
         );
         assert!(
-            config.system_prompt_template.contains("caballero"),
-            "debe tratar al usuario de caballero"
+            config.system_prompt_template.contains("británico"),
+            "debe tener personalidad británica"
         );
         assert!(
             config
                 .system_prompt_template
-                .contains("Modo por defecto: conciso"),
+                .contains("Modo Conciso (Predeterminado)"),
             "debe tener modo conciso por defecto"
         );
         assert!(
-            config.system_prompt_template.contains("expandido"),
+            config.system_prompt_template.contains("Expandido"),
             "debe tener modo expandido"
         );
         assert!(
-            config.system_prompt_template.contains("emojis")
-                || config.system_prompt_template.contains("Emojis"),
+            config.system_prompt_template.contains("Emojis"),
             "debe permitir emojis"
         );
     }

@@ -2,7 +2,7 @@
 
 ## Intent
 
-Completar el sistema de agenda/calendario de Alfred para que sea funcionalmente completo para uso real. Actualmente:
+Completar el sistema de agenda/calendario de Valet para que sea funcionalmente completo para uso real. Actualmente:
 1. El código de `CalendarTool` existe pero **nunca se registró en producción** en `lib.rs`
 2. Todas las tools filtran `profile_id` al LLM, obligándole a pedírselo al usuario
 3. La agenda tiene CRUD básico pero le faltan funcionalidades esenciales

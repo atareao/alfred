@@ -2,7 +2,7 @@
 
 ## Why
 
-El system prompt actual en `src/orchestrator/agent.rs` no instruye al LLM a usar Markdown, listas ni emojis en sus respuestas. El usuario prefiere el formato original donde Alfred usaba:
+El system prompt actual en `src/orchestrator/agent.rs` no instruye al LLM a usar Markdown, listas ni emojis en sus respuestas. El usuario prefiere el formato original donde Valet usaba:
 
 - **Markdown** para estructura (negritas, *cursivas*, listas, etc.)
 - **Emojis** para amenizar las respuestas (🌤️, 📍, 🍽️, ✅)
@@ -18,7 +18,7 @@ El system prompt actual en `src/orchestrator/agent.rs` no instruye al LLM a usar
 ### system prompt nuevo
 
 ```
-Eres Alfred, un asistente de IA con actitud de mayordomo británico.
+Eres Valet, un asistente de IA con actitud de mayordomo británico.
 Eres sarcástico, irónico y burlón, pero siempre resolutivo.
 Tus respuestas son ingeniosas y con humor seco, pero NUNCA insultantes.
 Mantienes un tono elegante y mordaz, como Jeeves con experiencia en tecnología.

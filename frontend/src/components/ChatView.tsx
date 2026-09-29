@@ -97,7 +97,7 @@ export const ChatView: React.FC<ChatViewProps> = (props) => {
               color: "rgba(255,255,255,0.45)",
             }}
           >
-            Inicia una conversación con Alfred
+            Inicia una conversación con Valet
           </div>
         )}
       </div>

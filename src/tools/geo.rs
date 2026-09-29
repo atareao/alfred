@@ -15,7 +15,7 @@ pub struct GeocodeTool {
 impl GeocodeTool {
     pub fn new() -> Self {
         let client = reqwest::Client::builder()
-            .user_agent("Alfred/1.0")
+            .user_agent("Valet/1.0")
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .expect("Failed to build reqwest Client");
@@ -126,7 +126,7 @@ pub struct ReverseGeocodeTool {
 impl ReverseGeocodeTool {
     pub fn new() -> Self {
         let client = reqwest::Client::builder()
-            .user_agent("Alfred/1.0")
+            .user_agent("Valet/1.0")
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .expect("Failed to build reqwest Client");

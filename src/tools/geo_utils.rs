@@ -36,7 +36,7 @@ pub async fn reverse_geocode(lat: f64, lon: f64) -> Option<String> {
     );
 
     let client = reqwest::Client::builder()
-        .user_agent("Alfred/0.5 (alfred@atareao.es)")
+        .user_agent("Valet/0.5 (valet@atareao.es)")
         .timeout(std::time::Duration::from_secs(5))
         .build()
         .ok()?;

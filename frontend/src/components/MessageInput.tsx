@@ -43,7 +43,7 @@ export const MessageInput = forwardRef<MessageInputHandle, MessageInputProps>(
           value={value}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Escribe un mensaje a Alfred..."
+          placeholder="Escribe un mensaje a Valet..."
           autoSize={{ minRows: 2, maxRows: 6 }}
           disabled={disabled}
           style={{ flex: 1 }}

@@ -12,7 +12,7 @@ async fn test_create_memory() {
     let resp = app
         .post("/api/memories")
         .json(&json!({
-            "content": "Alfred remembers this."
+            "content": "Valet remembers this."
         }))
         .send()
         .await;
@@ -20,7 +20,7 @@ async fn test_create_memory() {
     assert_eq!(resp.status(), 201);
     let body = resp.json::<serde_json::Value>().await;
     assert!(body.get("id").is_some());
-    assert_eq!(body["content"], "Alfred remembers this.");
+    assert_eq!(body["content"], "Valet remembers this.");
 }
 
 #[tokio::test]

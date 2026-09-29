@@ -9,7 +9,7 @@
 **And** no hay menú de navegación lateral
 
 #### Scenario: Sin sidebar de conversaciones
-**Given** el usuario abre Alfred  
+**Given** el usuario abre Valet  
 **When** se renderiza la página  
 **Then** no hay elemento con clase/rol de sidebar  
 **And** no hay lista de conversaciones

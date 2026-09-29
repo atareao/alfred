@@ -2,7 +2,7 @@
 
 ## Intent
 
-Añadir las 4 herramientas de valor que completan el ecosistema de Alfred:
+Añadir las 4 herramientas de valor que completan el ecosistema de Valet:
 - **Clima** (OpenWeather API) con coordenadas precisas
 - **Geolocalización** (Nominatim OSM) — geocoding directo e inverso + búsqueda de lugares
 - **Comidas y lista de la compra** — menús semanales según perfil dietético, generación automática de lista

@@ -1,7 +1,7 @@
 # Change Proposal: f3-frontend-chat
 
 ## Why
-Alfred es un asistente personal, no un foro de múltiples hilos. Tiene que sentirse como hablar con una persona: un único chat persistente que guarda todo el historial. Los chats efímeros son para consultas puntuales (ej. "tiempo en Nardó") que aparecen como una conversación temporal y se descartan.
+Valet es un asistente personal, no un foro de múltiples hilos. Tiene que sentirse como hablar con una persona: un único chat persistente que guarda todo el historial. Los chats efímeros son para consultas puntuales (ej. "tiempo en Nardó") que aparecen como una conversación temporal y se descartan.
 
 ## What Changes
 Se implementa una UI de chat único con sidebar minimalista: el chat principal siempre visible y, opcionalmente, chats efímeros como items adicionales. Sin CRUD de conversaciones en el frontend (la API existe para cuando el orquestador la necesite).

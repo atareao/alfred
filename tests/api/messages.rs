@@ -12,7 +12,7 @@ async fn test_create_message() {
         .post("/api/messages")
         .json(&json!({
             "role": "user",
-            "content": "Hello, Alfred!"
+            "content": "Hello, Valet!"
         }))
         .send()
         .await;
@@ -21,7 +21,7 @@ async fn test_create_message() {
     let body = resp.json::<serde_json::Value>().await;
     assert!(body.get("id").is_some());
     assert_eq!(body["role"], "user");
-    assert_eq!(body["content"], "Hello, Alfred!");
+    assert_eq!(body["content"], "Hello, Valet!");
 }
 
 #[tokio::test]

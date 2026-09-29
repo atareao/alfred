@@ -1,7 +1,7 @@
 # Change Proposal: f1-scaffolding
 
 ## Intent
-Crear el esqueleto completo del proyecto Alfred: backend Rust + Axum, frontend Vite + React + Antd, base de datos SQLite + sqlite-vec, y tooling de desarrollo (justfile, docker-compose dev). El objetivo es que el proyecto compile, se ejecute, tenga un health check funcional, y el frontend renderice.
+Crear el esqueleto completo del proyecto Valet: backend Rust + Axum, frontend Vite + React + Antd, base de datos SQLite + sqlite-vec, y tooling de desarrollo (justfile, docker-compose dev). El objetivo es que el proyecto compile, se ejecute, tenga un health check funcional, y el frontend renderice.
 
 ## Scope
 

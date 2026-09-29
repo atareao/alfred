@@ -5,7 +5,7 @@
 ### Configuración de tema (theme.ts)
 
 ```typescript
-export const alfredTheme: ThemeConfig = {
+export const valetTheme: ThemeConfig = {
   token: {
     colorPrimary: '#1677ff',
     borderRadius: 6,
@@ -220,7 +220,7 @@ márgenes residuales del body o de los estilos por defecto de antd.
 #### Scenario: Export exitoso
 **Given** hay datos en llm_requests
 **When** el usuario clica "Export CSV"
-**Then** el navegador descarga `alfred-llm-requests.csv`
+**Then** el navegador descarga `valet-llm-requests.csv`
 **And** el contenido es un CSV válido con cabeceras
 
 ### Requirement: StatsDashboard SHALL allow configuring retention days from UI

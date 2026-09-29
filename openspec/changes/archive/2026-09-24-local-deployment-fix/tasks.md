@@ -8,7 +8,7 @@
 - [x] **1.3** REFACTOR: `cargo clippy -- -D warnings`, `cargo test`
 
 ### Grupo B: Infraestructura (docker-compose.yml + .env)
-- [x] **2.1** GREEN: actualizar `docker-compose.yml` con env vars y volumen alfred_data
+- [x] **2.1** GREEN: actualizar `docker-compose.yml` con env vars y volumen valet_data
 - [x] **2.2** GREEN: crear `.env` template con valores por defecto
 - [x] **2.3** VERIFY: `podman-compose config` valida el YAML
 

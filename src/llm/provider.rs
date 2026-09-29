@@ -74,14 +74,14 @@ impl<'de> serde::Deserialize<'de> for ToolDef {
         //   1. Flat format: {"name", "description", "parameters"}
         //   2. Wrapped format: {"type": "function", "function": {"name", ...}}
         let v = serde_json::Value::deserialize(deserializer)?;
-        
+
         // Try wrapped format first (function key exists)
         if let Some(func) = v.get("function") {
-            if let (Some(name), Some(description), Some(parameters)) =
-                (func.get("name").and_then(|s| s.as_str()),
-                 func.get("description").and_then(|s| s.as_str()),
-                 func.get("parameters"))
-            {
+            if let (Some(name), Some(description), Some(parameters)) = (
+                func.get("name").and_then(|s| s.as_str()),
+                func.get("description").and_then(|s| s.as_str()),
+                func.get("parameters"),
+            ) {
                 return Ok(ToolDef {
                     name: name.to_string(),
                     description: description.to_string(),
@@ -89,20 +89,20 @@ impl<'de> serde::Deserialize<'de> for ToolDef {
                 });
             }
         }
-        
+
         // Fall back to flat format (name key exists at top level)
-        if let (Some(name), Some(description), Some(parameters)) =
-            (v.get("name").and_then(|s| s.as_str()),
-             v.get("description").and_then(|s| s.as_str()),
-             v.get("parameters"))
-        {
+        if let (Some(name), Some(description), Some(parameters)) = (
+            v.get("name").and_then(|s| s.as_str()),
+            v.get("description").and_then(|s| s.as_str()),
+            v.get("parameters"),
+        ) {
             return Ok(ToolDef {
                 name: name.to_string(),
                 description: description.to_string(),
                 parameters: parameters.clone(),
             });
         }
-        
+
         Err(serde::de::Error::custom(
             "expected ToolDef with name, description, and parameters (flat or wrapped)",
         ))

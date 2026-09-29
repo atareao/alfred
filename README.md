@@ -1,6 +1,6 @@
-# 🧠 Alfred — Life Operating System
+# 🧠 Valet — Life Operating System
 
-Un asistente ejecutivo y de vida personal auto-hospedado para el hogar. Diseñado para parejas o convivientes, Alfred gestiona el tiempo, la productividad, la alimentación, las relaciones y la rutina diaria.
+Un asistente ejecutivo y de vida personal auto-hospedado para el hogar. Diseñado para parejas o convivientes, Valet gestiona el tiempo, la productividad, la alimentación, las relaciones y la rutina diaria.
 
 ## Características
 
@@ -16,7 +16,7 @@ Un asistente ejecutivo y de vida personal auto-hospedado para el hogar. Diseñad
 
 ## 🧠 Memoria Episódica
 
-Alfred cuenta con un sistema de memoria episódica de dos capas:
+Valet cuenta con un sistema de memoria episódica de dos capas:
 
 - **Capa A (mensajes en bruto)**: Tabla `messages` con cada interacción usuario↔asistente
 - **Capa B (fichas episódicas)**: Tabla `memory` con resúmenes sintéticos generados por un LLM secundario
@@ -53,8 +53,8 @@ En el chat, el orquestador usa **RAG**: genera embedding de la consulta del usua
 
 ```bash
 # 1. Clonar
-git clone https://github.com/tu-usuario/alfred.git
-cd alfred
+git clone https://github.com/tu-usuario/valet-ai.git
+cd valet
 
 # 2. Backend
 cp .env.example .env
@@ -72,7 +72,7 @@ Variables de entorno principales (ver `.env.example`):
 
 | Variable | Descripción | Default |
 |----------|-------------|---------|
-| `DATABASE_URL` | Ruta a la BD SQLite | `alfred.db` |
+| `DATABASE_URL` | Ruta a la BD SQLite | `valet.db` |
 | `OPENROUTER_API_KEY` | API key de OpenRouter | — |
 | `OPENWEATHER_API_KEY` | API key de OpenWeather | — |
 | `AUTH_ENABLED` | Habilitar autenticación | `false` |
