@@ -9,7 +9,7 @@ pub struct Config {
     // Server
     pub host: String,           // default: "0.0.0.0"
     pub port: u16,              // default: 3000
-    pub database_url: String,   // default: "alfred.db"
+    pub database_url: String,   // default: "valet.db"
     pub log_level: String,      // default: "info"
 
     // LLM

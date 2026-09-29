@@ -42,7 +42,7 @@ impl Default for OrchestratorConfig {
             enable_reflection: true,
             system_prompt_template:
                 r#"# Personalidad y Rol
-Eres **Alfred**, un asistente personal británico, extremadamente eficiente, impecable en sus formas pero con un carácter seco, irónico, sarcástico y burlesco. Posees un humor negro y ácido refinado. No sufres con gusto la ineptitud ni las preguntas obvias, aunque cumples tus tareas de forma impecable.
+Eres **Valet**, un asistente personal británico, extremadamente eficiente, impecable en sus formas pero con un carácter seco, irónico, sarcástico y burlesco. Posees un humor negro y ácido refinado. No sufres con gusto la ineptitud ni las preguntas obvias, aunque cumples tus tareas de forma impecable.
 
 # Principios de Interacción y Tono
 1. **Estilo Británico:** Mantén un tono flemático, flemático-sardónico y sofisticado. Utiliza expresiones o vocabulario con matices británicos cuando sea natural (e.g., *frightfully*, *splendid*, *bloody*, *my dear*, *indeed*).
@@ -219,6 +219,10 @@ pub enum SSEEvent {
     Done {
         message_id: String,
         user_message_id: String,
+        location: Option<String>,
+        tools_used: Option<String>,
+        user_location: Option<String>,
+        user_created_at: String,
     },
 
     /// An error occurred during processing.
@@ -897,6 +901,7 @@ impl Orchestrator {
                 None,
                 None,
                 location.as_deref(),
+                None, // tools_used (user messages don't have this)
                 2000,
                 collapse_callback,
             )
@@ -1033,6 +1038,7 @@ impl Orchestrator {
                         if let Some(tcs) = tool_calls {
                             let content = content_buffer.clone();
 
+                            tracing::debug!(tool_calls_from_stream = ?tool_calls_from_stream.as_ref().map(|t| t.len()), response_tool_calls = ?response.message.tool_calls.as_ref().map(|t| t.len()), "📦 Orchestrator tool_calls check");
                             tracing::debug!(
                                 iteration = %iterations,
                                 tool_call_count = %tcs.len(),
@@ -1081,7 +1087,7 @@ impl Orchestrator {
                                             None => tc.name.clone(),
                                         };
                                         let tool_count =
-                                            tool_call_counts.entry(op_key).or_insert(0);
+                                            tool_call_counts.entry(op_key.clone()).or_insert(0);
                                         *tool_count += 1;
                                         if *tool_count > MAX_TOOL_RETRIES {
                                             let display_name = match op {
@@ -1152,7 +1158,7 @@ impl Orchestrator {
                                         match tool_result.success {
                                             true => {
                                                 // Track the tool name for the footer
-                                                used_tools.push(tc.name.clone());
+                                                used_tools.push(op_key.clone());
 
                                                 // Emit success event
                                                 let _ = tx
@@ -1228,11 +1234,29 @@ impl Orchestrator {
                             continue 'react_loop;
                         } else {
                             // No tool calls — final answer
-                            let final_text = if !used_tools.is_empty() {
-                                let footer = format!("\n\n---\n🔧 {}", used_tools.join(" · "));
-                                format!("{}{}", content_buffer, footer)
+
+                            // Build tools_used string with counts
+                            let tools_used: Option<String> = if !used_tools.is_empty() {
+                                let mut counts: std::collections::HashMap<String, usize> =
+                                    std::collections::HashMap::new();
+                                for t in &used_tools {
+                                    *counts.entry(t.clone()).or_insert(0) += 1;
+                                }
+                                let mut parts: Vec<String> = Vec::new();
+                                // Sort for deterministic output
+                                let mut keys: Vec<&String> = counts.keys().collect();
+                                keys.sort();
+                                for key in keys {
+                                    let count = counts[key];
+                                    if count > 1 {
+                                        parts.push(format!("({}) {}", count, key));
+                                    } else {
+                                        parts.push(key.clone());
+                                    }
+                                }
+                                Some(parts.join(", "))
                             } else {
-                                content_buffer.clone()
+                                None
                             };
 
                             // Persist assistant message to DB (capture the real UUID)
@@ -1247,10 +1271,11 @@ impl Orchestrator {
                                 let msg = crate::db::repos::messages::MessagesRepo::create(
                                     &self.db,
                                     "assistant",
-                                    &final_text,
+                                    &content_buffer,
                                     None,
                                     None,
                                     location.as_deref(),
+                                    tools_used.as_deref(),
                                     2000,
                                     collapse_callback,
                                 )
@@ -1263,10 +1288,27 @@ impl Orchestrator {
                                 let _ = tx.send(()).await;
                             }
 
+                            // Fetch user message metadata for the frontend
+                            let (user_location, user_created_at) = {
+                                crate::db::repos::messages::MessagesRepo::find_by_id(
+                                    &self.db,
+                                    &user_message_id,
+                                )
+                                .await
+                                .ok()
+                                .flatten()
+                                .map(|msg| (msg.location, msg.created_at))
+                                .unwrap_or_else(|| (None, String::new()))
+                            };
+
                             let _ = tx
                                 .send(SSEEvent::Done {
                                     message_id: assistant_message_id,
                                     user_message_id: user_message_id.clone(),
+                                    location: location.clone(),
+                                    tools_used: tools_used.clone(),
+                                    user_location,
+                                    user_created_at,
                                 })
                                 .await
                                 .ok();
@@ -1575,6 +1617,10 @@ mod tests {
         let event = SSEEvent::Done {
             message_id: "msg-123".to_string(),
             user_message_id: "msg-user-123".to_string(),
+            location: None,
+            tools_used: None,
+            user_location: None,
+            user_created_at: String::new(),
         };
         let json = event.to_json_string();
         assert!(json.contains(r#""type":"done""#));
@@ -1587,6 +1633,10 @@ mod tests {
         let event = SSEEvent::Done {
             message_id: "msg-1".to_string(),
             user_message_id: "user-1".to_string(),
+            location: None,
+            tools_used: None,
+            user_location: None,
+            user_created_at: String::new(),
         };
         let json = event.to_json_string();
         assert!(json.contains(r#""type":"done""#));
@@ -1660,31 +1710,30 @@ mod tests {
         assert_eq!(config.max_iterations, 10);
         assert_eq!(config.max_tokens_per_turn, 4096);
         assert!(config.enable_reflection);
-        assert!(config.system_prompt_template.contains("Alfred"));
+        assert!(config.system_prompt_template.contains("Valet"));
         // New persona: mayordomo, conciso por defecto, expandido a petición
         assert!(
             config
                 .system_prompt_template
-                .contains("mayordomo británico"),
-            "debe definirse como mayordomo"
+                .contains("asistente personal británico"),
+            "debe definirse como asistente británico"
         );
         assert!(
-            config.system_prompt_template.contains("caballero"),
-            "debe tratar al usuario de caballero"
+            config.system_prompt_template.contains("británico"),
+            "debe tener personalidad británica"
         );
         assert!(
             config
                 .system_prompt_template
-                .contains("Modo por defecto: conciso"),
+                .contains("Modo Conciso (Predeterminado)"),
             "debe tener modo conciso por defecto"
         );
         assert!(
-            config.system_prompt_template.contains("expandido"),
+            config.system_prompt_template.contains("Expandido"),
             "debe tener modo expandido"
         );
         assert!(
-            config.system_prompt_template.contains("emojis")
-                || config.system_prompt_template.contains("Emojis"),
+            config.system_prompt_template.contains("Emojis"),
             "debe permitir emojis"
         );
     }
@@ -1936,14 +1985,14 @@ mod tests {
 
         let last_msg = assistant_messages.last().unwrap();
         assert!(
-            last_msg.content.contains("🔧 weather"),
-            "Assistant message should contain tool footer with '🔧 weather', got: {}",
-            last_msg.content
+            last_msg.tools_used.is_some(),
+            "Assistant message should have tools_used set, got: {:?}",
+            last_msg.tools_used
         );
         assert!(
-            last_msg.content.contains("---"),
-            "Assistant message should contain '---' separator in footer, got: {}",
-            last_msg.content
+            last_msg.tools_used.as_deref().unwrap().contains("weather"),
+            "tools_used should contain 'weather', got: {:?}",
+            last_msg.tools_used
         );
         assert!(
             last_msg

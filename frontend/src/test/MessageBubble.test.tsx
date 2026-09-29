@@ -20,7 +20,7 @@ describe("MessageBubble", () => {
     const msg: Message = {
       id: "2",
       role: "assistant",
-      content: "Hola, soy Alfred",
+      content: "Hola, soy Valet",
       created_at: "2024-01-01T00:00:00Z",
     };
     const { container } = render(<MessageBubble message={msg} />);

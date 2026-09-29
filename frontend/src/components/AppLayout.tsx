@@ -52,7 +52,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
         }}
       >
         <Text strong style={{ color: "#fff", fontSize: 18 }}>
-          💬 Alfred
+          💬 Valet
         </Text>
         <Space>
           <Button

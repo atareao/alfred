@@ -45,6 +45,7 @@ pub struct Message {
     pub is_indexed: bool,
     pub summary_ref: Option<String>,
     pub location: Option<String>,
+    pub tools_used: Option<String>,
     pub created_at: String,
 }
 
@@ -54,6 +55,7 @@ pub struct CreateMessage {
     pub content: String,
     pub tool_calls: Option<Value>,
     pub tool_results: Option<Value>,
+    pub tools_used: Option<String>,
 }
 
 /// Estimate the number of tokens in a markdown text string using a heuristic.
@@ -116,6 +118,7 @@ mod tests {
             summary_ref: None,
             created_at: "2024-01-01T00:00:00Z".to_string(),
             location: Some("Barcelona".to_string()),
+            tools_used: None,
         };
         assert_eq!(msg.location, Some("Barcelona".to_string()));
     }

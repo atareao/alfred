@@ -24,8 +24,8 @@ impl StreamAccumulator {
 ### Application Identification Headers
 
 ```rust
-const APP_NAME: &str = "Alfred";
-const APP_URL: &str = "https://github.com/atareao/alfred";
+const APP_NAME: &str = "Valet";
+const APP_URL: &str = "https://github.com/atareao/valet-ai";
 ```
 
 Los métodos `chat()`, `chat_stream()` y `embed()` de `OpenRouterProvider` (en `src/llm/openrouter.rs`), así como `embed()` de `embeddings::OpenRouterProvider` (en `src/embeddings/openrouter.rs`), añaden los headers `HTTP-Referer` y `X-Title` a todas las peticiones HTTP a OpenRouter.
@@ -80,7 +80,7 @@ Los métodos `chat()`, `chat_stream()` y `embed()` de `OpenRouterProvider` (en `
 
 **Given** un `OpenRouterProvider` configurado  
 **When** se llama a `chat()` con un `ChatRequest` válido  
-**Then** la petición HTTP incluye los headers `HTTP-Referer: https://github.com/atareao/alfred` y `X-Title: Alfred`
+**Then** la petición HTTP incluye los headers `HTTP-Referer: https://github.com/atareao/valet-ai` y `X-Title: Valet`
 
 ### Scenario 6: chat_stream() sends application identification headers
 

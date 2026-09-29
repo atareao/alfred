@@ -39,7 +39,7 @@ impl IntoResponse for CsvResponse {
             .header("Content-Type", "text/csv; charset=utf-8")
             .header(
                 "Content-Disposition",
-                "attachment; filename=\"alfred-llm-requests.csv\"",
+                "attachment; filename=\"valet-llm-requests.csv\"",
             )
             .body(Body::from(self.0))
             .unwrap()

@@ -11,7 +11,7 @@ async fn setup() -> SqlitePool {
         )
         .await
         .unwrap();
-    alfred::db::schema::run_migrations(&pool).await.unwrap();
+    valet::db::schema::run_migrations(&pool).await.unwrap();
     pool
 }
 
@@ -78,10 +78,10 @@ async fn test_migration_is_idempotent() {
         .unwrap();
 
     // First call
-    alfred::db::schema::run_migrations(&pool).await.unwrap();
+    valet::db::schema::run_migrations(&pool).await.unwrap();
 
     // Second call — should not error
-    alfred::db::schema::run_migrations(&pool).await.unwrap();
+    valet::db::schema::run_migrations(&pool).await.unwrap();
 }
 
 // ── F5c: Tools de Valor — Schema tests ─────────────────────────────────────
@@ -172,8 +172,8 @@ async fn test_idempotent_includes_new_tables() {
         .unwrap();
 
     // Call twice
-    alfred::db::schema::run_migrations(&pool).await.unwrap();
-    alfred::db::schema::run_migrations(&pool).await.unwrap();
+    valet::db::schema::run_migrations(&pool).await.unwrap();
+    valet::db::schema::run_migrations(&pool).await.unwrap();
 
     let tables: Vec<String> =
         sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")

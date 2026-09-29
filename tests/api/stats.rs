@@ -7,9 +7,9 @@ use serde_json::Value;
 /// Helper: create a TestApp with no seed data and return it alongside a
 /// writable database pool so tests can insert LLM request rows directly.
 async fn setup() -> (sqlx::SqlitePool, TestApp) {
-    let state = alfred::AppState::new_in_memory_empty().await;
+    let state = valet::AppState::new_in_memory_empty().await;
     let db = state.db.clone();
-    let router = alfred::app_with_state(state);
+    let router = valet::app_with_state(state);
     (db, TestApp { router })
 }
 
@@ -482,7 +482,7 @@ async fn test_export_csv() {
     assert!(disposition
         .to_str()
         .unwrap()
-        .contains("alfred-llm-requests.csv"));
+        .contains("valet-llm-requests.csv"));
 
     // Read the body as text (CSV)
     let csv_text = resp.text().await;

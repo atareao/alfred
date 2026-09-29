@@ -1,6 +1,6 @@
 use std::env;
 
-/// Centralized configuration for Alfred.
+/// Centralized configuration for Valet.
 ///
 /// All environment variables are read once via [`Config::from_env`] and
 /// exposed as typed fields with sensible defaults.
@@ -64,7 +64,7 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(3000),
-            database_url: env::var("DATABASE_URL").unwrap_or_else(|_| "alfred.db".into()),
+            database_url: env::var("DATABASE_URL").unwrap_or_else(|_| "valet.db".into()),
             log_level: env::var("LOG_LEVEL").unwrap_or_else(|_| "info".into()),
 
             openrouter_api_key: env::var("OPENROUTER_API_KEY").ok(),
@@ -181,7 +181,7 @@ mod tests {
 
         assert_eq!(cfg.host, "0.0.0.0");
         assert_eq!(cfg.port, 3000);
-        assert_eq!(cfg.database_url, "alfred.db");
+        assert_eq!(cfg.database_url, "valet.db");
         assert_eq!(cfg.log_level, "info");
 
         assert!(cfg.openrouter_api_key.is_none());

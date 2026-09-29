@@ -2,7 +2,7 @@
 
 ## Intent
 
-Completar Alfred con las funcionalidades que lo hacen un sistema autónomo y preparado para producción:
+Completar Valet con las funcionalidades que lo hacen un sistema autónomo y preparado para producción:
 
 - **Workers proactivos**: briefing matutino, detección de conflictos, preparación de viajes, consolidación nocturna
 - **Infraestructura**: logging estructurado, configuración desde entorno, CORS

@@ -3,7 +3,7 @@ import type { ThemeConfig } from "antd";
 
 const { darkAlgorithm } = theme;
 
-export const alfredTheme: ThemeConfig = {
+export const valetTheme: ThemeConfig = {
   algorithm: darkAlgorithm,
   token: {
     colorPrimary: "#1677ff",

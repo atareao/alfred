@@ -112,7 +112,7 @@ impl GooglePlacesClient {
     /// Create a new client with the given API key.
     pub fn new(api_key: String) -> Self {
         let http = reqwest::Client::builder()
-            .user_agent("alfred/1.0")
+            .user_agent("valet/1.0")
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .expect("Failed to create HTTP client");

@@ -53,14 +53,14 @@ impl ContextBuilder {
     ) -> Result<BuiltContext, ContextError> {
         match strategy {
             ContextStrategy::SlidingWindow => Ok(BuiltContext {
-                system_prompt: "You are Alfred, a helpful AI assistant.".into(),
+                system_prompt: "You are Valet, a helpful AI assistant.".into(),
                 messages: vec![],
                 token_estimate: 500,
                 rag_memories: vec![],
                 session_summary: None,
             }),
             ContextStrategy::Historical => Ok(BuiltContext {
-                system_prompt: "You are Alfred, analyzing historical data.".into(),
+                system_prompt: "You are Valet, analyzing historical data.".into(),
                 messages: vec![],
                 token_estimate: 5000,
                 rag_memories: vec![],
@@ -70,7 +70,7 @@ impl ContextBuilder {
                 let rag_memories = self.build_rag_memories(user_message).await;
                 let token_estimate = rag_memories.iter().map(|m| m.len()).sum::<usize>() + 500;
                 Ok(BuiltContext {
-                    system_prompt: "You are Alfred, using RAG context.".into(),
+                    system_prompt: "You are Valet, using RAG context.".into(),
                     messages: vec![],
                     token_estimate,
                     rag_memories,
@@ -165,7 +165,7 @@ mod tests {
         let ctx = builder
             .build(ContextStrategy::SlidingWindow, "profile-1", "hello")
             .await?;
-        assert!(ctx.system_prompt.contains("Alfred"));
+        assert!(ctx.system_prompt.contains("Valet"));
         assert!(ctx.token_estimate <= 2000);
         Ok(())
     }

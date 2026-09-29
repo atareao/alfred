@@ -1,7 +1,7 @@
 # F5a: Núcleo del Orquestador
 
 ## Intención
-Implementar el núcleo del orquestador de Alfred: LLM providers (OpenRouter + Ollama + fallback), sistema de tools (trait + registry + permission), guardrails con human-in-the-loop, clasificador de contexto (3 estrategias + override manual), constructor de contexto, ventana deslizante con resumen de sesión, ciclo ReAct completo, analizador de segundo plano (reflexión), streaming SSE, y autenticación PocketID + JWT.
+Implementar el núcleo del orquestador de Valet: LLM providers (OpenRouter + Ollama + fallback), sistema de tools (trait + registry + permission), guardrails con human-in-the-loop, clasificador de contexto (3 estrategias + override manual), constructor de contexto, ventana deslizante con resumen de sesión, ciclo ReAct completo, analizador de segundo plano (reflexión), streaming SSE, y autenticación PocketID + JWT.
 
 ## Alcance
 - **Incluye:** 16 tareas definidas en PLAN.md (5a.1 a 5a.16)

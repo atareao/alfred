@@ -1,7 +1,7 @@
 # Change Proposal: f2-api-core
 
 ## Why
-La Fase 1 estableció el scaffolding del proyecto. Ahora necesitamos la API REST funcional que Alfred usará para gestionar conversaciones, mensajes, perfiles de usuario y herramientas. Sin esta capa, el frontend no puede operar ni el orquestador (Fase 5a) puede ejecutar tools.
+La Fase 1 estableció el scaffolding del proyecto. Ahora necesitamos la API REST funcional que Valet usará para gestionar conversaciones, mensajes, perfiles de usuario y herramientas. Sin esta capa, el frontend no puede operar ni el orquestador (Fase 5a) puede ejecutar tools.
 
 ## What Changes
 Se implementan los endpoints REST completos con sus modelos de datos, repositorios SQLite, handlers y rutas Axum. Se añaden tests de integración para cada endpoint.

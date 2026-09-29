@@ -1,7 +1,7 @@
 # F5b: Tools Core
 
 ## Intención
-Implementar las tools esenciales del día a día de Alfred: Agenda (eventos), Tareas, Recordatorios, Notas/Conocimiento, y Contactos. Cada tool sigue el `Tool` trait definido en F5a y opera sobre tablas SQLite con scope `shared`/`personal` para el modelo de dos perfiles.
+Implementar las tools esenciales del día a día de Valet: Agenda (eventos), Tareas, Recordatorios, Notas/Conocimiento, y Contactos. Cada tool sigue el `Tool` trait definido en F5a y opera sobre tablas SQLite con scope `shared`/`personal` para el modelo de dos perfiles.
 
 ## Alcance
 - **Incluye:** 7 tareas del PLAN.md (5b.1 a 5b.7)

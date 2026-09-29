@@ -1,14 +1,14 @@
 services:
-  alfred:
+  valet:
     build:
       context: .
       dockerfile: Dockerfile
     ports:
       - "3000:3000"
     volumes:
-      - alfred_data:/app/data
+      - valet_data:/app/data
     environment:
-      - DATABASE_URL=/app/data/alfred.db
+      - DATABASE_URL=/app/data/valet.db
       - RUST_LOG=debug
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - OPENROUTER_MODEL=${OPENROUTER_MODEL}
@@ -18,4 +18,4 @@ services:
       - AUTH_ENABLED=false
 
 volumes:
-  alfred_data:
+  valet_data:

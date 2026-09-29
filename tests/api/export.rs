@@ -5,7 +5,7 @@ use tower::ServiceExt;
 
 #[tokio::test]
 async fn test_export_returns_json() {
-    let app = alfred::app().await;
+    let app = valet::app().await;
     let response = app
         .oneshot(
             Request::builder()
@@ -40,7 +40,7 @@ async fn test_export_returns_json() {
 
 #[tokio::test]
 async fn test_export_contains_seeded_data() {
-    let app = alfred::app().await;
+    let app = valet::app().await;
     let response = app
         .oneshot(
             Request::builder()

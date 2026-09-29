@@ -11,7 +11,7 @@ async fn setup() -> SqlitePool {
         )
         .await
         .unwrap();
-    alfred::db::schema::run_migrations(&pool).await.unwrap();
+    valet::db::schema::run_migrations(&pool).await.unwrap();
     pool
 }
 
@@ -190,10 +190,10 @@ async fn test_migration_is_idempotent_for_llm_requests() {
         .unwrap();
 
     // First call
-    alfred::db::schema::run_migrations(&pool).await.unwrap();
+    valet::db::schema::run_migrations(&pool).await.unwrap();
 
     // Second call — should not error
-    alfred::db::schema::run_migrations(&pool).await.unwrap();
+    valet::db::schema::run_migrations(&pool).await.unwrap();
 
     // Table still exists and is usable
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM llm_requests")
@@ -215,7 +215,7 @@ async fn test_stats_repo_inserts_llm_request() {
     let pool = setup().await;
 
     // 1. Verify the repo summary handles an empty table
-    let summary = alfred::db::repos::stats::StatsRepo::summary(&pool)
+    let summary = valet::db::repos::stats::StatsRepo::summary(&pool)
         .await
         .unwrap();
     assert_eq!(summary.total_calls, 0, "empty table should report 0 calls");
@@ -234,7 +234,7 @@ async fn test_stats_repo_inserts_llm_request() {
     .unwrap();
 
     // 3. Verify the row is readable via summary
-    let summary = alfred::db::repos::stats::StatsRepo::summary(&pool)
+    let summary = valet::db::repos::stats::StatsRepo::summary(&pool)
         .await
         .unwrap();
     assert_eq!(summary.total_calls, 1);
@@ -247,7 +247,7 @@ async fn test_stats_repo_inserts_llm_request() {
     assert_eq!(summary.total_errors, 0);
 
     // 4. Verify by_model returns one row
-    let models = alfred::db::repos::stats::StatsRepo::by_model(&pool)
+    let models = valet::db::repos::stats::StatsRepo::by_model(&pool)
         .await
         .unwrap();
     assert_eq!(models.len(), 1);
@@ -255,7 +255,7 @@ async fn test_stats_repo_inserts_llm_request() {
     assert_eq!(models[0].calls, 1);
 
     // 5. Verify export_csv includes the row
-    let csv = alfred::db::repos::stats::StatsRepo::export_csv(&pool)
+    let csv = valet::db::repos::stats::StatsRepo::export_csv(&pool)
         .await
         .unwrap();
     assert!(csv.contains(&id), "CSV should contain the inserted row id");

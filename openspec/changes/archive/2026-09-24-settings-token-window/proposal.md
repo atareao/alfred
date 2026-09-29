@@ -33,7 +33,7 @@ Seed de valores por defecto:
 ```sql
 INSERT OR IGNORE INTO settings (key, value) VALUES 
     ('max_window_tokens', '10000'),
-    ('system_prompt', 'Eres Alfred...');
+    ('system_prompt', 'Eres Valet...');
 ```
 
 ### 2. SettingsRepo (`src/db/repos/settings.rs`)

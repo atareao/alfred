@@ -108,7 +108,7 @@ export const api = {
 
 Se necesita añadir un endpoint que devuelva o cree la conversación principal:
 - Busca la primera conversación por created_at ASC
-- Si no existe, la crea con título "Alfred"
+- Si no existe, la crea con título "Valet"
 - GET /api/conversations/main → Conversation
 
 ## Scenarios (BDD)
@@ -121,9 +121,9 @@ Se necesita añadir un endpoint que devuelva o cree la conversación principal:
 ### Scenario: API client gets main conversation
 - **Given** no conversation exists yet
 - **When** `api.getMainConversation()` is called
-- **Then** creates and returns a conversation with title "Alfred"
+- **Then** creates and returns a conversation with title "Valet"
 
 ### Scenario: API client gets profile
 - **Given** no profile exists
 - **When** `api.getProfile()` is called
-- **Then** returns a Profile with default name "Alfred User"
+- **Then** returns a Profile with default name "Valet User"

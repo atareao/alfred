@@ -6,7 +6,7 @@ Tres problemas detectados en uso real:
 
 1. **Clima**: al pedir pronóstico para "mañana", el LLM pasa "2026-09-25" (sin hora), el parseo a `DateTime<Utc>` falla, y `get_forecast` coge `list.first()` (hoy). Además, `extract_weather_data` busca `sys.sunrise/sunset` que no existe en forecast entries.
 
-2. **Feedback**: el backend emite eventos `tool_call` y `tool_result` vía SSE, pero el frontend los ignora — nunca se muestra "Alfred está ejecutando weather..." al usuario.
+2. **Feedback**: el backend emite eventos `tool_call` y `tool_result` vía SSE, pero el frontend los ignora — nunca se muestra "Valet está ejecutando weather..." al usuario.
 
 3. **Footer**: no hay forma de saber qué tools se usaron en una respuesta. Queremos algo como:
 ```

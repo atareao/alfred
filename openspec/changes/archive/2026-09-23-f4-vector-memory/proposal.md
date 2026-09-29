@@ -1,7 +1,7 @@
 # Change Proposal: f4-vector-memory
 
 ## Why
-Alfred necesita recordar. No solo búsqueda textual (FTS5 ya existe en el esquema), sino **búsqueda semántica**: entender el significado de lo que el usuario dice para encontrar información relevante aunque no use las mismas palabras. Esto es la base del sistema de memoria de 3 capas (Fase 5a).
+Valet necesita recordar. No solo búsqueda textual (FTS5 ya existe en el esquema), sino **búsqueda semántica**: entender el significado de lo que el usuario dice para encontrar información relevante aunque no use las mismas palabras. Esto es la base del sistema de memoria de 3 capas (Fase 5a).
 
 ## What Changes
 Se implementa el pipeline completo de memoria vectorial: generación de embeddings (Ollama local / OpenRouter remoto), indexado automático de mensajes y memorias, búsqueda híbrida (vector + FTS5 con RRF), y endpoints de búsqueda.

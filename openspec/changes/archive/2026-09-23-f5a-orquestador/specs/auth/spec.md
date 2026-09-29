@@ -1,15 +1,15 @@
 ## ADDED Requirements
 
 ### Requirement: PocketID OIDC authentication
-Alfred must authenticate users via PocketID as a self-hosted OIDC provider.
+Valet must authenticate users via PocketID as a self-hosted OIDC provider.
 
 **Contracts:**
 ```rust
 pub struct AuthConfig {
     pub enabled: bool,           // Allow disabling auth in dev
     pub issuer_url: String,      // PocketID issuer (e.g., http://pocketid:8080)
-    pub client_id: String,       // Alfred's client ID in PocketID
-    pub client_secret: String,   // Alfred's client secret
+    pub client_id: String,       // Valet's client ID in PocketID
+    pub client_secret: String,   // Valet's client secret
     pub redirect_url: String,    // Post-login redirect
     pub jwt_secret: String,      // For verifying JWTs
 }

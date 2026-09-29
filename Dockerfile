@@ -11,7 +11,7 @@ RUN apk add --no-cache --update \
 WORKDIR /build
 
 # Cache dependencies (avoid recompiling every time)
-RUN cargo init --bin --name alfred . && \
+RUN cargo init --bin --name valet . && \
     echo "pub fn dummy() {}" > src/lib.rs && \
     mkdir -p src/bin && \
     echo "fn main() {}" > src/bin/seed.rs
@@ -23,7 +23,7 @@ RUN cargo build --release && \
 COPY src ./src
 RUN touch src/main.rs src/lib.rs && \
     cargo build --release && \
-    strip target/release/alfred
+    strip target/release/valet
 
 # ═══════════════════════════════════════════════════════════════
 # Stage 2: Frontend (Node)
@@ -50,9 +50,9 @@ RUN apk add --no-cache --update \
     rm -rf /var/cache/apk/*
 
 WORKDIR /app
-COPY --from=backend-builder /build/target/release/alfred /app/alfred
+COPY --from=backend-builder /build/target/release/valet /app/valet
 COPY --from=frontend-builder /build/dist /app/static
 COPY migrations ./migrations
 
 EXPOSE 3000
-CMD ["/app/alfred"]
+CMD ["/app/valet"]

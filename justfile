@@ -1,4 +1,4 @@
-# Alfred - Justfile
+# Valet - Justfile
 
 # ── Desarrollo (Podman por defecto) ─────────────────────────────
 # El proyecto usa Podman para desarrollo local. Ajusta el binario
@@ -7,12 +7,12 @@
 # Levanta el servidor con frontend embebido (Podman)
 dev:
     podman compose up -d --build
-    @echo "Alfred: http://localhost:3000"
+    @echo "Valet: http://localhost:3000"
 
 # Levanta el servidor con frontend embebido (Docker)
 dev-docker:
     docker compose up -d
-    @echo "Alfred: http://localhost:3000"
+    @echo "Valet: http://localhost:3000"
 
 # Ejecuta todos los checks
 check-all: test clippy fmt frontend-check
@@ -46,8 +46,8 @@ clean:
 # Ayuda
 help:
     @echo "Comandos disponibles:"
-    @echo "  just dev         - Levanta Alfred con Podman (reconstruye imagen)"
-    @echo "  just dev-docker  - Levanta Alfred con Docker"
+    @echo "  just dev         - Levanta Valet con Podman (reconstruye imagen)"
+    @echo "  just dev-docker  - Levanta Valet con Docker"
     @echo "  just check-all   - Ejecuta todos los checks"
     @echo "  just test        - cargo test"
     @echo "  just clippy      - cargo clippy"

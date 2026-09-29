@@ -1,7 +1,7 @@
 # Remove Multi-Conversation Complexity
 
 ## Intent
-Alfred es un chat único e infinito. Sin embargo, el código actual maneja un modelo
+Valet es un chat único e infinito. Sin embargo, el código actual maneja un modelo
 multi-conversación (`conversations` table, `conversation_id` en messages, CRUD de
 conversaciones, rutas REST con `:id` de conversación, sidebar de chats en frontend)
 que es complejidad muerta: nunca hay más de una conversación.

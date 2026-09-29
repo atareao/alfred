@@ -8,7 +8,7 @@ use tower::ServiceExt;
 /// This will FAIL because the router doesn't have a ServeDir fallback yet.
 #[tokio::test]
 async fn test_root_returns_index_html() {
-    let app = alfred::app().await;
+    let app = valet::app().await;
 
     let response = app
         .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
@@ -32,7 +32,7 @@ async fn test_root_returns_index_html() {
 /// This will FAIL because the router doesn't have a ServeFile fallback.
 #[tokio::test]
 async fn test_spa_fallback_returns_index_html() {
-    let app = alfred::app().await;
+    let app = valet::app().await;
 
     let response = app
         .oneshot(
@@ -61,7 +61,7 @@ async fn test_spa_fallback_returns_index_html() {
 /// the static file fallback in place.
 #[tokio::test]
 async fn test_api_health_unaffected_by_fallback() {
-    let app = alfred::app().await;
+    let app = valet::app().await;
 
     let response = app
         .oneshot(
@@ -90,7 +90,7 @@ async fn test_api_health_unaffected_by_fallback() {
 /// This will FAIL because the router doesn't have a ServeDir fallback.
 #[tokio::test]
 async fn test_static_file_is_served() {
-    let app = alfred::app().await;
+    let app = valet::app().await;
 
     let response = app
         .oneshot(
@@ -109,7 +109,7 @@ async fn test_static_file_is_served() {
         .unwrap();
     let body_str = String::from_utf8_lossy(&body_bytes);
     assert!(
-        body_str.contains("Alfred"),
-        "Expected index.html content to contain 'Alfred', got: {body_str}"
+        body_str.contains("Valet"),
+        "Expected index.html content to contain 'Valet', got: {body_str}"
     );
 }

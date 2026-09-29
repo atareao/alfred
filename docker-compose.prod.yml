@@ -6,7 +6,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - DATABASE_URL=/data/alfred.db
+      - DATABASE_URL=/data/valet.db
       - LOG_LEVEL=info
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - OPENWEATHER_API_KEY=${OPENWEATHER_API_KEY}
@@ -18,7 +18,7 @@ services:
       - AUTH_CLIENT_SECRET=${AUTH_CLIENT_SECRET}
       - JWT_SECRET=${JWT_SECRET}
     volumes:
-      - alfred_data:/data
+      - valet_data:/data
     restart: unless-stopped
 
   frontend:
@@ -42,5 +42,5 @@ services:
     restart: unless-stopped
 
 volumes:
-  alfred_data:
+  valet_data:
   pocketid_data:
