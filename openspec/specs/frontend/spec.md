@@ -462,3 +462,71 @@ SettingsDialog SHALL open when clicking the settings icon in the header, replaci
 **Given** mensaje con `id = "streaming"`  
 **When** se renderiza  
 **Then** NO se muestra timestamp ni location
+
+### Requirement: Message TypeScript interface SHALL include tools_used
+
+**Given** el tipo `Message` en `frontend/src/types/index.ts`  
+**When** se renderiza un mensaje  
+**Then** `Message` SHALL incluir `tools_used?: string`
+
+### Requirement: MessageBubble SHALL display metadata as 3 separate lines
+
+**Given** un mensaje renderizado  
+**When** se visualiza  
+**Then** los metadatos SHALL mostrarse en 3 líneas separadas debajo del contenido:
+- **Línea 1**: `role · HH:mm` (siempre, excepto streaming)
+- **Línea 2**: `📍 location` (solo si `location` no es null)
+- **Línea 3**: `🔧 tools_used` (solo si `tools_used` no es null/undefined)
+**And** NO SHALL parsear el contenido del mensaje para extraer herramientas
+
+#### Scenario: Las 3 líneas con todos los metadatos presentes
+**Given** `message.role = "assistant"`, `message.created_at = "2026-09-27T10:30:00Z"`, `message.location = "Carrer d'Alacant, València, Comunitat Valenciana, España"`, `message.tools_used = "calendar::get_events, weather::get_weather"`  
+**When** se renderiza  
+**Then** la línea 1 SHALL contener `assistant · 10:30`  
+**And** la línea 2 SHALL contener `📍 Carrer d'Alacant, València, Comunitat Valenciana, España`  
+**And** la línea 3 SHALL contener `🔧 calendar::get_events, weather::get_weather`
+
+#### Scenario: Solo role y hora (sin location, sin tools)
+**Given** `message.location = null`, `message.tools_used = null`  
+**When** se renderiza  
+**Then** solo SHALL mostrarse la línea 1 con `role · HH:mm`  
+**And** NO SHALL mostrarse línea de ubicación  
+**And** NO SHALL mostrarse línea de herramientas
+
+#### Scenario: Role y hora + location (sin tools)
+**Given** `message.location = "València"`, `message.tools_used = null`  
+**When** se renderiza  
+**Then** línea 1: `role · HH:mm`  
+**And** línea 2: `📍 València`  
+**And** NO SHALL mostrarse línea de herramientas
+
+#### Scenario: Role y hora + tools (sin location)
+**Given** `message.location = null`, `message.tools_used = "weather::get_weather"`  
+**When** se renderiza  
+**Then** línea 1: `role · HH:mm`  
+**And** NO SHALL mostrarse línea de ubicación  
+**And** línea 3: `🔧 weather::get_weather`
+
+#### Scenario: tools_used con contadores usa coma como separador
+**Given** `message.tools_used = "(3) calendar::get_events, weather::get_weather"`  
+**When** se renderiza  
+**Then** línea 3 SHALL contener `🔧 (3) calendar::get_events, weather::get_weather`
+
+#### Scenario: Mensaje streaming no muestra metadatos
+**Given** mensaje con `id = "streaming"`  
+**When** se renderiza  
+**Then** NO SHALL mostrarse ninguna línea de metadatos
+
+### Requirement: Location SHALL display consistently (not only on reload)
+
+**Given** un mensaje con `location`  
+**When** se renderiza  
+**Then** la ubicación SHALL mostrarse siempre que `location` no sea null  
+**And** SHALL mostrarse en su propia línea (no inline con la hora)
+
+### Requirement: useMainChat SHALL NOT append tool footer to content
+
+**Given** el hook `useMainChat`  
+**When** se completa el streaming (`onDone`)  
+**Then** NO SHALL concatenar `\n\n---\n🔧 ...` al contenido del mensaje  
+**And** el contenido del mensaje SHALL ser exactamente el texto del assistant sin metadatos de herramientas

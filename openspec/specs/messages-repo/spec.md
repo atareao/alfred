@@ -38,3 +38,20 @@ Gestión del repositorio de mensajes de conversación. Creado tras archivar fix-
 **Given** una DB sin mensajes  
 **When** se llama `list_all(pool, 50, None)`  
 **Then** devuelve `([], None)`
+
+### Requirement: MessagesRepo::create SHALL accept tools_used parameter
+
+**Given** `MessagesRepo::create()`  
+**When** se llama con `tools_used: Option<&str>`  
+**Then** el valor SHALL almacenarse en la columna `tools_used` de la tabla `messages`  
+**And** todas las queries SELECT SHALL incluir la columna `tools_used`
+
+#### Scenario: Crear mensaje con tools_used
+**Given** un pool de base de datos  
+**When** `MessagesRepo::create(pool, "assistant", "Respuesta", None, None, None, Some("weather::get_weather"), 2000, None)`  
+**Then** el mensaje devuelto SHALL tener `tools_used = Some("weather::get_weather")`
+
+#### Scenario: Crear mensaje sin tools_used
+**Given** un pool de base de datos  
+**When** `MessagesRepo::create(pool, "user", "Hola", None, None, None, None, 2000, None)`  
+**Then** el mensaje devuelto SHALL tener `tools_used = None`

@@ -26,46 +26,6 @@ interface MessageBubbleProps {
 export const MessageBubble: React.FC<MessageBubbleProps> = ({ message }) => {
   const config = getRoleConfig(message.role);
 
-  const renderContent = () => {
-    if (message.role !== "assistant") {
-      return <Text style={{ color: config.color }}>{message.content}</Text>;
-    }
-
-    // Separar footer de tools del contenido principal
-    const footerMatch = message.content.match(/\n\n---\n🔧(.+)$/s);
-    const mainContent = footerMatch
-      ? message.content.slice(0, footerMatch.index)
-      : message.content;
-    const toolsFooter = footerMatch ? footerMatch[1].trim() : null;
-
-    return (
-      <div>
-        <div style={{ overflowX: "auto" }}>
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>
-            {mainContent}
-          </ReactMarkdown>
-        </div>
-        {toolsFooter && (
-          <div
-            style={{
-              marginTop: 12,
-              paddingTop: 8,
-              borderTop: "1px solid rgba(255,255,255,0.15)",
-              fontSize: 12,
-              color: "rgba(255,255,255,0.5)",
-              display: "flex",
-              gap: 4,
-              alignItems: "center",
-            }}
-          >
-            <span>🔧</span>
-            <span>{toolsFooter}</span>
-          </div>
-        )}
-      </div>
-    );
-  };
-
   return (
     <div
       style={{
@@ -96,22 +56,20 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({ message }) => {
             </ReactMarkdown>
           </div>
         ) : (
-          renderContent()
+          <Text style={{ color: config.color }}>{message.content}</Text>
         )}
-        <div style={{ fontSize: 10, marginTop: 4, opacity: 0.35, display: "flex", gap: 4 }}>
-          <span>{message.role}</span>
+        {/* Metadata lines */}
+        <div style={{ fontSize: 10, marginTop: 4, opacity: 0.35 }}>
           {message.id !== "streaming" && (
-            <>
-              <span>·</span>
-              <span>{formatTime(message.created_at)}</span>
-            </>
+            <div>{message.role} · {formatTime(message.created_at)}</div>
+          )}
+          {message.id !== "streaming" && message.location && (
+            <div style={{ marginTop: 1 }}>📍 {message.location}</div>
+          )}
+          {message.id !== "streaming" && message.tools_used && (
+            <div style={{ marginTop: 1 }}>🔧 {message.tools_used}</div>
           )}
         </div>
-        {message.id !== "streaming" && message.location && (
-          <div style={{ fontSize: 10, marginTop: 1, opacity: 0.35 }}>
-            📍 {message.location}
-          </div>
-        )}
       </div>
       {config.showIcon && config.iconPosition === "right" && (
         <div style={{ marginLeft: 8, marginTop: 8 }}>{config.icon}</div>

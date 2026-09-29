@@ -1,0 +1,1 @@
+ALTER TABLE messages ADD COLUMN tools_used TEXT;

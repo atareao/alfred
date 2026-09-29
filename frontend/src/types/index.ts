@@ -10,6 +10,7 @@ export interface Message {
   is_indexed?: boolean;
   summary_ref?: string | null;
   location?: string | null;
+  tools_used?: string;
   created_at: string;
 }
 
@@ -18,6 +19,7 @@ export interface CreateMessage {
   content: string;
   tool_calls?: unknown;
   tool_results?: unknown;
+  tools_used?: string;
 }
 
 export interface Settings {
@@ -78,6 +80,10 @@ export interface SSEStreamEvent {
   success?: boolean;
   message_id?: string;
   user_message_id?: string;
+  location?: string | null;
+  tools_used?: string;
+  user_location?: string;
+  user_created_at?: string;
   message?: string;
   request_id?: string;
   tool_name?: string;
