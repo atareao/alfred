@@ -1,38 +1,81 @@
 # Changelog
-## [0.5.0] - 2026-09-25
+## [0.7.0] - 2026-09-29
+
+### Bug Fixes
+
+- *(calendar)* Make duration optional in get_events with default 24h
+- Hora local en vez de UTC y ubicación con reverse geocode inline en orchestrator
+- Guardar lat/lon inline antes de lanzar orchestrator, reverse geocode en background
+- Stats table headers visibles en dark mode + refresco al abrir modal
+- DarkAlgorithm + Table/Header tokens para dark mode correcto
+- Stats recording con modelo real, coste, cached_tokens y reasoning_tokens desde OpenRouter
+- No emitir StreamEvent::Done hasta que el SSE chunk incluya usage
+- Nombres de campo correctos en usage de OpenRouter
+- Persist tools_used to DB and fix ToolDef serialization for OpenRouter
+- Persist tools_used to DB and fix ToolDef serialization for OpenRouter
+- Rewrite agent prompt with expanded personality, rules and examples
+- Rewrite agent prompt with expanded personality, rules and examples
+- Merge agent prompt rewrite from main
+
+### Documentation
+
+- Update OpenRouter spec and remove archived change proposal
+- Rewrite README in English, add Spanish version and .env.example
+
+### Features
+
+- *(openrouter)* Add app identification headers to API calls
+- *(stats)* Implement stats dashboard with LLM usage, DB sizes, and retention
+- *(ui)* Add Stats button to header bar
+- *(memory)* Implement episodic memory system
+- Implement stats recording, time/location tools, and worker fixes
+- Message timestamp, location and date separators
+- Add LastApiCall model, endpoint and stats recording in workers
+- Add LastApiCallCard UI and Última llamada tab to dashboard
+- Add LastApiCall observability endpoint and UI
+
+### Miscellaneous Tasks
+
+- Rename project from Alfred to Valet
+- Rename project from Alfred to Valet
+
+### Refactor
+
+- Reverse_geocode inline con cache, eliminar tokio::spawn
+
+### Styling
+
+- Ubicación completa en segunda línea, eliminar extractCity
+- StatsDashboard organizado en pestañas (Resumen/Modelos/Sistema)
+## [0.6.0] - 2026-09-26
+
+### Bug Fixes
+
+- *(deps)* Update vite to 8.3.1 and vitest to 5.0.2 to fix 7 Dependabot vulnerabilities
 
 ### Features
 
 - Consolidate all pending changes
-- Remove multi-conversation complexity (chat único e infinito)
-- Real SSE streaming implementation
-- CollapseWorker with configurable model
-- Web search tool (Brave Search API)
-- Google Places tool
-- Configurable message page size via settings
-
-### Styling
-
-- UI Polish: scrollbar oscura, tipografía mobile-first, tamaño de fuente ajustable en Ajustes
-
-### Bug Fixes
-
-- Tool call error handling improvements
-- Tool max retries with exponential backoff
-- Geo timeout fix
-- Docker-compose missing BRAVE_SEARCH_API_KEY and GOOGLE_PLACES_API_KEY
-
-### Refactor
-
-- Remove multi-conversation: backend (conversations table, routes, handlers, repos), frontend (sidebar, ephemeral chat)
-- Unify message migrations into single initial schema
-- Orchestrator agent refactor with improved context building
-- Database repos simplification and cleanup
-- Seed script restructured
+- Consolidate agenda, calendar UI, and orchestrator fixes
+- *(tasks)* Implement GTD task management with Kanban and List views (#13)
 
 ### Miscellaneous Tasks
 
-- Update OpenSpec documentation across all modules
-- Add OpenRouter provider spec
-- Add geo-weather tool spec
-- Add web_search tool spec
+- Remove tsbuildinfo from tracking
+## [0.5.0] - 2026-09-25
+
+### Documentation
+
+- Update CHANGELOG for v0.5.0
+
+### Features
+
+- Configurable message page size via settings
+- Configurable message page size via settings
+- Connect real CollapseWorker with configurable model
+- Connect real CollapseWorker with configurable model
+- Consolidate all pending changes
+
+### Miscellaneous Tasks
+
+- Bump version to 0.5.0
