@@ -328,7 +328,7 @@ pub fn app_with_state(state: AppState) -> Router {
             "/api/messages",
             get(routes::messages::list_messages).post(routes::messages::create_message),
         )
-        .route("/api/messages/:msg_id", get(routes::messages::get_message))
+        .route("/api/messages/{msg_id}", get(routes::messages::get_message))
         // Chat
         .route("/api/chat/init", get(routes::chat::chat_init))
         // Profile
@@ -341,10 +341,13 @@ pub fn app_with_state(state: AppState) -> Router {
             "/api/memories",
             get(routes::memories::list_memories).post(routes::memories::create_memory),
         )
-        .route("/api/memories/:id", delete(routes::memories::delete_memory))
+        .route(
+            "/api/memories/{id}",
+            delete(routes::memories::delete_memory),
+        )
         // Tools
         .route("/api/tools", get(routes::tools::list_tools))
-        .route("/api/tools/:id/toggle", put(routes::tools::toggle_tool))
+        .route("/api/tools/{id}/toggle", put(routes::tools::toggle_tool))
         // Settings
         .route(
             "/api/settings",

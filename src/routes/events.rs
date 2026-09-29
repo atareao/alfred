@@ -11,7 +11,7 @@ pub fn routes() -> Router<AppState> {
             get(events::list_events).post(events::create_event),
         )
         .route(
-            "/api/events/:id",
+            "/api/events/{id}",
             put(events::update_event).delete(events::delete_event),
         )
 }

@@ -5,6 +5,24 @@ use sqlx::{Column, Row, SqlitePool};
 
 use crate::AppState;
 
+/// Tables that may be exported. `export_table` interpolates the name into SQL,
+/// so only these hard-coded names are ever accepted.
+const EXPORTABLE_TABLES: &[&str] = &[
+    "profiles",
+    "messages",
+    "events",
+    "tasks",
+    "notes",
+    "contacts",
+    "reminders",
+    "meal_plans",
+    "shopping_list",
+    "habits",
+    "habit_logs",
+    "memory",
+    "tools",
+];
+
 /// Export all data from the database as a single JSON object.
 ///
 /// Returns a JSON object with one key per table, each containing an array
@@ -32,8 +50,17 @@ async fn export_all_tables(pool: &SqlitePool) -> Value {
 }
 
 async fn export_table(pool: &SqlitePool, table_name: &str) -> Value {
+    if !EXPORTABLE_TABLES.contains(&table_name) {
+        return json!([]);
+    }
+
     let query_str = format!("SELECT * FROM \"{}\"", table_name);
-    let rows = match sqlx::query(&query_str).fetch_all(pool).await {
+    // SAFETY: `table_name` is validated against the hard-coded `EXPORTABLE_TABLES`
+    // whitelist above, so no caller-controlled string is ever interpolated.
+    let rows = match sqlx::query(sqlx::AssertSqlSafe(query_str))
+        .fetch_all(pool)
+        .await
+    {
         Ok(r) => r,
         Err(_) => return json!([]),
     };

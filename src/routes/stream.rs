@@ -6,7 +6,7 @@
 //! ## Routes
 //!
 //! * `POST /api/chat/stream`        — SSE stream of [`SSEEvent`]s
-//! * `POST /api/approval/:request_id` — Resolve a pending approval
+//! * `POST /api/approval/{request_id}` — Resolve a pending approval
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -135,7 +135,7 @@ pub async fn stream_message(
     Sse::new(Box::pin(stream))
 }
 
-/// `POST /api/approval/:request_id`
+/// `POST /api/approval/{request_id}`
 ///
 /// Resolves a pending human-in-the-loop approval request by delegating
 /// to the guardrails component.
@@ -183,7 +183,7 @@ pub fn routes() -> axum::Router<AppState> {
     use axum::routing::post;
     axum::Router::new()
         .route("/api/chat/stream", post(stream_message))
-        .route("/api/approval/:request_id", post(resolve_approval))
+        .route("/api/approval/{request_id}", post(resolve_approval))
 }
 
 // ---------------------------------------------------------------------------

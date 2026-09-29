@@ -42,7 +42,7 @@ During chat, the orchestrator uses **RAG**: it embeds the user query, searches `
 
 | Layer | Technology |
 |-------|-----------|
-| Backend | Rust + Axum 0.7 + Tokio + sqlx |
+| Backend | Rust + Axum 0.8 + Tokio + sqlx 0.9 |
 | Frontend | TypeScript + React 18 + Ant Design 5 + Vite |
 | Database | SQLite + FTS5 + sqlite-vec |
 | Auth | PocketID (self-hosted OIDC), optional |
@@ -51,7 +51,7 @@ During chat, the orchestrator uses **RAG**: it embeds the user query, searches `
 
 ## 📋 Requirements
 
-- Rust 1.82+
+- Rust 1.94+
 - Node.js 22+
 - SQLite 3.45+ (with FTS5)
 - Docker or Podman + Compose (optional)
@@ -174,16 +174,16 @@ Background workers in `src/workers/`: `briefing`, `collapse`, `conflict_detector
 |--------|-------|-------------|
 | GET | `/api/health` | Health check |
 | POST | `/api/chat/stream` | Chat with SSE streaming |
-| POST | `/api/approval/:request_id` | Resolve a tool approval request |
+| POST | `/api/approval/{request_id}` | Resolve a tool approval request |
 | GET | `/api/chat/init` | Initial chat state |
 | GET/POST | `/api/messages` | List / create messages |
-| GET | `/api/messages/:msg_id` | Get a message |
+| GET | `/api/messages/{msg_id}` | Get a message |
 | GET/POST | `/api/memories` | List / create memories |
-| DELETE | `/api/memories/:id` | Delete a memory |
+| DELETE | `/api/memories/{id}` | Delete a memory |
 | GET/PUT | `/api/profile` | Get / update the profile |
 | GET/PUT | `/api/settings` | Get / update settings |
 | GET | `/api/tools` | List tools |
-| PUT | `/api/tools/:id/toggle` | Enable / disable a tool |
+| PUT | `/api/tools/{id}/toggle` | Enable / disable a tool |
 | GET | `/api/search` | Unified search |
 | GET | `/api/export` | Export data |
 | — | `/api/events/*`, `/api/tasks/*` | Events and tasks CRUD |
@@ -198,7 +198,7 @@ Background workers in `src/workers/`: `briefing`, `collapse`, `conflict_detector
 
 ```bash
 # Backend
-just test          # cargo test (510 tests)
+just test          # cargo test (599 tests)
 just clippy        # cargo clippy -- -D warnings
 just fmt           # cargo fmt --check
 
