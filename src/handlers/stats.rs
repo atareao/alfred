@@ -132,10 +132,7 @@ pub async fn last_call_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::StatusCode;
-    use serde_json::json;
     use sqlx::SqlitePool;
-    use tower::ServiceExt;
 
     use crate::AppState;
 
