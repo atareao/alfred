@@ -263,12 +263,12 @@ mod tests {
             .collect();
 
         // id TEXT PRIMARY KEY
-        let (ty, dflt, pk) = col_map.get("id").expect("Column 'id' should exist");
+        let (ty, _dflt, pk) = col_map.get("id").expect("Column 'id' should exist");
         assert_eq!(ty.to_uppercase(), "TEXT", "id should be TEXT");
         assert_eq!(*pk, 1, "id should be PRIMARY KEY");
 
         // content TEXT NOT NULL
-        let (ty, dflt, pk) = col_map
+        let (ty, _dflt, pk) = col_map
             .get("content")
             .expect("Column 'content' should exist");
         assert_eq!(ty.to_uppercase(), "TEXT", "content should be TEXT");
@@ -291,7 +291,7 @@ mod tests {
         assert_eq!(*pk, 0, "tokens_count should not be PK");
 
         // created_at TEXT
-        let (ty, dflt, _pk) = col_map
+        let (ty, _dflt, _pk) = col_map
             .get("created_at")
             .expect("Column 'created_at' should exist");
         assert_eq!(ty.to_uppercase(), "TEXT", "created_at should be TEXT");
