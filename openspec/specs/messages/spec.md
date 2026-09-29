@@ -1,6 +1,9 @@
-# messages Handler Specification
+# messages Specification
 
-## Change Delta
+## Purpose
+TBD - created by archiving change fix-tools-used-persistence. Update Purpose after archive.
+
+## Requirements
 
 ### Requirement: POST /api/messages SHALL accept optional tools_used field
 
@@ -25,8 +28,24 @@
 **When** se define  
 **Then** SHALL incluir `pub tools_used: Option<String>`
 
+#### Scenario: Deserializar body con tools_used
+**Given** un JSON `{ "role": "assistant", "content": "x", "tools_used": "weather::get_weather" }`  
+**When** se deserializa a `CreateMessage`  
+**Then** `tools_used` SHALL ser `Some("weather::get_weather")`
+
+#### Scenario: Deserializar body sin tools_used
+**Given** un JSON `{ "role": "user", "content": "x" }`  
+**When** se deserializa a `CreateMessage`  
+**Then** `tools_used` SHALL ser `None`
+
 ### Requirement: TypeScript CreateMessage interface SHALL include optional tools_used
 
 **Given** la interfaz `CreateMessage` en `frontend/src/types/index.ts`  
 **When** se define  
 **Then** SHALL incluir `tools_used?: string`
+
+#### Scenario: Compilar frontend con tools_used opcional
+**Given** la interfaz `CreateMessage` con `tools_used?: string`  
+**When** se ejecuta `tsc --noEmit`  
+**Then** SHALL compilar sin errores  
+**And** un objeto sin `tools_used` SHALL seguir siendo válido
