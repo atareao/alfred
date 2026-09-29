@@ -7,6 +7,8 @@ Interfaz de usuario para gestión de tareas GTD con dos vistas: Kanban (flujo ac
 
 ### Requirement: Task type and API client
 
+El frontend SHALL definir el tipo `Task` y los métodos de API `listTasks`, `createTask`, `updateTask` y `deleteTask`.
+
 Añadir tipos y métodos de API para tareas en el frontend.
 
 **Contracts:**
@@ -55,6 +57,8 @@ Then it returns an array of Task objects matching the filters
 
 ### Requirement: Task hooks
 
+El frontend SHALL exponer los hooks `useTasks`, `useCreateTask`, `useUpdateTask` y `useDeleteTask` para gestionar el estado de las tareas.
+
 Hooks React para gestionar el estado de las tareas.
 
 **Contracts:**
@@ -97,6 +101,8 @@ Then a new task is created
 And the full task object is returned
 
 ### Requirement: TaskView component with Kanban and List views
+
+`TaskView` SHALL ofrecer un selector entre vista Kanban y Lista, con botón de creación, filtros y drag & drop entre columnas.
 
 Componente principal con selector de vista (Kanban / Lista), botón "New Task", y filtros.
 
@@ -188,6 +194,8 @@ Then a confirmation dialog appears
 And on confirm the task is removed
 
 ### Requirement: TaskView integrated in AppLayout
+
+AppLayout SHALL incluir un botón de tareas que abre `TaskView` en un modal y refresca las tareas cuando el LLM las modifica.
 
 Añadir botón de Tasks en el header de AppLayout, junto al de calendario.
 

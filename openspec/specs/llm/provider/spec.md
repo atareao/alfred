@@ -1,11 +1,13 @@
 # llm/provider Specification
 
 ## Purpose
-TBD - created by archiving change fix-llm-tool-calls. Update Purpose after archive.
+Contrato de los proveedores LLM de Valet (OpenRouter y Ollama): parsing de tool calls en las respuestas y emisión de eventos SSE reales en el streaming de chat.
 
 ## Requirements
 
 ### Requirement: Parse tool_calls from OpenRouter responses
+
+`OpenRouterProvider::chat()` SHALL parsear `choices[0].message.tool_calls` a `ChatResponse.message.tool_calls`, con `id`, `name` y `arguments` como `Value`.
 **Given** una respuesta de OpenRouter con `choices[0].message.tool_calls`  
 **When** `OpenRouterProvider::chat()` procesa la respuesta  
 **Then** devuelve `ChatResponse` con `message.tool_calls` conteniendo los tool calls  
@@ -32,6 +34,8 @@ TBD - created by archiving change fix-llm-tool-calls. Update Purpose after archi
 **And** si el parseo falla, se usa el string original como `Value::String`
 
 ### Requirement: Parse tool_calls from Ollama responses
+
+`OllamaProvider::chat()` SHALL parsear `message.tool_calls` a `ChatResponse.message.tool_calls`, generando `id` si no viene.
 **Given** una respuesta de Ollama con `message.tool_calls`  
 **When** `OllamaProvider::chat()` procesa la respuesta  
 **Then** devuelve `ChatResponse` con `message.tool_calls` conteniendo los tool calls  
@@ -55,6 +59,8 @@ TBD - created by archiving change fix-llm-tool-calls. Update Purpose after archi
 **Then** se usa directamente como `Value` sin parseo adicional
 
 ### Requirement: OpenRouter chat_stream produces real SSE events
+
+`OpenRouterProvider::chat_stream()` SHALL enviar `stream: true` y emitir eventos SSE reales de chunk, tool call y done.
 
 **Given** un `OpenRouterProvider` configurado  
 **When** se llama a `chat_stream()` con `ChatRequest { stream: true }`  

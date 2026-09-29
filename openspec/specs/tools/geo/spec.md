@@ -7,6 +7,8 @@ Búsqueda de lugares y geocodificación usando Google Places API (New API) y Nom
 
 ### Requirement: Google Places API integration
 
+La tool SHALL leer `google_places_api_key` de settings y llamar a la Google Places New API con las cabeceras `X-Goog-Api-Key` y `X-Goog-FieldMask`.
+
 **Given** un `SearchPlacesTool` 
 **When** se ejecuta `search_places` con query, lat, lon y radius
 **Then** la tool DEBE leer `google_places_api_key` de la tabla `settings` (SettingsRepo)
@@ -40,6 +42,8 @@ Búsqueda de lugares y geocodificación usando Google Places API (New API) y Nom
 
 ### Requirement: Estructura Place con campos de Google Places
 
+La deserialización SHALL mapear la respuesta de Google Places a la estructura `Place` con campos opcionales.
+
 **Given** la respuesta de Google Places API
 **When** se deserializa
 **Then** DEBE mapear a la estructura `Place` con los siguientes campos:
@@ -69,11 +73,20 @@ Búsqueda de lugares y geocodificación usando Google Places API (New API) y Nom
 
 ### Requirement: FIELD_MASK para minimizar coste
 
+La constante `FIELD_MASK` SHALL listar los campos de Google Places usados por la tool para minimizar el coste de la API.
+
 **Given** la constante `FIELD_MASK`
 **When** se usa en requests a Google Places
 **Then** DEBE incluir: `places.id`, `places.displayName`, `places.formattedAddress`, `places.location`, `places.rating`, `places.userRatingCount`, `places.priceLevel`, `places.websiteUri`, `places.nationalPhoneNumber`, `places.regularOpeningHours`, `places.primaryType`, `places.types`, `places.editorialSummary`
 
+#### Scenario: FIELD_MASK incluye los campos usados
+**Given** la constante `FIELD_MASK`
+**When** se usa en un request a Google Places
+**Then** incluye `places.id`, `places.displayName` y `places.formattedAddress`
+
 ### Requirement: Enlace a Google Maps
+
+`maps_link(places)` SHALL generar un enlace `https://www.google.com/maps/dir/...` filtrando los lugares sin coordenadas.
 
 **Given** un `SearchPlacesTool` con una lista de `Place`
 **When** se llama a `maps_link(places)`
@@ -98,6 +111,8 @@ Búsqueda de lugares y geocodificación usando Google Places API (New API) y Nom
 
 ### Requirement: GeocodeTool (Nominatim)
 
+`GeocodeTool` SHALL llamar a la API de Nominatim `/search` y devolver coordenadas y dirección formateada.
+
 **Given** un `GeocodeTool`
 **When** se ejecuta `geocode` con una dirección
 **Then** DEBE llamar a Nominatim API (`/search`)
@@ -114,6 +129,8 @@ Búsqueda de lugares y geocodificación usando Google Places API (New API) y Nom
 **Then** DEBE retornar `Err(ToolError::NotFound)`
 
 ### Requirement: ReverseGeocodeTool (Nominatim)
+
+`ReverseGeocodeTool` SHALL llamar a la API de Nominatim `/reverse` y devolver la dirección formateada.
 
 **Given** un `ReverseGeocodeTool`
 **When** se ejecuta `reverse_geocode` con coordenadas

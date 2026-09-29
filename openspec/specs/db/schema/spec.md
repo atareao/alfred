@@ -1,11 +1,13 @@
 # db/schema Specification
 
 ## Purpose
-TBD - created by archiving change settings-token-window. Update Purpose after archive.
+Esquema de base de datos de Valet: tablas y migraciones para settings, mensajes enriquecidos (tokens, colapso, indexado), eventos (categoría, todo el día, recurrencia, recordatorios) y la tabla llm_requests con datos completos de uso de OpenRouter.
 
 ## Requirements
 
 ### Requirement: Tabla settings con valores por defecto
+
+La migración SHALL crear la tabla `settings` con las columnas `key`, `value` y `updated_at`, sembrando los valores por defecto `max_window_tokens=10000` y `system_prompt`.
 **Given** una base de datos recién migrada  
 **When** se ejecuta `run_migrations()`  
 **Then** existe la tabla `settings` con columnas `key`, `value`, `updated_at`  
@@ -19,6 +21,8 @@ TBD - created by archiving change settings-token-window. Update Purpose after ar
 **And** `SELECT value FROM settings WHERE key='system_prompt'` devuelve el prompt por defecto
 
 ### Requirement: SettingsRepo get/set/get_all
+
+El repositorio SHALL exponer `get`, `set` y `get_all` para leer, insertar o actualizar y listar los ajustes.
 **Given** un SettingsRepo sobre una conexión  
 **When** se llama `get(conn, "max_window_tokens")`  
 **Then** devuelve `Some("10000")` si existe, `None` si no  
@@ -44,6 +48,8 @@ TBD - created by archiving change settings-token-window. Update Purpose after ar
 
 ### Requirement: Tabla messages con todas las columnas desde CREATE TABLE
 
+La migración SHALL crear la tabla `messages` con todas las columnas de enriquecimiento en un único `CREATE TABLE`.
+
 **Given** una base de datos recién migrada  
 **When** se ejecuta `run_migrations()`  
 **Then** existe la tabla `messages` con todas las columnas en un solo CREATE TABLE:
@@ -65,6 +71,8 @@ TBD - created by archiving change settings-token-window. Update Purpose after ar
 **Then** no existe `20260925000002_message_enrichment.sql`
 
 ### Requirement: Extend events table with new fields
+
+La migración SHALL añadir a la tabla `events` las columnas `category`, `all_day`, `rrule` y `reminder_minutes_before`, junto con sus índices.
 
 Add category, all_day, rrule, and reminder_minutes_before to the events table.
 
@@ -121,6 +129,8 @@ Then the event is stored with reminder_minutes_before = 60
 
 ### Requirement: EventsRepo::delete method
 
+El repositorio SHALL exponer `EventsRepo::delete` para eliminar eventos y `EventsRepo::list_by_category` para listarlos por categoría.
+
 Add soft-delete or hard-delete for events.
 
 **Contracts:**
@@ -150,6 +160,8 @@ When `EventsRepo::list_by_category` is called with category "work"
 Then only work events are returned
 
 ### Requirement: Expand events list_by_date_range to support recurring events
+
+`EventsRepo::list_by_date_range` SHALL expandir los eventos recurrentes (con `rrule` no nulo) generando las instancias dentro del rango consultado.
 
 Recurring events (those with a non-null rrule) should be expanded when queried within a date range.
 
@@ -188,6 +200,8 @@ When `list_by_date_range` is queried for that week
 Then the event appears once
 
 ### Requirement: Migration SHALL create llm_requests table with full OpenRouter usage data
+
+La migración SHALL crear la tabla `llm_requests` con todas las columnas de uso de OpenRouter y de forma idempotente.
 
 **Given** una base de datos vacía
 **When** se ejecuta la migración `20260926000002_stats.sql`
@@ -230,6 +244,8 @@ CREATE TABLE IF NOT EXISTS llm_requests (
 
 ### Requirement: StatsRepo SHALL read retention from settings table
 
+El repositorio SHALL leer `stats_retention_days` de settings y usar 30 como valor por defecto si la clave no existe.
+
 **Given** la tabla `settings` con clave `stats_retention_days`
 **When** se llama a `StatsRepo::get_retention_days(pool)`
 **Then** devuelve el valor como `u32`
@@ -244,3 +260,35 @@ CREATE TABLE IF NOT EXISTS llm_requests (
 **Given** settings sin `stats_retention_days`
 **When** `StatsRepo::get_retention_days(pool)`
 **Then** devuelve 30
+
+### Requirement: Migración siembra los prompts del sistema en settings
+
+**Given** una base de datos recién migrada
+**When** se ejecuta `run_migrations()`
+**Then** la tabla `settings` SHALL contener las claves `system_prompt`, `archivist_prompt` y `collapse_prompt`
+**And** `system_prompt` SHALL contener el prompt de personalidad de Valet (con "asistente personal británico", "Modo Conciso (Predeterminado)", "Expandido" y "Emojis")
+**And** `archivist_prompt` SHALL contener el prompt del archivista (con "archivista de memoria" y el placeholder `{{ BLOQUE_DE_MENSAJES }}`)
+**And** `collapse_prompt` SHALL contener el prompt de resumen (con "Resume el siguiente texto")
+**And** la migración SHALL NOT sobreescribir valores existentes no vacíos (personalizaciones del usuario)
+**And** la migración SHALL rellenar valores ausentes o vacíos
+
+#### Scenario: Base de datos nueva recibe los tres prompts
+- **WHEN** se ejecuta `run_migrations()` sobre una base de datos vacía
+- **THEN** `SELECT value FROM settings WHERE key='system_prompt'` devuelve un valor no vacío que contiene "asistente personal británico"
+- **AND** `SELECT value FROM settings WHERE key='archivist_prompt'` devuelve un valor no vacío que contiene "{{ BLOQUE_DE_MENSAJES }}"
+- **AND** `SELECT value FROM settings WHERE key='collapse_prompt'` devuelve un valor no vacío que contiene "Resume el siguiente texto"
+
+#### Scenario: Valor vacío existente se rellena
+- **GIVEN** una base de datos con `settings.system_prompt = ''`
+- **WHEN** se ejecuta la migración de prompts
+- **THEN** `settings.system_prompt` pasa a contener el prompt por defecto no vacío
+
+#### Scenario: Personalización existente se respeta
+- **GIVEN** una base de datos con `settings.system_prompt = 'Mi prompt personalizado'`
+- **WHEN** se ejecuta la migración de prompts
+- **THEN** `settings.system_prompt` sigue siendo `'Mi prompt personalizado'`
+
+#### Scenario: Migración idempotente
+- **WHEN** se ejecuta `run_migrations()` dos veces seguidas
+- **THEN** no se produce error
+- **AND** los tres prompts siguen presentes con un único valor por clave

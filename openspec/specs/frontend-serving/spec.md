@@ -55,6 +55,8 @@ En desarrollo, Vite puede ejecutarse independientemente con su propio dev server
 **Then** Vite redirige la petición a `http://localhost:3000/api/health`
 **And** HMR funciona correctamente (cambios en TSX se reflejan en tiempo real)
 
+## Requirements
+
 ### Requirement: Frontend SHALL use configurable message page size
 
 **Given** el hook `useMainChat`
@@ -78,3 +80,9 @@ En desarrollo, Vite puede ejecutarse independientemente con su propio dev server
 **When** está visible
 **Then** SHALL mostrar un campo `message_page_size` con min=10, max=100, step=10
 **And** el valor por defecto SHALL ser 50
+
+#### Scenario: Campo message_page_size visible en ajustes
+**Given** el panel de ajustes
+**When** está visible
+**Then** muestra un campo `message_page_size` con min=10, max=100, step=10
+**And** el valor por defecto es 50

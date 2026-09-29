@@ -1,5 +1,9 @@
 # Frontend UI Polish — Componentes, estilos globales y tipografía
 
+## Purpose
+
+Interfaz de usuario de Valet: chat, agenda, tareas, estadísticas y ajustes, con estilos globales y tipografía configurable.
+
 ## Contracts
 
 ### Configuración de tema (theme.ts)
@@ -122,6 +126,8 @@ márgenes residuales del body o de los estilos por defecto de antd.
 
 ### Requirement: CalendarView header responsivo
 
+El header del calendario SHALL apilar sus controles en vertical en viewports pequeños y mostrarlos en fila en desktop.
+
 #### Scenario: Header se apila verticalmente en móvil
 **Given** el viewport es < 768px  
 **When** se abre el modal de agenda  
@@ -134,6 +140,8 @@ márgenes residuales del body o de los estilos por defecto de antd.
 **Then** el selector y botón están en fila horizontal (como ahora)
 
 ### Requirement: Modales con ancho dinámico
+
+Los modales de evento SHALL adaptar su ancho al viewport, ocupando el ancho completo menos padding en móvil.
 
 #### Scenario: EventModal se adapta en móvil
 **Given** el viewport es < 768px  
@@ -148,6 +156,8 @@ márgenes residuales del body o de los estilos por defecto de antd.
 
 ### Requirement: Lista de eventos del día responsiva
 
+La lista de eventos del día SHALL apilar cada evento a ancho completo con título y hora en vertical en móvil.
+
 #### Scenario: Eventos del día se apilan en móvil
 **Given** el viewport es < 768px  
 **When** se selecciona una fecha con eventos  
@@ -155,6 +165,8 @@ márgenes residuales del body o de los estilos por defecto de antd.
 **And** título y hora están en vertical en vez de horizontal
 
 ### Requirement: StatsDashboard SHALL display cost and tokens by model
+
+StatsDashboard SHALL mostrar el coste y los tokens por modelo mediante un gráfico de barras y una tabla.
 
 **Given** el endpoint `/api/stats/llm/by-model` devuelve datos
 **When** se renderiza StatsDashboard
@@ -168,6 +180,8 @@ márgenes residuales del body o de los estilos por defecto de antd.
 **And** la tabla tiene 2 filas ordenadas por coste descendente
 
 ### Requirement: StatsDashboard SHALL display daily time series
+
+StatsDashboard SHALL mostrar series temporales de llamadas y coste por día con un selector de rango.
 
 **Given** el endpoint `/api/stats/llm/by-day?days=30` devuelve datos
 **When** se renderiza StatsDashboard
@@ -188,6 +202,8 @@ márgenes residuales del body o de los estilos por defecto de antd.
 
 ### Requirement: StatsDashboard SHALL display tool call frequency
 
+StatsDashboard SHALL mostrar la frecuencia de uso de las herramientas mediante un gráfico de tarta y una tabla.
+
 **Given** el endpoint `/api/stats/llm/tools` devuelve datos
 **When** se renderiza StatsDashboard
 **Then** muestra un gráfico de tarta (doughnut) con las tools más llamadas
@@ -201,6 +217,8 @@ márgenes residuales del body o de los estilos por defecto de antd.
 
 ### Requirement: StatsDashboard SHALL display database table sizes
 
+StatsDashboard SHALL mostrar una tabla con el número de filas de cada tabla ordenada de mayor a menor.
+
 **Given** el endpoint `/api/stats/db/sizes` devuelve datos
 **When** se renderiza StatsDashboard
 **Then** muestra una tabla con nombre de tabla y row count
@@ -213,6 +231,8 @@ márgenes residuales del body o de los estilos por defecto de antd.
 
 ### Requirement: StatsDashboard SHALL allow CSV export
 
+StatsDashboard SHALL permitir descargar un CSV con todos los datos de `llm_requests`.
+
 **Given** la página StatsDashboard
 **When** el usuario hace clic en "Export CSV"
 **Then** se descarga un archivo CSV con todos los datos de llm_requests
@@ -224,6 +244,8 @@ márgenes residuales del body o de los estilos por defecto de antd.
 **And** el contenido es un CSV válido con cabeceras
 
 ### Requirement: StatsDashboard SHALL allow configuring retention days from UI
+
+StatsDashboard SHALL permitir configurar `stats_retention_days` desde la UI, cargando y guardando el valor vía la API de retención.
 
 **Given** la página StatsDashboard
 **When** el usuario ve la sección de configuración
@@ -243,6 +265,8 @@ márgenes residuales del body o de los estilos por defecto de antd.
 **And** se muestra un mensaje de confirmación
 
 ### Requirement: StatsDashboard SHALL handle loading and error states
+
+StatsDashboard SHALL mostrar estados de carga y de error por sección sin romper el resto del dashboard.
 
 #### Scenario: Loading state
 **Given** la página StatsDashboard se está cargando
@@ -342,17 +366,51 @@ SettingsDialog SHALL display an "Interfaz" tab with font size, context window, a
 
 ### Requirement: SettingsDialog SHALL display Prompt tab
 
-SettingsDialog SHALL display a "Prompt" tab with a textarea for the custom system prompt.
+SettingsDialog SHALL display a "Prompts" tab with three sub-tabs, one per editable prompt: System, Archivist and Collapse.
 
-**Given** el SettingsDialog está abierto en la tab "Prompt"
+**Given** el SettingsDialog está abierto en la tab "Prompts"
 **When** se renderiza
-**Then** muestra un TextArea de 10 filas con el system_prompt actual
-**And** un placeholder con el prompt por defecto si está vacío
+**Then** muestra tres sub-pestañas: "System", "Archivist" y "Collapse"
+**And** cada sub-pestaña muestra un TextArea de 10 filas con el valor actual de `system_prompt`, `archivist_prompt` y `collapse_prompt` respectivamente
+**And** los valores se cargan desde `GET /settings`
+**And** un botón "Guardar" persiste los tres valores vía `PUT /settings`
+
+#### Scenario: Las tres sub-pestañas están presentes
+**Given** el SettingsDialog está abierto en la tab "Prompts"
+**When** se renderiza
+**Then** existen las sub-pestañas "System", "Archivist" y "Collapse"
+**And** al hacer clic en cada una se muestra su TextArea correspondiente
+
+#### Scenario: System prompt se carga desde la BD
+**Given** `GET /settings` devuelve `system_prompt = "Eres Valet"`
+**When** se abre la sub-pestaña "System"
+**Then** el TextArea muestra "Eres Valet"
+
+#### Scenario: Archivist prompt se carga desde la BD
+**Given** `GET /settings` devuelve `archivist_prompt = "Eres un archivista"`
+**When** se abre la sub-pestaña "Archivist"
+**Then** el TextArea muestra "Eres un archivista"
+
+#### Scenario: Collapse prompt se carga desde la BD
+**Given** `GET /settings` devuelve `collapse_prompt = "Resume el texto"`
+**When** se abre la sub-pestaña "Collapse"
+**Then** el TextArea muestra "Resume el texto"
+
+#### Scenario: Los tres prompts se guardan
+**Given** el usuario edita los tres TextAreas
+**When** hace clic en "Guardar"
+**Then** `updateSettings` se llama con `{ system_prompt, archivist_prompt, collapse_prompt }`
+**And** se muestra mensaje "Ajustes guardados"
 
 #### Scenario: Prompt se guarda
-**Given** el usuario escribe "Eres un asistente útil" en el TextArea
+**Given** el usuario escribe "Eres un asistente útil" en el TextArea "System"
 **When** hace clic en "Guardar"
 **Then** `updateSettings` se llama con `{ system_prompt: "Eres un asistente útil", ... }`
+
+#### Scenario: Editar un prompt no borra los otros
+**Given** el usuario modifica solo el TextArea "Archivist"
+**When** hace clic en "Guardar"
+**Then** `system_prompt` y `collapse_prompt` se envían con sus valores actuales sin cambios
 
 ### Requirement: SettingsDialog SHALL display API Keys tab
 
@@ -376,7 +434,7 @@ SettingsDialog SHALL open when clicking the settings icon in the header, replaci
 
 **Given** el header tiene un botón con icono `SettingOutlined`
 **When** el usuario hace clic en él
-**Then** se abre un Modal titulado "⚙️ Settings" con tabs: Perfil, Interfaz, Prompt, API Keys
+**Then** se abre un Modal titulado "⚙️ Settings" con tabs: Perfil, Interfaz, Prompts, API Keys
 **And** el botón `UserOutlined` ya no existe en el header
 
 #### Scenario: Dialog closes
@@ -392,6 +450,8 @@ SettingsDialog SHALL open when clicking the settings icon in the header, replaci
 
 ### Requirement: SettingsDialog SHALL handle loading and error states
 
+SettingsDialog SHALL permitir restaurar los valores por defecto de la interfaz mostrando un mensaje de confirmación.
+
 #### Scenario: Restaurar valores por defecto
 **Given** el usuario ha modificado valores en Interfaz
 **When** hace clic en "Restaurar valores por defecto"
@@ -403,6 +463,11 @@ SettingsDialog SHALL open when clicking the settings icon in the header, replaci
 **Given** el tipo `Message` en `frontend/src/types/index.ts`  
 **When** se renderiza un mensaje  
 **Then** `Message` SHALL incluir `location?: string | null`
+
+#### Scenario: Message incluye location opcional
+**Given** el tipo `Message` en `frontend/src/types/index.ts`
+**When** se define un mensaje
+**Then** `Message` incluye `location?: string | null`
 
 ### Requirement: ChatView SHALL show date separators between message groups
 
@@ -469,6 +534,11 @@ SettingsDialog SHALL open when clicking the settings icon in the header, replaci
 **When** se renderiza un mensaje  
 **Then** `Message` SHALL incluir `tools_used?: string`
 
+#### Scenario: Message incluye tools_used opcional
+**Given** el tipo `Message` en `frontend/src/types/index.ts`
+**When** se define un mensaje
+**Then** `Message` incluye `tools_used?: string`
+
 ### Requirement: MessageBubble SHALL display metadata as 3 separate lines
 
 **Given** un mensaje renderizado  
@@ -524,9 +594,21 @@ SettingsDialog SHALL open when clicking the settings icon in the header, replaci
 **Then** la ubicación SHALL mostrarse siempre que `location` no sea null  
 **And** SHALL mostrarse en su propia línea (no inline con la hora)
 
+#### Scenario: La ubicación se muestra en su propia línea
+**Given** un mensaje con `location`
+**When** se renderiza
+**Then** la ubicación se muestra siempre que `location` no sea null
+**And** se muestra en su propia línea, no inline con la hora
+
 ### Requirement: useMainChat SHALL NOT append tool footer to content
 
 **Given** el hook `useMainChat`  
 **When** se completa el streaming (`onDone`)  
 **Then** NO SHALL concatenar `\n\n---\n🔧 ...` al contenido del mensaje  
 **And** el contenido del mensaje SHALL ser exactamente el texto del assistant sin metadatos de herramientas
+
+#### Scenario: El contenido no incluye footer de herramientas
+**Given** el hook `useMainChat`
+**When** se completa el streaming (`onDone`)
+**Then** el contenido del mensaje no concatena el footer `🔧 ...`
+**And** el contenido es exactamente el texto del assistant

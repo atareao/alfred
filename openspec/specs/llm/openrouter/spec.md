@@ -1,5 +1,9 @@
 # LLM: OpenRouter SSE Streaming — Finish Reason Handling
 
+## Purpose
+
+Contrato del proveedor OpenRouter: parsing de respuestas y eventos SSE, acumulación y finalización de tool calls, extracción del coste y cabeceras de identificación de la aplicación.
+
 ## Contracts
 
 ### `parse_sse_event` behavior
@@ -119,6 +123,8 @@ Los métodos `chat()`, `chat_stream()` y `embed()` de `OpenRouterProvider` (en `
 **Then** the resulting `ChatResponse.message.content` SHALL be `""`  
 **And** `tool_calls` SHALL be `Some(...)`
 
+## Requirements
+
 ### Requirement: Trace logging for cost debugging
 
 `OpenRouterProvider::chat()` y `chat_stream()` SHALL loguear a nivel TRACE el JSON crudo de las respuestas
@@ -131,6 +137,11 @@ En el streaming path (`chat_stream`):
 En el non-streaming path (`chat`):
 - El body JSON completo de la respuesta SHALL loguearse con `tracing::trace!(raw_response = %raw_json, "OpenRouter raw response body")`
 
+#### Scenario: Trace logging outputs raw SSE and usage JSON
+- **WHEN** `chat_stream` processes an SSE line with `finish_reason` and `usage`
+- **THEN** it SHALL log the raw line at TRACE level with message "OpenRouter SSE raw"
+- **AND** it SHALL log the full usage JSON at TRACE level with message "OpenRouter usage chunk"
+
 ### Requirement: Cost retrieval from OpenRouter response
 
 `parse_sse_event()` SHALL extraer `cost` del campo `usage.cost` en la respuesta JSON de OpenRouter.
@@ -138,6 +149,11 @@ Si el campo no está presente o es `null`, SHALL devolver `0.0` (no romper la fu
 
 `parse_response()` SHALL extraer `cost` del campo `usage.cost` en la respuesta JSON de OpenRouter.
 Si el campo no está presente o es `null`, SHALL devolver `0.0`.
+
+#### Scenario: Cost is extracted from usage.cost
+- **WHEN** the OpenRouter response contains `usage.cost`
+- **THEN** the parsed `TokenUsage` SHALL contain that cost value
+- **AND** a missing or null cost SHALL default to `0.0`
 
 ## Scenarios
 
