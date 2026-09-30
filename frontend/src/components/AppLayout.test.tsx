@@ -3,6 +3,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { AppLayout } from "./AppLayout";
+import { ProfileProvider } from "../contexts/ProfileProvider";
 
 // Mock child components that have complex dependencies
 vi.mock("../pages/StatsDashboard", () => ({
@@ -44,7 +45,7 @@ vi.mock("../hooks/useMainChat", () => ({
 
 vi.mock("../hooks/useProfile", () => ({
   useProfile: () => ({
-    profile: { id: "test", name: "Test", preferences: "{}" },
+    profile: { id: "test", name: "Test", avatar_url: "", preferences: "{}" },
     loading: false,
     error: null,
     updateProfile: vi.fn(),
@@ -70,7 +71,9 @@ describe("AppLayout — settings dialog", () => {
   it("settings modal is closed initially", () => {
     render(
       <MemoryRouter>
-        <AppLayout />
+        <ProfileProvider>
+          <AppLayout />
+        </ProfileProvider>
       </MemoryRouter>,
     );
 
@@ -81,7 +84,9 @@ describe("AppLayout — settings dialog", () => {
     const user = userEvent.setup();
     render(
       <MemoryRouter>
-        <AppLayout />
+        <ProfileProvider>
+          <AppLayout />
+        </ProfileProvider>
       </MemoryRouter>,
     );
 
@@ -97,7 +102,9 @@ describe("AppLayout — settings dialog", () => {
   it("has only one settings-related button in the header (no profile button)", () => {
     render(
       <MemoryRouter>
-        <AppLayout />
+        <ProfileProvider>
+          <AppLayout />
+        </ProfileProvider>
       </MemoryRouter>,
     );
 
@@ -110,7 +117,9 @@ describe("AppLayout — settings dialog", () => {
   it("stats modal is closed initially", () => {
     render(
       <MemoryRouter>
-        <AppLayout />
+        <ProfileProvider>
+          <AppLayout />
+        </ProfileProvider>
       </MemoryRouter>,
     );
 
@@ -121,7 +130,9 @@ describe("AppLayout — settings dialog", () => {
     const user = userEvent.setup();
     render(
       <MemoryRouter>
-        <AppLayout />
+        <ProfileProvider>
+          <AppLayout />
+        </ProfileProvider>
       </MemoryRouter>,
     );
 

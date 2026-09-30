@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor, within, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 // ---------------------------------------------------------------------------
@@ -59,6 +59,7 @@ vi.mock("../hooks/useSettings", () => ({
 }));
 
 import { SettingsDialog } from "../components/SettingsDialog";
+import { ProfileProvider } from "../contexts/ProfileProvider";
 
 describe("SettingsDialog", () => {
   beforeEach(() => {
@@ -66,17 +67,17 @@ describe("SettingsDialog", () => {
   });
 
   it("is not visible when visible=false", () => {
-    render(<SettingsDialog visible={false} onClose={vi.fn()} />);
+    render(<ProfileProvider><SettingsDialog visible={false} onClose={vi.fn()} /></ProfileProvider>);
     expect(screen.queryByText("⚙️ Settings")).not.toBeInTheDocument();
   });
 
   it("renders modal with correct title when visible", () => {
-    render(<SettingsDialog visible={true} onClose={vi.fn()} />);
+    render(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
     expect(screen.getByText("⚙️ Settings")).toBeInTheDocument();
   });
 
   it("renders Perfil tab by default with name and avatar fields", () => {
-    render(<SettingsDialog visible={true} onClose={vi.fn()} />);
+    render(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
     expect(screen.getByText("Perfil")).toBeInTheDocument();
     expect(screen.getByLabelText("Nombre")).toBeInTheDocument();
     expect(screen.getByLabelText("Avatar URL")).toBeInTheDocument();
@@ -85,7 +86,7 @@ describe("SettingsDialog", () => {
   it("saves profile when submitting Perfil tab", async () => {
     const user = userEvent.setup();
     mockUpdateProfile.mockResolvedValue(undefined);
-    render(<SettingsDialog visible={true} onClose={vi.fn()} />);
+    render(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
     const nameInput = screen.getByLabelText("Nombre");
     await user.clear(nameInput);
@@ -103,7 +104,7 @@ describe("SettingsDialog", () => {
   it("shows error message when profile save fails", async () => {
     const user = userEvent.setup();
     mockUpdateProfile.mockRejectedValue(new Error("fail"));
-    render(<SettingsDialog visible={true} onClose={vi.fn()} />);
+    render(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
     await user.click(screen.getByRole("button", { name: /guardar/i }));
 
@@ -114,7 +115,7 @@ describe("SettingsDialog", () => {
 
   it("renders Interfaz tab with font size, context window, and page size", async () => {
     const user = userEvent.setup();
-    render(<SettingsDialog visible={true} onClose={vi.fn()} />);
+    render(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
     // Click on Interfaz tab
     await user.click(screen.getByText("Interfaz"));
@@ -126,7 +127,7 @@ describe("SettingsDialog", () => {
 
   it("renders Prompts tab with System, Archivist and Collapse sub-tabs", async () => {
     const user = userEvent.setup();
-    render(<SettingsDialog visible={true} onClose={vi.fn()} />);
+    render(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
     await user.click(screen.getByText("Prompts"));
 
@@ -137,7 +138,7 @@ describe("SettingsDialog", () => {
 
   it("shows system_prompt when opening the System sub-tab", async () => {
     const user = userEvent.setup();
-    render(<SettingsDialog visible={true} onClose={vi.fn()} />);
+    render(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
     await user.click(screen.getByText("Prompts"));
     await user.click(screen.getByText("System"));
@@ -147,7 +148,7 @@ describe("SettingsDialog", () => {
 
   it("shows archivist_prompt when opening the Archivist sub-tab", async () => {
     const user = userEvent.setup();
-    render(<SettingsDialog visible={true} onClose={vi.fn()} />);
+    render(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
     await user.click(screen.getByText("Prompts"));
     await user.click(screen.getByText("Archivist"));
@@ -159,7 +160,7 @@ describe("SettingsDialog", () => {
 
   it("shows collapse_prompt when opening the Collapse sub-tab", async () => {
     const user = userEvent.setup();
-    render(<SettingsDialog visible={true} onClose={vi.fn()} />);
+    render(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
     await user.click(screen.getByText("Prompts"));
     await user.click(screen.getByText("Collapse"));
@@ -172,7 +173,7 @@ describe("SettingsDialog", () => {
   it("saves the three prompts together via updateSettings", async () => {
     const user = userEvent.setup();
     mockUpdateSettings.mockResolvedValue(undefined);
-    render(<SettingsDialog visible={true} onClose={vi.fn()} />);
+    render(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
     await user.click(screen.getByText("Prompts"));
 
@@ -205,7 +206,7 @@ describe("SettingsDialog", () => {
   it("keeps the loaded prompts when saving from the Interfaz tab", async () => {
     const user = userEvent.setup();
     mockUpdateSettings.mockResolvedValue(undefined);
-    render(<SettingsDialog visible={true} onClose={vi.fn()} />);
+    render(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
     await user.click(screen.getByText("Interfaz"));
 
@@ -231,7 +232,7 @@ describe("SettingsDialog", () => {
   it("keeps interface settings when saving from the Prompts tab", async () => {
     const user = userEvent.setup();
     mockUpdateSettings.mockResolvedValue(undefined);
-    render(<SettingsDialog visible={true} onClose={vi.fn()} />);
+    render(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
     await user.click(screen.getByText("Prompts"));
 
@@ -256,7 +257,7 @@ describe("SettingsDialog", () => {
   it("editing only the Archivist prompt keeps the other prompts unchanged", async () => {
     const user = userEvent.setup();
     mockUpdateSettings.mockResolvedValue(undefined);
-    render(<SettingsDialog visible={true} onClose={vi.fn()} />);
+    render(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
     await user.click(screen.getByText("Prompts"));
     await user.click(screen.getByText("Archivist"));
@@ -281,7 +282,7 @@ describe("SettingsDialog", () => {
 
   it("renders API Keys tab with three password fields", async () => {
     const user = userEvent.setup();
-    render(<SettingsDialog visible={true} onClose={vi.fn()} />);
+    render(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
     await user.click(screen.getByText("API Keys"));
 
@@ -293,7 +294,7 @@ describe("SettingsDialog", () => {
   it("calls resetToDefaults when clicking restore button", async () => {
     const user = userEvent.setup();
     mockResetToDefaults.mockResolvedValue(undefined);
-    render(<SettingsDialog visible={true} onClose={vi.fn()} />);
+    render(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
     await user.click(screen.getByText("Interfaz"));
 
@@ -306,7 +307,7 @@ describe("SettingsDialog", () => {
 
   it("calls onClose when modal is cancelled", async () => {
     const onClose = vi.fn();
-    render(<SettingsDialog visible={true} onClose={onClose} />);
+    render(<ProfileProvider><SettingsDialog visible={true} onClose={onClose} /></ProfileProvider>);
 
     // For antd Modal, the close button has aria-label "Close"
     const closeButton = screen.getByLabelText("Close");
@@ -315,5 +316,177 @@ describe("SettingsDialog", () => {
     await waitFor(() => {
       expect(onClose).toHaveBeenCalled();
     });
+  });
+
+  // ════════════════════════════════════════════════════════════════
+  // RED phase tests — validación de esquema de "Avatar URL"
+  // ════════════════════════════════════════════════════════════════
+
+  it("muestra error de validación y NO guarda con un esquema no permitido", async () => {
+    const user = userEvent.setup();
+    mockUpdateProfile.mockResolvedValue(undefined);
+    render(
+      <ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>,
+    );
+
+    const avatarInput = screen.getByLabelText("Avatar URL");
+    await user.clear(avatarInput);
+    await user.type(avatarInput, "javascript:alert(1)");
+
+    await user.click(screen.getByRole("button", { name: /guardar/i }));
+
+    await waitFor(() => {
+      expect(
+        document.querySelector(".ant-form-item-explain-error"),
+      ).not.toBeNull();
+    });
+    expect(mockUpdateProfile).not.toHaveBeenCalled();
+  });
+
+  it("guarda una URL https válida sin error de validación", async () => {
+    const user = userEvent.setup();
+    mockUpdateProfile.mockResolvedValue(undefined);
+    render(
+      <ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>,
+    );
+
+    const avatarInput = screen.getByLabelText("Avatar URL");
+    await user.clear(avatarInput);
+    await user.type(avatarInput, "https://example.com/me.png");
+
+    await user.click(screen.getByRole("button", { name: /guardar/i }));
+
+    await waitFor(() => {
+      expect(mockUpdateProfile).toHaveBeenCalledWith(
+        expect.objectContaining({ avatar_url: "https://example.com/me.png" }),
+      );
+    });
+    expect(document.querySelector(".ant-form-item-explain-error")).toBeNull();
+  });
+
+  it("acepta Avatar URL vacío y guarda sin error de validación", async () => {
+    const user = userEvent.setup();
+    mockUpdateProfile.mockResolvedValue(undefined);
+    render(
+      <ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>,
+    );
+
+    const avatarInput = screen.getByLabelText("Avatar URL");
+    await user.clear(avatarInput);
+
+    await user.click(screen.getByRole("button", { name: /guardar/i }));
+
+    await waitFor(() => {
+      expect(mockUpdateProfile).toHaveBeenCalled();
+    });
+    expect(document.querySelector(".ant-form-item-explain-error")).toBeNull();
+  });
+
+  it("acepta una ruta relativa en Avatar URL y la guarda", async () => {
+    const user = userEvent.setup();
+    mockUpdateProfile.mockResolvedValue(undefined);
+    render(
+      <ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>,
+    );
+
+    const avatarInput = screen.getByLabelText("Avatar URL");
+    await user.clear(avatarInput);
+    await user.type(avatarInput, "/avatars/me.png");
+
+    await user.click(screen.getByRole("button", { name: /guardar/i }));
+
+    await waitFor(() => {
+      expect(mockUpdateProfile).toHaveBeenCalledWith(
+        expect.objectContaining({ avatar_url: "/avatars/me.png" }),
+      );
+    });
+    expect(document.querySelector(".ant-form-item-explain-error")).toBeNull();
+  });
+
+  it("persiste el Avatar URL recortado de espacios", async () => {
+    const user = userEvent.setup();
+    mockUpdateProfile.mockResolvedValue(undefined);
+    render(
+      <ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>,
+    );
+
+    const avatarInput = screen.getByLabelText("Avatar URL");
+    await user.clear(avatarInput);
+    await user.type(avatarInput, "  https://example.com/me.png  ");
+
+    await user.click(screen.getByRole("button", { name: /guardar/i }));
+
+    await waitFor(() => {
+      expect(mockUpdateProfile).toHaveBeenCalledWith(
+        expect.objectContaining({ avatar_url: "https://example.com/me.png" }),
+      );
+    });
+  });
+
+  it("rechaza una URL relativa al protocolo", async () => {
+    const user = userEvent.setup();
+    mockUpdateProfile.mockResolvedValue(undefined);
+    render(
+      <ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>,
+    );
+
+    const avatarInput = screen.getByLabelText("Avatar URL");
+    await user.clear(avatarInput);
+    await user.type(avatarInput, "//evil.com/a.png");
+
+    await user.click(screen.getByRole("button", { name: /guardar/i }));
+
+    await waitFor(() => {
+      expect(
+        document.querySelector(".ant-form-item-explain-error"),
+      ).not.toBeNull();
+    });
+    expect(mockUpdateProfile).not.toHaveBeenCalled();
+  });
+
+  it("rechaza un valor con un tabulador embebido", async () => {
+    const user = userEvent.setup();
+    mockUpdateProfile.mockResolvedValue(undefined);
+    render(
+      <ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>,
+    );
+
+    const avatarInput = screen.getByLabelText("Avatar URL");
+    fireEvent.change(avatarInput, { target: { value: "java\tscript:alert(1)" } });
+
+    await user.click(screen.getByRole("button", { name: /guardar/i }));
+
+    await waitFor(() => {
+      expect(
+        document.querySelector(".ant-form-item-explain-error"),
+      ).not.toBeNull();
+    });
+    expect(mockUpdateProfile).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "javascript:alert(1)",
+    "data:image/png;base64,AAA",
+    "file:///etc/passwd",
+    "ftp://x/a.png",
+    "//evil.com/a.png",
+  ])("rechaza el esquema/valor no permitido %s", async (value) => {
+    const user = userEvent.setup();
+    mockUpdateProfile.mockResolvedValue(undefined);
+    render(
+      <ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>,
+    );
+
+    const avatarInput = screen.getByLabelText("Avatar URL");
+    fireEvent.change(avatarInput, { target: { value } });
+
+    await user.click(screen.getByRole("button", { name: /guardar/i }));
+
+    await waitFor(() => {
+      expect(
+        document.querySelector(".ant-form-item-explain-error"),
+      ).not.toBeNull();
+    });
+    expect(mockUpdateProfile).not.toHaveBeenCalled();
   });
 });

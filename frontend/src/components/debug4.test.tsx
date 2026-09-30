@@ -2,6 +2,7 @@ import { describe, it, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { AppLayout } from "./AppLayout";
+import { ProfileProvider } from "../contexts/ProfileProvider";
 
 vi.mock("../pages/StatsDashboard", () => ({
   StatsDashboard: () => <div data-testid="stats-dashboard">Stats Content</div>,
@@ -23,7 +24,7 @@ vi.mock("../hooks/useSettings", () => ({
 
 describe("debug4", () => {
   it("try clicking various things", () => {
-    render(<MemoryRouter><AppLayout /></MemoryRouter>);
+    render(<MemoryRouter><ProfileProvider><AppLayout /></ProfileProvider></MemoryRouter>);
     const barChart = screen.getByRole("button", { name: /bar-chart/i });
     fireEvent.click(barChart);
     console.log("After open - stats:", screen.queryByTestId("stats-dashboard") !== null);

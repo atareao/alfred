@@ -2,6 +2,7 @@ import { describe, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { AppLayout } from "./AppLayout";
+import { ProfileProvider } from "../contexts/ProfileProvider";
 
 vi.mock("../pages/StatsDashboard", () => ({
   StatsDashboard: () => <div data-testid="stats-dashboard">Stats Content</div>,
@@ -23,13 +24,13 @@ vi.mock("../hooks/useSettings", () => ({
 
 describe("debug", () => {
   it("checks before opening", () => {
-    render(<MemoryRouter><AppLayout /></MemoryRouter>);
+    render(<MemoryRouter><ProfileProvider><AppLayout /></ProfileProvider></MemoryRouter>);
     console.log("Before open:", screen.queryByTestId("stats-dashboard"));
     console.log("Close btns:", screen.queryAllByRole("button", { name: /close/i }).length);
     console.log("Close labels:", screen.queryAllByLabelText("Close").length);
   });
   it("checks after opening", () => {
-    render(<MemoryRouter><AppLayout /></MemoryRouter>);
+    render(<MemoryRouter><ProfileProvider><AppLayout /></ProfileProvider></MemoryRouter>);
     const barChart = screen.getByRole("button", { name: /bar-chart/i });
     barChart.click();
     console.log("Has stats-dashboard:", screen.queryByTestId("stats-dashboard") !== null);

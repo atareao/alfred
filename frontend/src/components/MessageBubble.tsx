@@ -1,14 +1,11 @@
 import React from "react";
 import { Typography } from "antd";
-import {
-  UserOutlined,
-  RobotOutlined,
-  InfoCircleOutlined,
-  CodeOutlined,
-} from "@ant-design/icons";
+import { InfoCircleOutlined, CodeOutlined } from "@ant-design/icons";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Message } from "../types";
+import valetIcon from "../assets/valet-icon.svg";
+import { UserAvatar } from "./UserAvatar";
 
 const { Text } = Typography;
 
@@ -21,10 +18,14 @@ function formatTime(isoDate: string): string {
 
 interface MessageBubbleProps {
   message: Message;
+  userAvatarUrl?: string | null;
 }
 
-export const MessageBubble: React.FC<MessageBubbleProps> = ({ message }) => {
-  const config = getRoleConfig(message.role);
+export const MessageBubble: React.FC<MessageBubbleProps> = ({
+  message,
+  userAvatarUrl,
+}) => {
+  const config = getRoleConfig(message.role, userAvatarUrl);
 
   return (
     <div
@@ -90,7 +91,10 @@ interface RoleConfig {
   icon: React.ReactNode;
 }
 
-function getRoleConfig(role: string): RoleConfig {
+function getRoleConfig(
+  role: string,
+  userAvatarUrl?: string | null,
+): RoleConfig {
   switch (role) {
     case "user":
       return {
@@ -102,7 +106,7 @@ function getRoleConfig(role: string): RoleConfig {
         textAlign: "left",
         showIcon: true,
         iconPosition: "right" as const,
-        icon: <UserOutlined style={{ color: "#1677ff" }} />,
+        icon: <UserAvatar src={userAvatarUrl} />,
       };
     case "assistant":
       return {
@@ -114,7 +118,15 @@ function getRoleConfig(role: string): RoleConfig {
         textAlign: "left",
         showIcon: true,
         iconPosition: "left" as const,
-        icon: <RobotOutlined style={{ color: "#52c41a" }} />,
+        icon: (
+          <img
+            src={valetIcon}
+            alt="Valet"
+            width={24}
+            height={24}
+            style={{ display: "block" }}
+          />
+        ),
       };
     case "system":
       return {
