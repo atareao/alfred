@@ -4,6 +4,15 @@
 # El proyecto usa Podman para desarrollo local. Ajusta el binario
 # en /usr/bin/podman si tu sistema lo tiene en otra ruta.
 
+# Formatos de --format para podman. Se declaran como variables a propósito:
+# en just, `{{{{` se colapsa a `{{` pero `}}}}` NO se colapsa, así que
+# escribir '{{{{.Image}}}}' haría que podman recibiera '{{.Image}}}}' y
+# añadiera dos llaves al valor. Con una variable el formato se escribe una
+# sola vez, tal cual, y se interpola.
+podman_fmt_image := '{{.Image}}'
+podman_fmt_id := '{{.Id}}'
+podman_fmt_config_image := '{{.Config.Image}}'
+
 # Levanta el servidor con frontend embebido (Podman)
 dev:
     podman compose up -d --build
@@ -46,8 +55,8 @@ deploy tag="latest":
     fi
 
     # Garantiza que corre la imagen publicada (mismo ID) y no una local.
-    running_id="$(podman inspect --format '{{{{.Image}}}}' "${cid}")"
-    published_id="$(podman image inspect --format '{{{{.Id}}}}' "${image}")"
+    running_id="$(podman inspect --format '{{ podman_fmt_image }}' "${cid}")"
+    published_id="$(podman image inspect --format '{{ podman_fmt_id }}' "${image}")"
     echo "▶ Imagen en ejecución: ${running_id}"
     if [ "${running_id}" != "${published_id}" ]; then
         echo "❌ El contenedor NO usa la imagen publicada (${image})."
@@ -74,7 +83,7 @@ deploy-local:
         echo "❌ No hay contenedor 'valet' en ejecución tras el despliegue."
         exit 1
     fi
-    echo "▶ Imagen en ejecución: $(podman inspect --format '{{{{.Config.Image}}}}' "${cid}")"
+    echo "▶ Imagen en ejecución: $(podman inspect --format '{{ podman_fmt_config_image }}' "${cid}")"
 
     just _verify-health
 
