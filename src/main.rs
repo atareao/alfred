@@ -1,9 +1,18 @@
+use std::future::IntoFuture;
 use std::time::Duration;
 use tracing_subscriber::EnvFilter;
 use valet::config::Config;
 use valet::{app_with_state, AppState};
 
-/// Maximum time the HTTP layer is given to drain after a shutdown signal.
+/// Maximum time the HTTP layer is given to drain **after a shutdown signal**.
+///
+/// This budget is measured from the moment the signal arrives, never from
+/// process start. It must not bound normal operation: wrapping the whole
+/// `axum::serve(...)` future in this `timeout` makes the clock run while the
+/// server is serving happily, so the timeout fires after 5 seconds with no
+/// signal in sight and tears down a healthy server. The serve loop is therefore
+/// raced against an explicit "drain started" notification and only this phase
+/// is timed (see the `select!` in `main`).
 ///
 /// `with_graceful_shutdown` waits for *every* open connection, and this server
 /// exposes long-lived SSE streams whose sockets stay open for as long as the
@@ -45,35 +54,76 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Build the application router
     let router = app_with_state(state);
 
-    // Bind and serve on configured host:port
+    // Bind and serve on configured host:port.
+    //
+    // Log the address the socket actually bound to, not `config.port`: with
+    // `PORT=0` the OS picks an ephemeral port and `config.port` stays `0`, so
+    // logging the configured value would hide the real port. Tests (and
+    // operators) rely on this line to discover where the server is listening.
     let addr = format!("{}:{}", config.host, config.port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
+    let local_addr = listener.local_addr()?;
 
-    tracing::info!("Valet server listening on {addr}");
+    tracing::info!("Valet server listening on {local_addr}");
 
     // Serve until a shutdown signal arrives, then let axum stop accepting
-    // new connections and drain the in-flight ones. The drain is capped by
-    // `SHUTDOWN_DRAIN_TIMEOUT` (see the constant) so an open SSE connection
-    // cannot hold the shutdown forever.
-    match tokio::time::timeout(
-        SHUTDOWN_DRAIN_TIMEOUT,
-        axum::serve(listener, router).with_graceful_shutdown(shutdown_signal()),
-    )
-    .await
-    {
-        // Drained cleanly within the budget: fall through to the shutdown.
-        Ok(Ok(())) => {}
-        // The server failed while serving; propagate the I/O error.
-        Ok(Err(error)) => return Err(error.into()),
-        // The drain exceeded its budget. Log loudly and continue shutting
-        // down instead of hanging until the runtime escalates to SIGKILL.
-        Err(_elapsed) => {
-            tracing::warn!(
-                timeout_secs = SHUTDOWN_DRAIN_TIMEOUT.as_secs(),
-                "Graceful drain timed out; connections still open, forcing shutdown"
-            );
+    // new connections and drain the in-flight ones.
+    //
+    // Why this is not a simple `timeout(SHUTDOWN_DRAIN_TIMEOUT, serve(...))`:
+    // `with_graceful_shutdown` receives a future that only resolves when a
+    // signal arrives. Wrapping the whole `serve` future in the timeout therefore
+    // starts the clock during *normal service*; with no signal it expires after
+    // 5 seconds, drops a perfectly healthy server, and `main` falls through to
+    // the shutdown path. That was the bug: the budget must bound the drain only,
+    // measured from the signal.
+    let (drain_started_tx, drain_started_rx) = tokio::sync::oneshot::channel::<()>();
+
+    // The shutdown future resolves as soon as a signal arrives, which is what
+    // makes axum start draining. Notify the outer scope at that exact moment so
+    // the drain budget is measured from the signal, not from process start.
+    let shutdown = async move {
+        shutdown_signal().await;
+        let _ = drain_started_tx.send(());
+    };
+
+    // `axum::serve(...).with_graceful_shutdown(...)` yields a `WithGracefulShutdown`,
+    // which implements `IntoFuture` rather than `Future`, so turn it into a real
+    // future before pinning it for the `select!` below.
+    let server = axum::serve(listener, router)
+        .with_graceful_shutdown(shutdown)
+        .into_future();
+    tokio::pin!(server);
+
+    // `main` returns `Box<dyn Error>` and `select!` arms cannot use `?` on the
+    // `std::io::Error` produced by `serve`, so the outcome is stored here and
+    // propagated right after the block.
+    let serve_result: Result<(), std::io::Error> = tokio::select! {
+        result = &mut server => {
+            // The server stopped before any shutdown signal (e.g. a bind/accept
+            // error); propagate that I/O error.
+            result
         }
-    }
+        // `Ok(()) = ...` disables this branch if the channel closes without a
+        // value, so a dropped sender cannot be mistaken for a shutdown signal.
+        Ok(()) = drain_started_rx => {
+            // The signal arrived: now — and only now — start the drain budget.
+            match tokio::time::timeout(SHUTDOWN_DRAIN_TIMEOUT, &mut server).await {
+                // Drained cleanly within the budget: fall through to shutdown.
+                Ok(result) => result,
+                // The drain exceeded its budget. Log loudly and continue
+                // shutting down instead of hanging until the runtime escalates
+                // to SIGKILL. This can only happen after a signal.
+                Err(_elapsed) => {
+                    tracing::warn!(
+                        timeout_secs = SHUTDOWN_DRAIN_TIMEOUT.as_secs(),
+                        "Graceful drain timed out; connections still open, forcing shutdown"
+                    );
+                    Ok(())
+                }
+            }
+        }
+    };
+    serve_result?;
 
     tracing::info!("Shutdown signal received, stopping workers and closing the database pool");
 
