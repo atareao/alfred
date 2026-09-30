@@ -1,7 +1,7 @@
 # ═══════════════════════════════════════════════════════════════
 # Stage 1: Backend (Rust)
 # ═══════════════════════════════════════════════════════════════
-FROM docker.io/library/rust:alpine3.21 AS backend-builder
+FROM docker.io/library/rust:1.98.1-alpine3.21 AS backend-builder
 
 RUN apk add --no-cache --update \
     build-base \
