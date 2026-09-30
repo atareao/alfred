@@ -21,6 +21,46 @@ use std::time::Instant;
 /// in the `collapsed_content` column.
 pub struct CollapseWorker;
 
+/// Build a synchronous callback that forwards collapse message IDs to `tx`.
+///
+/// The callback must not silently discard IDs when the channel is full: it
+/// applies backpressure by spawning a task that awaits capacity, falling back
+/// to a non-blocking send (with a warning) when no async runtime is available.
+pub fn collapse_forwarder(tx: mpsc::Sender<String>) -> Box<dyn Fn(String) + Send> {
+    Box::new(move |msg_id: String| {
+        let tx = tx.clone();
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                // Backpressure: wait for capacity instead of dropping the ID.
+                //
+                // Tradeoff: a `spawn` is issued per ID, so when the channel is
+                // saturated the tasks queue up and their delivery order is not
+                // guaranteed. This is acceptable because the `CollapseWorker`
+                // processes each message ID independently (no cross-message
+                // ordering requirement).
+                handle.spawn(async move {
+                    if let Err(e) = tx.send(msg_id).await {
+                        tracing::warn!(
+                            error = %e,
+                            "CollapseWorker: collapse channel closed; message id not forwarded"
+                        );
+                    }
+                });
+            }
+            Err(_) => {
+                // No async runtime available: fall back to a non-blocking send
+                // but never drop the ID without at least a warning.
+                if let Err(e) = tx.try_send(msg_id) {
+                    tracing::warn!(
+                        error = %e,
+                        "CollapseWorker: collapse channel full or closed; message id dropped"
+                    );
+                }
+            }
+        }
+    })
+}
+
 impl CollapseWorker {
     /// Start the collapse worker in a new tokio task.
     ///
@@ -99,7 +139,7 @@ impl CollapseWorker {
                                 &db,
                                 &uuid::Uuid::new_v4().to_string(),
                                 &model,
-                                "background",
+                                None,
                                 prompt_tokens,
                                 completion_tokens,
                                 total_tokens,
@@ -144,7 +184,7 @@ impl CollapseWorker {
                                 &db,
                                 &uuid::Uuid::new_v4().to_string(),
                                 &model,
-                                "background",
+                                None,
                                 0,
                                 0,
                                 0,
@@ -430,5 +470,33 @@ mod tests {
             "ChatRequest.model should use the configured model, not the hardcoded default"
         );
         Ok(())
+    }
+
+    /// Given a full collapse channel (capacity 1), when a second ID is
+    /// forwarded, then it must not be lost silently: applying backpressure it
+    /// must be delivered once capacity frees up.
+    #[tokio::test]
+    async fn test_collapse_forwarder_applies_backpressure_on_full_channel() {
+        let (tx, mut rx) = mpsc::channel::<String>(1);
+        tx.send("first".to_string())
+            .await
+            .expect("send first should succeed");
+
+        let forward = collapse_forwarder(tx);
+        forward("second".to_string());
+
+        // Drain the first ID, freeing capacity.
+        let first = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv())
+            .await
+            .expect("first recv timed out")
+            .expect("first ID should be present");
+        assert_eq!(first, "first");
+
+        // The second must eventually arrive (backpressure), not be dropped.
+        let second = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv())
+            .await
+            .expect("second ID was lost: forwarder dropped it when the channel was full")
+            .expect("second ID should be present");
+        assert_eq!(second, "second");
     }
 }
