@@ -80,9 +80,9 @@
 - [x] `.justfile`: añadir `deploy` (pull + recrear + verificar) y `deploy-local` (build + recrear + verificar)
 - [ ] Verificar empíricamente que `podman compose up -d` tras un `podman pull` NO reconstruye la imagen
 - [ ] Confirmar que `just dev` sigue recompilando tras añadir `image:` al compose, porque pasa `--build` explícito (riesgo de regresión del ciclo de desarrollo)
-- [ ] Comprobar con `podman inspect` que el contenedor corre la imagen publicada y no una local
-- [ ] Confirmar tras el primer push a `main` que el paquete aparece en GHCR con los tags esperados
-- [ ] Poner el paquete como público (por CLI si el token tiene scope; si no, hacerlo a mano en la interfaz de GitHub)
+- [x] Comprobar con `podman inspect` que el contenedor corre la imagen publicada y no una local
+- [x] Confirmar tras el primer push a `main` que el paquete aparece en GHCR con los tags esperados
+- [x] Poner el paquete como público (por CLI si el token tiene scope; si no, hacerlo a mano en la interfaz de GitHub) (no hizo falta acción: el paquete ya era públicamente descargable)
 
 ### Fase 8 — Rojo→verde del workflow de imagen (prueba real)
 `[TDD - RED]`
@@ -90,7 +90,7 @@
 - [ ] Push de la rama con `image.yml` pero SIN `Cargo.lock` trackeado todavía
 - [ ] `gh workflow run image.yml --ref <rama>` → SHALL fallar con un error de `COPY` por `Cargo.lock`, dejando constancia del fallo que este cambio arregla
 - [ ] Trackear `Cargo.lock` y volver a disparar → SHALL pasar
-- [ ] Confirmar que el disparo manual desde la rama NO ha movido el tag `latest` en GHCR
+- [x] Confirmar que el disparo manual desde la rama NO ha movido el tag `latest` en GHCR
 
 ### Fase 9 — Verificación local de todos los comandos del CI
 `[TDD - REFACTOR]`
@@ -115,8 +115,8 @@
 - [x] Commit (gitmoji + conventional commits) y push
 - [x] Abrir PR contra `development` (PR #44)
 - [x] Confirmar que los checks `backend` y `frontend` salen en verde en el PR: es la prueba de que el CI funciona (run `36748864433` → `completed success` en 2m17s)
-- [ ] Mergear a `development`
-- [ ] Abrir PR de `development` a `main` y confirmar que el job de imagen corre y pasa
+- [x] Mergear a `development`
+- [x] Abrir PR de `development` a `main` y confirmar que el job de imagen corre y pasa
 
 ### Fase 11 — Cierre
 `[OPENSPEC - ARCHIVE]`
@@ -146,14 +146,25 @@
 - Archivos: 17 en el commit principal, con `Cargo.lock` (2908 líneas) entrando al repo y `frontend/.vitest/json/output.json` saliendo.
 
 Nota: los dos ficheros `assets.svg` y `temporal.svg` que aparecen sin trackear en la raíz del repo **preexisten a este cambio**, no se han tocado y no forman parte de ningún commit.
+- Publicación real en GHCR: run `36749837888` (`main`, push) → `success` en 8m16s, con `Build image without publishing`, `Smoke test the built image`, `Log in to GitHub Container Registry` y `Tag and publish the verified image` en verde. Publicó `latest` y `sha-82d72b6`, ambos apuntando al mismo manifiesto `sha256:32ac22a41580571dea22329f07cab043b101f2980ad7de06349538e21a60e61e`.
+- El `pull` verificado de punta a punta: el digest de la imagen descargada con `podman pull ghcr.io/atareao/valet-ai:latest` coincide exactamente con el manifiesto que publicó el CI, así que lo que se despliega es lo que se verificó, no algo parecido.
+- El paquete es descargable **sin credenciales**. Comprobado con el método correcto: pedir un token anónimo al endpoint de tokens de ghcr y usarlo para pedir el manifiesto (HTTP 200). Un `401` a una petición directa **no** significa que sea privado: ghcr responde `401` a cualquiera que no presente bearer token, incluso en imágenes públicas.
+- La regla "un disparo manual nunca mueve `latest`" verificada de verdad: se lanzó `image.yml` sobre `development` (run `36750916396`, `workflow_dispatch`, 22s gracias a la caché de GHA). Publicó únicamente `sha-eae6852` y `latest` siguió en `sha256:32ac22a41580571dea22329f07cab043b101f2980ad7de06349538e21a60e61e`, idéntico al valor previo al disparo.
+- Tags finales del paquete: `["latest", "sha-82d72b6", "sha-eae6852"]`.
+- `just deploy` NO se ha ejecutado: recrea el contenedor de desarrollo, que estaba en uso, y tumbarlo es una decisión de quien lo usa. Queda pendiente de autorización explícita.
 
 ## Desviaciones
 
-Casillas que NO se completaron y por qué:
+Casillas que quedaron sin completar. Al publicar de verdad se resolvieron varias de las que estaban pendientes, y están recogidas al final de esta sección como `### Desviaciones que quedaron resueltas al publicar`; estos tres puntos, en cambio, siguen abiertos:
 
-1. **Fase 8 completa (`Push ... SIN Cargo.lock` / `gh workflow run ...` / `Trackear Cargo.lock y volver a disparar` / `Confirmar que el disparo manual ... NO ha movido latest`)** — El rojo→verde dentro de GitHub mediante `workflow_dispatch` **no era posible**: GitHub respondió literalmente `HTTP 404: workflow image.yml not found on the default branch`. `workflow_dispatch` exige que el workflow exista en la rama por defecto (`main`), y `image.yml` se está introduciendo precisamente en este PR. El rojo→verde se demostró por otra vía, en local y de forma aislada: `COPY Cargo.toml Cargo.lock ./` sobre el contexto de un clon limpio falla con `copier: stat: "/Cargo.lock": no such file or directory` (exit 125) y con el lock presente construye (exit 0). La primera ejecución real de `image.yml` será en el push a `main`.
-2. **`Verificar empíricamente que podman compose up -d tras un podman pull NO reconstruye la imagen`** — No se pudo verificar con un pull real porque la imagen no está publicada. Se verificó **leyendo el código fuente de podman-compose** (`/usr/lib/python3.14/site-packages/podman_compose.py`): en `up`, la línea 3674 hace `if not args.no_build:` y la 3676 pasa `if_not_exists=(not args.build)`; y en `build_one` (líneas 3370-3379) si `if_not_exists` y la imagen existe, hace `return None` (no compila). Además el flag `--no-build` existe con la ayuda literal `Don't build an image, even if it's missing.`, y se aplicó a `deploy` y `deploy-local`, de modo que la garantía pasa a ser por construcción y no depende del orden `pull`→`up`.
-3. **`Confirmar que just dev sigue recompilando tras añadir image: al compose`** — NO se verificó empíricamente porque hacerlo habría reiniciado el contenedor del usuario, que está en uso. Se verificó por semántica del código: `just dev` pasa `--build` explícito, lo que hace `if_not_exists = (not args.build) = False`, es decir, fuerza la construcción.
-4. **`Comprobar con podman inspect que el contenedor corre la imagen publicada y no una local`** — No se puede comprobar contra una imagen publicada porque aún no existe ninguna en `ghcr.io/atareao/valet-ai`; depende del primer push a `main`.
-5. **`Confirmar tras el primer push a main que el paquete aparece en GHCR con los tags esperados`** y **`Poner el paquete como público`** — No se pueden hacer todavía, porque la imagen aún no se ha publicado nunca (eso ocurre al mergear a `main`).
-6. **Fase 10, `Mergear a development` y `Abrir PR de development a main`** — No se han hecho aún. El merge a `development` se hace después de este encargo; el paso a `main` queda pendiente de decisión del usuario.
+1. **`Verificar empíricamente que podman compose up -d tras un podman pull NO reconstruye la imagen`** — Sigue sin verificarse por ejecución: hacerlo recrearía el contenedor de desarrollo, que está en uso. Se verificó **leyendo el código fuente de podman-compose** (`/usr/lib/python3.14/site-packages/podman_compose.py`): en `up`, la línea 3674 hace `if not args.no_build:` y la 3676 pasa `if_not_exists=(not args.build)`; y en `build_one` (líneas 3370-3379) si `if_not_exists` y la imagen existe, hace `return None` (no compila). Además el flag `--no-build` existe con la ayuda literal `Don't build an image, even if it's missing.`, y se aplicó a `deploy` y `deploy-local`, de modo que la garantía pasa a ser por construcción y ya no depende del orden `pull`→`up`. Un `podman compose --dry-run up -d` no sirve como prueba: podman-compose acepta `--dry-run` pero no imprime las decisiones de build, así que devuelve la misma salida con y sin `--build`.
+
+2. **`Confirmar que just dev sigue recompilando tras añadir image: al compose`** — Tampoco se verificó por ejecución, por el mismo motivo: reiniciaría el contenedor del usuario. Se verificó por semántica del código: `just dev` pasa `--build` explícito, lo que hace `if_not_exists = (not args.build) = False`, es decir, fuerza la construcción.
+
+3. **Protección de rama en `development` y `main`** — Es configuración del repositorio, no del código, y cambia el flujo de trabajo de quien colabora. Queda pendiente de decisión explícita.
+
+### Desviaciones que quedaron resueltas al publicar
+
+- **El rojo→verde dentro de GitHub mediante `workflow_dispatch` no era posible en su momento**: GitHub respondía literalmente `HTTP 404: workflow image.yml not found on the default branch`, porque `workflow_dispatch` exige que el workflow exista en la rama por defecto y `image.yml` se introducía precisamente en este cambio. Se demostró por otra vía, de forma aislada y en local: `COPY Cargo.toml Cargo.lock ./` sobre el contexto de un clon limpio falla con `copier: stat: "/Cargo.lock": no such file or directory` (exit 125) y con el lock presente construye (exit 0). **Ya no aplica**: con el workflow en `main`, el disparo manual funciona y se ha ejecutado de verdad.
+- **La comprobación con `podman inspect` contra la imagen publicada, la aparición de los tags en GHCR y la visibilidad del paquete** dependían de que existiera una primera publicación. Existen y se han verificado (ver `## Resultado`).
+- **El merge a `development` y el PR de `development` a `main`** se hicieron después de archivar el cambio.
