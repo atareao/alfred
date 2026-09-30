@@ -18,6 +18,8 @@
 #![cfg(unix)]
 
 use std::fs::{self, File};
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::thread::sleep;
@@ -30,6 +32,13 @@ const LISTEN_MARKER: &str = "Valet server listening on";
 
 /// Log line written only when the orderly shutdown path runs to completion.
 const CLEAN_SHUTDOWN_MARKER: &str = "Valet server shut down cleanly";
+
+/// How long to let the server run with **no** signal before checking that it is
+/// still alive. This must comfortably exceed the production
+/// `SHUTDOWN_DRAIN_TIMEOUT` (5s): the bug this guards against was a drain
+/// timeout placed around the whole `serve` future, which fired at 5s and killed
+/// a healthy server without any signal.
+const SURVIVAL_WAIT: Duration = Duration::from_secs(8);
 
 /// Build a unique temporary path for this test run so repeated runs cannot
 /// collide with each other or with leftovers from a previous failure.
@@ -49,6 +58,44 @@ fn temp_path(label: &str) -> PathBuf {
 fn read_log(path: &PathBuf) -> String {
     // A missing file simply means "nothing logged yet".
     fs::read_to_string(path).unwrap_or_default()
+}
+
+/// Parse the ephemeral port out of the
+/// `Valet server listening on 127.0.0.1:<port>` line. Returns `None` until
+/// that line is present. The server is spawned with `PORT=0`, so the real port
+/// is only discoverable from this log line.
+fn parse_listening_port(log: &str) -> Option<u16> {
+    let marker = format!("{LISTEN_MARKER} ");
+    let start = log.find(&marker)? + marker.len();
+    let rest = &log[start..];
+    let end = rest.find(|c: char| c.is_whitespace()).unwrap_or(rest.len());
+    rest[..end].rsplit(':').next()?.parse().ok()
+}
+
+/// Minimal hand-written HTTP/1.1 `GET /api/health`, returning `true` only when
+/// the server answers with `200`. Deliberately dependency-free: adding an HTTP
+/// client just for this regression check is not worth it.
+fn health_returns_200(port: u16) -> bool {
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let mut stream = match TcpStream::connect_timeout(&addr, Duration::from_secs(2)) {
+        Ok(stream) => stream,
+        Err(_) => return false,
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+
+    let request =
+        format!("GET /api/health HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+    if stream.write_all(request.as_bytes()).is_err() {
+        return false;
+    }
+
+    let mut response = String::new();
+    if stream.read_to_string(&mut response).is_err() {
+        return false;
+    }
+
+    response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200")
 }
 
 /// Poll the log file until it contains `marker`, up to `timeout`.
@@ -101,7 +148,8 @@ fn test_sigterm_runs_orderly_shutdown() {
     let child = Command::new(binary)
         .env("DATABASE_URL", db_path.to_str().expect("db path is UTF-8"))
         .env("HOST", "127.0.0.1")
-        // Port 0 lets the OS pick a free port; we never talk to the server.
+        // Port 0 lets the OS pick a free port; the real port is read back
+        // from the `listening` log line so the survival check can talk to it.
         .env("PORT", "0")
         .env("AUTH_ENABLED", "false")
         .env("OPENROUTER_API_KEY", "sk-test-shutdown")
@@ -131,6 +179,47 @@ fn test_sigterm_runs_orderly_shutdown() {
     assert!(
         wait_for_log_marker(&log_path, LISTEN_MARKER, Duration::from_secs(20)),
         "server never logged `{LISTEN_MARKER}` within 20s; log contents:\n{}",
+        read_log(&log_path)
+    );
+
+    // -----------------------------------------------------------------
+    // Survival check (no signal yet): the server must keep serving well
+    // past the drain budget. `SHUTDOWN_DRAIN_TIMEOUT` is 5s, so waiting 8s
+    // and still getting a 200 proves the drain clock is NOT running during
+    // normal service.
+    //
+    // This step exists precisely because a timeout placed around the whole
+    // `serve` future fires at ~5s and kills a healthy server with no signal
+    // at all. Without this wait the test only observes a few milliseconds of
+    // uptime and cannot detect that regression.
+    // -----------------------------------------------------------------
+    sleep(SURVIVAL_WAIT);
+
+    match cleanup.child.try_wait() {
+        Ok(Some(status)) => panic!(
+            "server exited on its own ~{}s after startup with NO signal \
+             (status {status}); it did not survive the drain budget. Log contents:\n{}",
+            SURVIVAL_WAIT.as_secs(),
+            read_log(&log_path)
+        ),
+        Ok(None) => {}
+        Err(error) => panic!("try_wait failed: {error}"),
+    }
+
+    let port = parse_listening_port(&read_log(&log_path)).unwrap_or_else(|| {
+        panic!(
+            "could not parse the listening port from the log after startup:\n{}",
+            read_log(&log_path)
+        )
+    });
+    assert!(
+        health_returns_200(port),
+        "server did not survive the drain budget: `GET /api/health` on \
+         127.0.0.1:{port} did not return 200 ~{}s after startup with NO shutdown \
+         signal. This means the server shut itself down inside \
+         SHUTDOWN_DRAIN_TIMEOUT without a signal (the drain timeout is wrapping \
+         normal service). Log contents:\n{}",
+        SURVIVAL_WAIT.as_secs(),
         read_log(&log_path)
     );
 
