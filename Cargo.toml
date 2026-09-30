@@ -114,3 +114,7 @@ path = "tests/api/frontend_serving.rs"
 [[test]]
 name = "stats-migration"
 path = "tests/db/stats_migration.rs"
+
+[[test]]
+name = "shutdown"
+path = "tests/api/shutdown.rs"

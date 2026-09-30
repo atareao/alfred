@@ -1,6 +1,18 @@
+use std::time::Duration;
 use tracing_subscriber::EnvFilter;
 use valet::config::Config;
 use valet::{app_with_state, AppState};
+
+/// Maximum time the HTTP layer is given to drain after a shutdown signal.
+///
+/// `with_graceful_shutdown` waits for *every* open connection, and this server
+/// exposes long-lived SSE streams whose sockets stay open for as long as the
+/// client wants. Without a bound, a single streaming client would keep
+/// `axum::serve(...)` pending forever and nothing below would ever run, so the
+/// runtime would exhaust its grace period and escalate to `SIGKILL`. Keeping
+/// this below the 10-second grace period of `podman stop` / `docker stop`
+/// guarantees the orderly path completes before the runtime gives up.
+const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -19,9 +31,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Build full application state (database, orchestrator, tools, guardrails, auth)
     let state = AppState::new_with_orchestrator(&config).await?;
 
-    // Spawn the stats cleanup worker (runs hourly, purges old llm_requests)
+    // Capture the handles we need for an orderly shutdown *before* `state`
+    // is moved into the router. Both are cheap clones: the pool is an
+    // `Arc`-backed handle and the sender is a broadcast channel.
     let pool = state.db.clone();
-    tokio::spawn(valet::workers::stats_cleanup::run_cleanup_worker(pool));
+    let shutdown_tx = state.shutdown_tx.clone();
+
+    // Spawn the stats cleanup worker (runs hourly, purges old llm_requests)
+    let cleanup_handle = tokio::spawn(valet::workers::stats_cleanup::run_cleanup_worker(
+        pool.clone(),
+    ));
 
     // Build the application router
     let router = app_with_state(state);
@@ -32,9 +51,103 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::info!("Valet server listening on {addr}");
 
-    axum::serve(listener, router).await?;
+    // Serve until a shutdown signal arrives, then let axum stop accepting
+    // new connections and drain the in-flight ones. The drain is capped by
+    // `SHUTDOWN_DRAIN_TIMEOUT` (see the constant) so an open SSE connection
+    // cannot hold the shutdown forever.
+    match tokio::time::timeout(
+        SHUTDOWN_DRAIN_TIMEOUT,
+        axum::serve(listener, router).with_graceful_shutdown(shutdown_signal()),
+    )
+    .await
+    {
+        // Drained cleanly within the budget: fall through to the shutdown.
+        Ok(Ok(())) => {}
+        // The server failed while serving; propagate the I/O error.
+        Ok(Err(error)) => return Err(error.into()),
+        // The drain exceeded its budget. Log loudly and continue shutting
+        // down instead of hanging until the runtime escalates to SIGKILL.
+        Err(_elapsed) => {
+            tracing::warn!(
+                timeout_secs = SHUTDOWN_DRAIN_TIMEOUT.as_secs(),
+                "Graceful drain timed out; connections still open, forcing shutdown"
+            );
+        }
+    }
+
+    tracing::info!("Shutdown signal received, stopping workers and closing the database pool");
+
+    // Notify every worker subscribed to the shared shutdown channel. A send
+    // error only means there is no active subscriber, so it is safe to ignore.
+    if let Some(tx) = shutdown_tx {
+        let _ = tx.send(());
+    }
+
+    // The cleanup worker loops forever, so abort it explicitly instead of
+    // waiting for it to observe the shutdown channel. `abort()` only marks the
+    // task, so we await the handle to guarantee the task is really gone before
+    // closing the pool; otherwise "abort, then close" would just be a promise.
+    cleanup_handle.abort();
+    // A cancelled task surfaces as a `JoinError` with `is_cancelled() == true`;
+    // that is the expected outcome here, so it is deliberately discarded.
+    let _ = cleanup_handle.await;
+
+    // Close the pool so requests that were already drained can finish their
+    // in-flight queries. This is best-effort for the background workers: their
+    // `JoinHandle`s are owned inside `AppState::new_with_orchestrator` and are
+    // never awaited, so a worker caught mid-LLM-call may be lost when the
+    // process exits. Shutdown is orderly for the HTTP layer and the pool, but
+    // not for in-flight worker work.
+    pool.close().await;
+
+    tracing::info!("Valet server shut down cleanly");
 
     Ok(())
+}
+
+/// Resolve when the process receives either `SIGINT` (Ctrl+C) or `SIGTERM`.
+///
+/// `valet` normally runs as PID 1 inside its container. The kernel does **not**
+/// apply the default action for signals to PID 1, so a plain `SIGTERM` sent by
+/// `podman stop` / `docker stop` would otherwise be ignored and the runtime
+/// would escalate to `SIGKILL` after its 10-second grace period. Installing
+/// handlers for both signals lets the container stop promptly and cleanly.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        match tokio::signal::ctrl_c().await {
+            Ok(()) => {
+                tracing::info!("Received SIGINT (Ctrl+C), initiating graceful shutdown");
+            }
+            Err(error) => {
+                tracing::error!(%error, "Failed to install SIGINT/Ctrl+C handler");
+                // Never resolve: fall back to the other signal branch.
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut stream) => {
+                stream.recv().await;
+                tracing::info!("Received SIGTERM, initiating graceful shutdown");
+            }
+            Err(error) => {
+                tracing::error!(%error, "Failed to install SIGTERM handler");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+
+    // On non-Unix platforms there is no SIGTERM; only Ctrl+C can stop the server.
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
 }
 
 #[cfg(test)]
