@@ -528,6 +528,7 @@ mod tests {
             tool_registry: Some(registry),
             auth_config: None,
             collapse_tx: None,
+            collapse_threshold_tokens: 2000,
             memory_tx: None,
             shutdown_tx: None,
             last_api_call: Arc::new(RwLock::new(None)),

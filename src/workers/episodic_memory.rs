@@ -61,9 +61,12 @@ impl Default for EpisodicMemoryConfig {
 /// `{{ BLOQUE_DE_MENSAJES }}` placeholder.
 const DEFAULT_ARCHIVIST_PROMPT_FALLBACK: &str = "System: Eres un archivista de memoria. Resume la conversación en una ficha concisa.\n\nConversación a procesar:\n{{ BLOQUE_DE_MENSAJES }}";
 
-/// Tracks the Unix timestamp (in seconds) of the last failed LLM call.
-/// Used to avoid rapid retries when the LLM returns unparseable responses.
-static LAST_LLM_ATTEMPT: AtomicI64 = AtomicI64::new(0);
+/// Compute the cooldown (in seconds) applied after a failed LLM attempt.
+///
+/// Per spec this is `max(poll_interval / 2, 30s)`.
+fn cooldown_secs(config: &EpisodicMemoryConfig) -> i64 {
+    (config.poll_interval_minutes as i64 * 60 / 2).max(30)
+}
 
 /// A structured memory card extracted from an LLM response.
 #[derive(Debug, Clone)]
@@ -97,6 +100,9 @@ impl EpisodicMemoryWorker {
         config: EpisodicMemoryConfig,
     ) -> JoinHandle<()> {
         let poll_interval = std::time::Duration::from_secs(config.poll_interval_minutes * 60);
+        // Per-instance rate limiter: Unix timestamp (seconds) of the last
+        // failed LLM attempt. Never shared between workers.
+        let last_llm_attempt = Arc::new(AtomicI64::new(0));
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(poll_interval);
             // Tick immediately on start
@@ -106,11 +112,11 @@ impl EpisodicMemoryWorker {
                 tokio::select! {
                     _ = memory_rx.recv() => {
                         tracing::debug!("EpisodicMemoryWorker triggered by channel signal");
-                        Self::evaluate(&db, llm_provider.clone(), &config).await;
+                        Self::evaluate(&db, llm_provider.clone(), &config, &last_llm_attempt).await;
                     }
                     _ = interval.tick() => {
                         tracing::debug!("EpisodicMemoryWorker triggered by timer");
-                        Self::evaluate(&db, llm_provider.clone(), &config).await;
+                        Self::evaluate(&db, llm_provider.clone(), &config, &last_llm_attempt).await;
                     }
                     _ = shutdown_rx.recv() => {
                         tracing::info!("EpisodicMemoryWorker shutting down");
@@ -127,6 +133,7 @@ impl EpisodicMemoryWorker {
         db: &SqlitePool,
         llm_provider: Arc<dyn LLMProvider>,
         config: &EpisodicMemoryConfig,
+        last_llm_attempt: &Arc<AtomicI64>,
     ) {
         // 1. Query unindexed messages
         let unindexed = match Self::query_unindexed_messages(db, config.batch_tokens).await {
@@ -175,10 +182,10 @@ impl EpisodicMemoryWorker {
 
         // 5. Rate-limit: skip LLM call if we just failed recently
         let now_ts = chrono::Utc::now().timestamp();
-        let last_attempt = LAST_LLM_ATTEMPT.load(Ordering::Relaxed);
-        let cooldown_secs: i64 = 60; // fixed 60s cooldown after a failed LLM call
+        let last_attempt = last_llm_attempt.load(Ordering::Relaxed);
+        let cooldown = cooldown_secs(config);
 
-        if now_ts - last_attempt < cooldown_secs && last_attempt > 0 {
+        if now_ts - last_attempt < cooldown && last_attempt > 0 {
             let unindexed_count: i64 =
                 sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE is_indexed = 0")
                     .fetch_one(db)
@@ -198,15 +205,14 @@ impl EpisodicMemoryWorker {
         }
 
         // 5b. Call LLM
-        let card = match Self::call_llm(db, "episodic", &llm_provider, config, &message_block).await
-        {
+        let card = match Self::call_llm(db, &llm_provider, config, &message_block).await {
             Some(card) => {
                 // Reset the failure tracker on success
-                LAST_LLM_ATTEMPT.store(0, Ordering::Relaxed);
+                last_llm_attempt.store(0, Ordering::Relaxed);
                 card
             }
             None => {
-                LAST_LLM_ATTEMPT.store(chrono::Utc::now().timestamp(), Ordering::Relaxed);
+                last_llm_attempt.store(chrono::Utc::now().timestamp(), Ordering::Relaxed);
                 tracing::error!(
                     "EpisodicMemoryWorker: LLM call failed or returned unparseable response"
                 );
@@ -216,6 +222,9 @@ impl EpisodicMemoryWorker {
 
         // 6. Persist memory + embedding + update messages
         if let Err(e) = Self::persist(db, &llm_provider, &card, &primary).await {
+            // A failed persist must also start the cooldown window, otherwise
+            // the next poll would re-call the LLM for the same batch (cost loop).
+            last_llm_attempt.store(chrono::Utc::now().timestamp(), Ordering::Relaxed);
             tracing::error!(error = %e, "EpisodicMemoryWorker: failed to persist memory card");
         }
     }
@@ -405,7 +414,6 @@ impl EpisodicMemoryWorker {
     /// Parses the structured response into a `MemoryCard`.
     async fn call_llm(
         db: &SqlitePool,
-        profile_id: &str,
         llm_provider: &Arc<dyn LLMProvider>,
         config: &EpisodicMemoryConfig,
         message_block: &str,
@@ -462,7 +470,7 @@ impl EpisodicMemoryWorker {
                     db,
                     &Uuid::new_v4().to_string(),
                     &config.model,
-                    profile_id,
+                    None,
                     0,
                     0,
                     0,
@@ -498,7 +506,7 @@ impl EpisodicMemoryWorker {
             db,
             &Uuid::new_v4().to_string(),
             &config.model,
-            profile_id,
+            None,
             prompt_tokens,
             completion_tokens,
             total_tokens,
@@ -650,33 +658,35 @@ impl EpisodicMemoryWorker {
             "date_context": card.date_context,
         });
 
-        // 1. Insert into `memory` table
-        let memory = MemoryRepo::create(db, &ficha, tokens_count, &metadata).await?;
-
-        // 2. Generate embedding via LLM provider
+        // 1. Generate embedding first (network call, no DB writes on failure).
         let embedding = match llm_provider.embed(&ficha).await {
             Ok(emb) => emb,
             Err(e) => {
                 return Err(format!("embedding generation failed: {}", e).into());
             }
         };
-
-        // 3. Store embedding in `vec_memory`
         let embedding_json = serde_json::to_string(&embedding)?;
+
+        // 2. Persist `memory` + `vec_memory` + message updates atomically.
+        let mut tx = db.begin().await?;
+
+        let memory = MemoryRepo::create_in_tx(&mut tx, &ficha, tokens_count, &metadata).await?;
+
         sqlx::query("INSERT INTO vec_memory (id, embedding) VALUES (?1, ?2)")
             .bind(&memory.id)
             .bind(&embedding_json)
-            .execute(db)
+            .execute(&mut *tx)
             .await?;
 
-        // 4. Update primary messages: set is_indexed = 1, summary_ref = memory.id
         for msg in primary {
             sqlx::query("UPDATE messages SET is_indexed = 1, summary_ref = ?1 WHERE id = ?2")
                 .bind(&memory.id)
                 .bind(&msg.id)
-                .execute(db)
+                .execute(&mut *tx)
                 .await?;
         }
+
+        tx.commit().await?;
 
         tracing::info!(
             memory_id = %memory.id,
@@ -699,7 +709,6 @@ mod tests {
     use crate::db::schema::run_migrations;
     use crate::llm::provider::{ChatMessage, ChatRequest, ChatResponse, LLMError, TokenUsage};
     use async_trait::async_trait;
-    use serial_test::serial;
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     use std::sync::{Arc, Mutex};
 
@@ -710,6 +719,7 @@ mod tests {
         pub embed_calls: Arc<Mutex<Vec<String>>>,
         pub chat_response: String,
         pub embed_response: Vec<f32>,
+        pub embed_error: bool,
     }
 
     #[async_trait]
@@ -752,6 +762,9 @@ mod tests {
 
         async fn embed(&self, input: &str) -> Result<Vec<f32>, LLMError> {
             self.embed_calls.lock().unwrap().push(input.to_string());
+            if self.embed_error {
+                return Err(LLMError::Internal("embedding backend down".into()));
+            }
             Ok(self.embed_response.clone())
         }
     }
@@ -763,6 +776,7 @@ mod tests {
                 embed_calls: Arc::new(Mutex::new(Vec::new())),
                 chat_response: chat_response.to_string(),
                 embed_response: vec![0.1, 0.2, 0.3],
+                embed_error: false,
             }
         }
 
@@ -774,12 +788,6 @@ mod tests {
     // ─── Test helpers ─────────────────────────────────────────────────────
 
     async fn test_db() -> SqlitePool {
-        // Reset the module-global LLM rate limiter so tests are order-independent.
-        // `test_evaluate_unparseable_response_does_not_create_memory` sets this to
-        // `now()` on failure; without a reset, a subsequent `evaluate()` test could
-        // hit the 60s cooldown and skip the LLM call (flaky test).
-        LAST_LLM_ATTEMPT.store(0, Ordering::Relaxed);
-
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect_with(
@@ -793,6 +801,11 @@ mod tests {
             .await
             .expect("Failed to run migrations");
         pool
+    }
+
+    /// Fresh per-instance rate-limiter for a test call to `evaluate`.
+    fn no_attempt() -> Arc<AtomicI64> {
+        Arc::new(AtomicI64::new(0))
     }
 
     /// Insert a message directly for testing, with full control over fields.
@@ -851,11 +864,7 @@ mod tests {
     // ─── 3.1 / 3.2: Worker loop ───────────────────────────────────────────
 
     #[tokio::test]
-    #[serial]
     async fn test_worker_loop_receives_channel_signal() {
-        // Reset the global rate limiter from any previous test
-        LAST_LLM_ATTEMPT.store(0, Ordering::Relaxed);
-
         let db = test_db().await;
         let (memory_tx, memory_rx) = mpsc::channel::<()>(16);
         let (shutdown_tx, shutdown_rx) = broadcast::channel::<()>(1);
@@ -899,7 +908,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial]
     async fn test_worker_loop_shutdown() {
         let db = test_db().await;
         let (_, memory_rx) = mpsc::channel::<()>(16);
@@ -930,7 +938,6 @@ mod tests {
     // ─── 3.3 / 3.4: Query unindexed messages ─────────────────────────────
 
     #[tokio::test]
-    #[serial]
     async fn test_evaluate_selects_unindexed_messages() {
         let db = test_db().await;
         let now = chrono::Utc::now().to_rfc3339();
@@ -952,7 +959,13 @@ mod tests {
         let chat_calls = mock.chat_calls.clone();
         let provider = mock.wrap();
 
-        EpisodicMemoryWorker::evaluate(&db, provider, &EpisodicMemoryConfig::default()).await;
+        EpisodicMemoryWorker::evaluate(
+            &db,
+            provider,
+            &EpisodicMemoryConfig::default(),
+            &no_attempt(),
+        )
+        .await;
 
         let calls = chat_calls.lock().unwrap();
         assert!(
@@ -962,7 +975,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial]
     async fn test_evaluate_no_unindexed_messages() {
         let db = test_db().await;
         let now = chrono::Utc::now().to_rfc3339();
@@ -976,7 +988,13 @@ mod tests {
         let chat_calls = mock.chat_calls.clone();
         let provider = mock.wrap();
 
-        EpisodicMemoryWorker::evaluate(&db, provider, &EpisodicMemoryConfig::default()).await;
+        EpisodicMemoryWorker::evaluate(
+            &db,
+            provider,
+            &EpisodicMemoryConfig::default(),
+            &no_attempt(),
+        )
+        .await;
 
         let calls = chat_calls.lock().unwrap();
         assert!(
@@ -988,7 +1006,6 @@ mod tests {
     // ─── Batch size threshold ────────────────────────────────────────────
 
     #[tokio::test]
-    #[serial]
     async fn test_evaluate_batch_size_threshold() {
         let db = test_db().await;
         let now = chrono::Utc::now().to_rfc3339();
@@ -1000,13 +1017,18 @@ mod tests {
 
         let provider = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE).wrap();
 
-        EpisodicMemoryWorker::evaluate(&db, provider, &EpisodicMemoryConfig::default()).await;
+        EpisodicMemoryWorker::evaluate(
+            &db,
+            provider,
+            &EpisodicMemoryConfig::default(),
+            &no_attempt(),
+        )
+        .await;
 
         assert_eq!(count_memory(&db).await, 1, "Should create one memory card");
     }
 
     #[tokio::test]
-    #[serial]
     async fn test_evaluate_below_batch_threshold_and_recent() {
         let db = test_db().await;
         let now = chrono::Utc::now().to_rfc3339();
@@ -1034,6 +1056,7 @@ mod tests {
                 inactivity_minutes: 30,
                 ..Default::default()
             },
+            &no_attempt(),
         )
         .await;
 
@@ -1047,7 +1070,6 @@ mod tests {
     // ─── Inactivity timeout ──────────────────────────────────────────────
 
     #[tokio::test]
-    #[serial]
     async fn test_evaluate_inactivity_triggers_batch() {
         let db = test_db().await;
         let old_time = (chrono::Utc::now() - chrono::Duration::minutes(45)).to_rfc3339();
@@ -1075,6 +1097,7 @@ mod tests {
                 inactivity_minutes: 30,
                 ..Default::default()
             },
+            &no_attempt(),
         )
         .await;
 
@@ -1088,7 +1111,6 @@ mod tests {
     // ─── 3.5 / 3.6: Batch with overlap ───────────────────────────────────
 
     #[tokio::test]
-    #[serial]
     async fn test_evaluate_batch_with_overlap() {
         let db = test_db().await;
         let base_time = chrono::Utc::now() - chrono::Duration::hours(1);
@@ -1158,6 +1180,7 @@ mod tests {
                 overlap: 2,
                 ..Default::default()
             },
+            &no_attempt(),
         )
         .await;
 
@@ -1199,7 +1222,6 @@ mod tests {
     // ─── 3.7 / 3.8: LLM generates ficha ───────────────────────────────────
 
     #[tokio::test]
-    #[serial]
     async fn test_evaluate_parses_llm_response() {
         let db = test_db().await;
         let now = chrono::Utc::now().to_rfc3339();
@@ -1212,7 +1234,13 @@ mod tests {
         let chat_calls = mock.chat_calls.clone();
         let provider = mock.wrap();
 
-        EpisodicMemoryWorker::evaluate(&db, provider, &EpisodicMemoryConfig::default()).await;
+        EpisodicMemoryWorker::evaluate(
+            &db,
+            provider,
+            &EpisodicMemoryConfig::default(),
+            &no_attempt(),
+        )
+        .await;
 
         {
             let calls = chat_calls.lock().unwrap();
@@ -1238,7 +1266,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial]
     async fn test_evaluate_unparseable_response_does_not_create_memory() {
         let db = test_db().await;
         let now = chrono::Utc::now().to_rfc3339();
@@ -1249,7 +1276,13 @@ mod tests {
 
         let provider = MockEpisodicLLM::new("Esto no tiene el formato esperado.").wrap();
 
-        EpisodicMemoryWorker::evaluate(&db, provider, &EpisodicMemoryConfig::default()).await;
+        EpisodicMemoryWorker::evaluate(
+            &db,
+            provider,
+            &EpisodicMemoryConfig::default(),
+            &no_attempt(),
+        )
+        .await;
 
         assert_eq!(
             count_memory(&db).await,
@@ -1261,7 +1294,6 @@ mod tests {
     // ─── 3.9 / 3.10: Persistencia completa ───────────────────────────────
 
     #[tokio::test]
-    #[serial]
     async fn test_evaluate_persists_memory_embedding_and_updates() {
         let db = test_db().await;
         let now = chrono::Utc::now().to_rfc3339();
@@ -1289,7 +1321,13 @@ mod tests {
         let embed_calls = mock.embed_calls.clone();
         let provider = mock.wrap();
 
-        EpisodicMemoryWorker::evaluate(&db, provider, &EpisodicMemoryConfig::default()).await;
+        EpisodicMemoryWorker::evaluate(
+            &db,
+            provider,
+            &EpisodicMemoryConfig::default(),
+            &no_attempt(),
+        )
+        .await;
 
         // 1. LLM chat was called
         assert!(
@@ -1388,7 +1426,6 @@ mod tests {
 
         EpisodicMemoryWorker::call_llm(
             &db,
-            "episodic",
             &provider,
             &EpisodicMemoryConfig::default(),
             "MSG_BLOCK_123",
@@ -1417,7 +1454,6 @@ mod tests {
 
         EpisodicMemoryWorker::call_llm(
             &db,
-            "episodic",
             &provider,
             &EpisodicMemoryConfig::default(),
             "MSG_BLOCK_123",
@@ -1437,7 +1473,6 @@ mod tests {
     // ─── Additional: parse_memory_card unit tests ────────────────────────
 
     #[tokio::test]
-    #[serial]
     async fn test_parse_memory_card_full() {
         let card = EpisodicMemoryWorker::parse_memory_card(SAMPLE_LLM_RESPONSE);
         assert!(card.is_some(), "Should parse valid response");
@@ -1456,17 +1491,110 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial]
     async fn test_parse_memory_card_empty() {
         let card = EpisodicMemoryWorker::parse_memory_card("");
         assert!(card.is_none(), "Empty input should return None");
     }
 
     #[tokio::test]
-    #[serial]
     async fn test_parse_memory_card_invalid() {
         let card =
             EpisodicMemoryWorker::parse_memory_card("This is just random text without sections.");
         assert!(card.is_none(), "Invalid input should return None");
+    }
+
+    // ─── 3.1 / 3.2: cooldown follows the spec: max(poll_interval/2, 30s) ──
+
+    /// Given a batch that yields a valid card whose `persist()` fails,
+    /// when `evaluate()` is called again within the cooldown,
+    /// then the LLM SHALL NOT be called again.
+    #[tokio::test]
+    async fn test_persist_failure_does_not_retry_llm_within_cooldown() {
+        let db = test_db().await;
+        let now = chrono::Utc::now().to_rfc3339();
+        for i in 0..5 {
+            insert_message(&db, "user", &format!("Message {}", i), 500, false, &now).await;
+        }
+
+        // LLM chat succeeds but embedding (persist) fails.
+        let mock = MockEpisodicLLM {
+            embed_error: true,
+            ..MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE)
+        };
+        let chat_calls = mock.chat_calls.clone();
+        let provider = mock.wrap();
+
+        let last = Arc::new(AtomicI64::new(0));
+        let config = EpisodicMemoryConfig {
+            poll_interval_minutes: 120, // cooldown = max(120*60/2, 30) = 3600 s
+            ..Default::default()
+        };
+
+        // First evaluate: LLM called once, then persist fails.
+        EpisodicMemoryWorker::evaluate(&db, provider.clone(), &config, &last).await;
+        assert_eq!(
+            chat_calls.lock().unwrap().len(),
+            1,
+            "LLM should have been called once on the first evaluate"
+        );
+
+        // Second evaluate within the cooldown must NOT re-call the LLM.
+        EpisodicMemoryWorker::evaluate(&db, provider, &config, &last).await;
+        assert_eq!(
+            chat_calls.lock().unwrap().len(),
+            1,
+            "a persist failure must start the cooldown: no second LLM call"
+        );
+    }
+
+    /// Given the `vec_memory` insert fails, when `persist()` runs,
+    /// then the `memory` table SHALL NOT contain an orphan row.
+    #[tokio::test]
+    async fn test_persist_rolls_back_memory_when_vec_memory_fails() {
+        let db = test_db().await;
+        let now = chrono::Utc::now().to_rfc3339();
+        for i in 0..5 {
+            insert_message(&db, "user", &format!("Message {}", i), 500, false, &now).await;
+        }
+
+        // Force the vec_memory insert to fail by removing the table.
+        sqlx::query("DROP TABLE vec_memory")
+            .execute(&db)
+            .await
+            .expect("dropping vec_memory should succeed");
+
+        let provider = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE).wrap();
+        EpisodicMemoryWorker::evaluate(
+            &db,
+            provider,
+            &EpisodicMemoryConfig::default(),
+            &no_attempt(),
+        )
+        .await;
+
+        assert_eq!(
+            count_memory(&db).await,
+            0,
+            "a failed vec_memory insert must not leave an orphan row in memory"
+        );
+    }
+
+    #[test]
+    fn test_cooldown_secs_follows_spec() {
+        let mk = |poll| EpisodicMemoryConfig {
+            poll_interval_minutes: poll,
+            ..Default::default()
+        };
+
+        // poll_interval = 120 min → 120*60/2 = 3600 s
+        assert_eq!(cooldown_secs(&mk(120)), 3600);
+        // poll_interval = 10 min → 10*60/2 = 300 s
+        assert_eq!(cooldown_secs(&mk(10)), 300);
+        // poll_interval = 30 min → 30*60/2 = 900 s
+        assert_eq!(cooldown_secs(&mk(30)), 900);
+        // poll_interval = 1 min → 30 s (floor applies)
+        assert_eq!(cooldown_secs(&mk(1)), 30, "cooldown must floor at 30 s");
+        // poll_interval = 0 min → 30 s (floor applies)
+        assert_eq!(cooldown_secs(&mk(0)), 30, "cooldown must floor at 30 s");
     }
 }

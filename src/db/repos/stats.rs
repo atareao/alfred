@@ -274,7 +274,7 @@ impl StatsRepo {
         pool: &SqlitePool,
         id: &str,
         model: &str,
-        profile_id: &str,
+        profile_id: Option<&str>,
         prompt_tokens: i64,
         completion_tokens: i64,
         total_tokens: i64,
@@ -458,7 +458,109 @@ mod tests {
         q.execute(pool).await.unwrap();
     }
 
+    /// Like [`setup`] but with SQLite foreign-key enforcement enabled, matching
+    /// production (`db::init_db` sets `foreign_keys(true)`).
+    async fn setup_with_fk() -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(":memory:")
+                    .foreign_keys(true)
+                    .create_if_missing(true),
+            )
+            .await
+            .expect("failed to create in-memory pool");
+
+        crate::db::schema::run_migrations(&pool)
+            .await
+            .expect("failed to run migrations");
+
+        sqlx::query(
+            "INSERT INTO profiles (id, name, preferences) VALUES ('profile-1', 'Test', '{}')",
+        )
+        .execute(&pool)
+        .await
+        .expect("failed to seed profile");
+
+        pool
+    }
+
     // ── record_request tests ────────────────────────────────────────────
+
+    /// A system operation (worker) records stats with `profile_id = NULL`.
+    /// With foreign keys enabled, a NULL must not fail the FK check and the
+    /// row must actually be inserted.
+    #[tokio::test]
+    async fn test_record_request_with_null_profile_id() {
+        let pool = setup_with_fk().await;
+
+        StatsRepo::record_request(
+            &pool,
+            "req-null",
+            "gpt-4o",
+            None,
+            100,
+            50,
+            150,
+            0,
+            0,
+            0.0,
+            Some(200),
+            "success",
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("recording with profile_id = NULL must not violate the FK");
+
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM llm_requests WHERE id = 'req-null'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(count, 1, "the row must actually be inserted");
+
+        let profile: Option<String> =
+            sqlx::query_scalar("SELECT profile_id FROM llm_requests WHERE id = 'req-null'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(profile.is_none(), "profile_id must be NULL");
+    }
+
+    /// A bogus literal such as `"background"` (which does not exist in
+    /// `profiles`) must be rejected when foreign keys are enabled — proving the
+    /// bug the workers used to hit.
+    #[tokio::test]
+    async fn test_record_request_with_unknown_profile_id_violates_fk() {
+        let pool = setup_with_fk().await;
+
+        let result = StatsRepo::record_request(
+            &pool,
+            "req-bad",
+            "gpt-4o",
+            Some("background"),
+            0,
+            0,
+            0,
+            0,
+            0,
+            0.0,
+            None,
+            "error",
+            None,
+            None,
+            None,
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "an unknown profile_id must violate the FK when foreign keys are on"
+        );
+    }
 
     #[tokio::test]
     async fn test_record_request_inserts_row() {
@@ -468,7 +570,7 @@ mod tests {
             &pool,
             "req-1",
             "gpt-4o",
-            "profile-1",
+            Some("profile-1"),
             100,
             50,
             150,
@@ -521,7 +623,7 @@ mod tests {
             &pool,
             "req-tc",
             "gpt-4o",
-            "profile-1",
+            Some("profile-1"),
             100,
             50,
             150,
@@ -554,7 +656,7 @@ mod tests {
             &pool,
             "req-err",
             "gpt-4o",
-            "profile-1",
+            Some("profile-1"),
             100,
             50,
             150,
@@ -588,7 +690,7 @@ mod tests {
             &pool,
             "req-auto",
             "gpt-4o",
-            "profile-1",
+            Some("profile-1"),
             100,
             50,
             150,

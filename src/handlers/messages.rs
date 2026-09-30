@@ -37,11 +37,10 @@ pub async fn create_message(
     State(state): State<AppState>,
     Json(body): Json<CreateMessage>,
 ) -> Result<(StatusCode, Json<Message>), AppError> {
-    let collapse_callback = state.collapse_tx.clone().map(|tx| {
-        Box::new(move |msg_id: String| {
-            let _ = tx.try_send(msg_id);
-        }) as Box<dyn Fn(String) + Send>
-    });
+    let collapse_callback = state
+        .collapse_tx
+        .clone()
+        .map(crate::workers::collapse::collapse_forwarder);
 
     let location = if let Some(name) =
         crate::db::repos::settings::SettingsRepo::get(&state.db, "location_name")
@@ -77,7 +76,7 @@ pub async fn create_message(
         body.tool_results.as_ref(),
         location.as_deref(),
         body.tools_used.as_deref(),
-        2000,
+        state.collapse_threshold_tokens,
         collapse_callback,
     )
     .await
@@ -155,6 +154,58 @@ mod tests {
             25,
             "Should return 25 messages (from message_page_size setting), not the hardcoded 50"
         );
+        Ok(())
+    }
+
+    /// Given `collapse_threshold_tokens` = 500 on the AppState,
+    /// when a message of ~600 tokens (fewer than the old hardcoded 2000) is
+    /// created, then the collapse channel SHALL receive the message ID.
+    /// This proves the threshold is read from config, not hardcoded.
+    #[tokio::test]
+    async fn test_create_message_uses_config_collapse_threshold(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut state = crate::AppState::new_in_memory_empty().await;
+        state.collapse_threshold_tokens = 500;
+
+        let (collapse_tx, mut collapse_rx) = mpsc::channel::<String>(16);
+        state.collapse_tx = Some(collapse_tx);
+
+        let long_content = "x ".repeat(500); // ~665 tokens: > 500, < 2000
+        let estimated = crate::models::message::estimate_markdown_tokens_heuristic(&long_content);
+        assert!(
+            (500..2000).contains(&estimated),
+            "test content must be above the custom threshold and below the default (got {estimated})"
+        );
+
+        let app = crate::app_with_state(state);
+        let body = serde_json::json!({
+            "role": "user",
+            "content": long_content,
+        });
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/messages")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await?;
+
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        let received =
+            tokio::time::timeout(std::time::Duration::from_millis(500), collapse_rx.recv()).await;
+
+        match received {
+            Ok(Some(msg_id)) => assert!(!msg_id.is_empty(), "message_id should not be empty"),
+            _ => panic!(
+                "Should have received message_id via collapse channel for a ~665-token message \
+                 when collapse_threshold_tokens = 500 (threshold must come from config)"
+            ),
+        }
         Ok(())
     }
 

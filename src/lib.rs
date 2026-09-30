@@ -38,6 +38,7 @@ pub struct AppState {
     pub tool_registry: Option<Arc<ToolRegistry>>,
     pub auth_config: Option<crate::auth::AuthConfig>,
     pub collapse_tx: Option<mpsc::Sender<String>>,
+    pub collapse_threshold_tokens: usize,
     pub memory_tx: Option<mpsc::Sender<()>>,
     pub shutdown_tx: Option<broadcast::Sender<()>>,
     pub last_api_call: Arc<RwLock<Option<crate::models::stats::LastApiCall>>>,
@@ -69,6 +70,7 @@ impl AppState {
             tool_registry: None,
             auth_config: None,
             collapse_tx: None,
+            collapse_threshold_tokens: 2000,
             memory_tx: None,
             shutdown_tx: None,
             last_api_call: Arc::new(RwLock::new(None)),
@@ -102,6 +104,7 @@ impl AppState {
             tool_registry: None,
             auth_config: None,
             collapse_tx: None,
+            collapse_threshold_tokens: 2000,
             memory_tx: None,
             shutdown_tx: None,
             last_api_call: Arc::new(RwLock::new(None)),
@@ -196,6 +199,7 @@ impl AppState {
             .unwrap_or_else(|_| "anthropic/claude-sonnet-20241022".into());
         let orchestrator_config = crate::orchestrator::agent::OrchestratorConfig {
             model,
+            collapse_threshold_tokens: config.collapse_threshold_tokens,
             ..Default::default()
         };
 
@@ -235,6 +239,7 @@ impl AppState {
             tool_registry: Some(tool_registry),
             auth_config: Some(auth_config),
             collapse_tx,
+            collapse_threshold_tokens: config.collapse_threshold_tokens,
             memory_tx,
             shutdown_tx,
             last_api_call,
@@ -397,6 +402,7 @@ pub async fn app() -> Router {
         tool_registry: None,
         auth_config: None,
         collapse_tx: None,
+        collapse_threshold_tokens: 2000,
         memory_tx: None,
         shutdown_tx: None,
         last_api_call: Arc::new(RwLock::new(None)),

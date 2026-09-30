@@ -1,4 +1,4 @@
-use sqlx::{Row, SqlitePool};
+use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 use uuid::Uuid;
 
 use crate::models::Memory;
@@ -18,6 +18,23 @@ impl MemoryRepo {
         tokens_count: usize,
         metadata: &serde_json::Value,
     ) -> Result<Memory, sqlx::Error> {
+        let mut tx = pool.begin().await?;
+        let memory = Self::create_in_tx(&mut tx, content, tokens_count, metadata).await?;
+        tx.commit().await?;
+        Ok(memory)
+    }
+
+    /// Create a new episodic memory card inside an existing transaction.
+    ///
+    /// Identical to [`create`](Self::create) but participates in the caller's
+    /// transaction, so the `memory` row can be committed atomically together
+    /// with its `vec_memory` embedding (no orphan rows on failure).
+    pub async fn create_in_tx(
+        tx: &mut Transaction<'_, Sqlite>,
+        content: &str,
+        tokens_count: usize,
+        metadata: &serde_json::Value,
+    ) -> Result<Memory, sqlx::Error> {
         let id = Uuid::new_v4().to_string();
         let now = chrono::Utc::now().to_rfc3339();
         let metadata_str = serde_json::to_string(metadata).unwrap_or_else(|_| "{}".to_string());
@@ -31,7 +48,7 @@ impl MemoryRepo {
         .bind(tokens_count as i64)
         .bind(&now)
         .bind(&metadata_str)
-        .execute(pool)
+        .execute(&mut **tx)
         .await?;
 
         Ok(Memory {
