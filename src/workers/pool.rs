@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::db::DbPool;
+use crate::embeddings::EmbeddingProvider;
 use crate::workers::episodic_memory::{EpisodicMemoryConfig, EpisodicMemoryWorker};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
@@ -31,7 +32,12 @@ impl WorkerPool {
     ///
     /// A broadcast channel is created so all workers can be gracefully
     /// stopped.
-    pub fn start(db: DbPool, _config: &Config, llm_provider: Arc<dyn LLMProvider>) -> Self {
+    pub fn start(
+        db: DbPool,
+        _config: &Config,
+        llm_provider: Arc<dyn LLMProvider>,
+        embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
+    ) -> Self {
         let (shutdown_tx, _) = broadcast::channel::<()>(1);
 
         // ── Collapse worker ─────────────────────────────────────
@@ -94,27 +100,41 @@ impl WorkerPool {
             })
         };
 
-        // ── Episodic memory worker ─────────────────────────────────────
-        let (memory_tx, memory_rx) = mpsc::channel::<()>(256);
-        let memory = {
-            let shutdown_rx = shutdown_tx.subscribe();
-            let db = db.clone();
-            let llm_provider = llm_provider.clone();
-            let memory_config = EpisodicMemoryConfig {
-                batch_tokens: _config.memory_batch_tokens,
-                inactivity_minutes: _config.memory_inactivity_minutes as i64,
-                overlap: _config.memory_overlap,
-                poll_interval_minutes: _config.memory_poll_interval_minutes,
-                model: _config.memory_model.clone(),
-            };
-            EpisodicMemoryWorker::start(db, llm_provider, memory_rx, shutdown_rx, memory_config)
+        // ── Episodic memory worker (only when embeddings are configured) ──
+        let (memory, memory_tx) = match embedding_provider {
+            Some(embedding_provider) => {
+                let (memory_tx, memory_rx) = mpsc::channel::<()>(256);
+                let shutdown_rx = shutdown_tx.subscribe();
+                let db = db.clone();
+                let llm_provider = llm_provider.clone();
+                let memory_config = EpisodicMemoryConfig {
+                    batch_tokens: _config.memory_batch_tokens,
+                    inactivity_minutes: _config.memory_inactivity_minutes as i64,
+                    overlap: _config.memory_overlap,
+                    poll_interval_minutes: _config.memory_poll_interval_minutes,
+                    model: _config.memory_model.clone(),
+                };
+                let handle = EpisodicMemoryWorker::start(
+                    db,
+                    llm_provider,
+                    embedding_provider,
+                    memory_rx,
+                    shutdown_rx,
+                    memory_config,
+                );
+                (Some(handle), Some(memory_tx))
+            }
+            None => {
+                tracing::warn!("EpisodicMemoryWorker not started: embeddings not configured");
+                (None, None)
+            }
         };
 
         Self {
             collapse: Some(collapse),
             collapse_tx: Some(collapse_tx),
-            memory: Some(memory),
-            memory_tx: Some(memory_tx),
+            memory,
+            memory_tx,
             shutdown_tx: Some(shutdown_tx),
         }
     }
@@ -147,6 +167,7 @@ mod tests {
     use crate::config::Config;
     use crate::db::repos::messages::MessagesRepo;
     use crate::db::schema::run_migrations;
+    use crate::embeddings::provider::EmbeddingError;
     use crate::llm::provider::{ChatMessage, ChatRequest, ChatResponse, LLMError, TokenUsage};
     use async_trait::async_trait;
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -211,16 +232,26 @@ mod tests {
         > {
             unimplemented!("chat_stream not used in tests")
         }
-
-        async fn embed(&self, _input: &str) -> Result<Vec<f32>, LLMError> {
-            unimplemented!("embed not used in tests")
-        }
     }
 
     fn test_llm_provider() -> Arc<dyn crate::llm::provider::LLMProvider> {
         Arc::new(MockPoolLLM {
             calls: Arc::new(Mutex::new(Vec::new())),
         })
+    }
+
+    /// A no-op embedding provider for pool tests.
+    struct MockPoolEmbeddings;
+
+    #[async_trait]
+    impl EmbeddingProvider for MockPoolEmbeddings {
+        async fn embed(&self, _input: &str) -> Result<Vec<f32>, EmbeddingError> {
+            Ok(vec![0.1, 0.2, 0.3])
+        }
+    }
+
+    fn test_embedding_provider() -> Option<Arc<dyn EmbeddingProvider>> {
+        Some(Arc::new(MockPoolEmbeddings))
     }
 
     /// Create a [`Config`] with default values for testing.
@@ -252,6 +283,9 @@ mod tests {
             memory_poll_interval_minutes: 30,
             memory_model: "mistralai/mistral-small".into(),
             rag_budget_tokens: 2000,
+            embedding_provider: None,
+            embedding_model: None,
+            embedding_dimension: None,
         }
     }
 
@@ -283,7 +317,12 @@ mod tests {
         let msg_id = msg.id.clone();
 
         let config = test_config();
-        let mut pool_workers = WorkerPool::start(pool.clone(), &config, test_llm_provider());
+        let mut pool_workers = WorkerPool::start(
+            pool.clone(),
+            &config,
+            test_llm_provider(),
+            test_embedding_provider(),
+        );
 
         // Send the message ID through the collapse channel
         if let Some(tx) = &pool_workers.collapse_tx {
@@ -341,7 +380,8 @@ mod tests {
         });
 
         let config = test_config();
-        let mut pool_workers = WorkerPool::start(pool.clone(), &config, provider);
+        let mut pool_workers =
+            WorkerPool::start(pool.clone(), &config, provider, test_embedding_provider());
 
         if let Some(tx) = &pool_workers.collapse_tx {
             tx.send(msg_id.clone()).await.unwrap();
@@ -372,11 +412,37 @@ mod tests {
     async fn test_worker_pool_shutdown_tx_accessible() {
         let db = test_db().await;
         let config = test_config();
-        let mut pool = WorkerPool::start(db, &config, test_llm_provider());
+        let mut pool =
+            WorkerPool::start(db, &config, test_llm_provider(), test_embedding_provider());
 
         assert!(
             pool.shutdown_tx.is_some(),
             "shutdown_tx should be Some after WorkerPool::start()"
+        );
+
+        pool.shutdown().await;
+    }
+
+    /// Given `embedding_provider = None`, the episodic memory worker must not
+    /// be started and no `memory_tx` channel should exist.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_pool_without_embeddings_skips_memory_worker() {
+        let db = test_db().await;
+        let config = test_config();
+        let mut pool = WorkerPool::start(db, &config, test_llm_provider(), None);
+
+        assert!(
+            pool.memory.is_none(),
+            "episodic memory worker must not start without an embedding provider"
+        );
+        assert!(
+            pool.memory_tx.is_none(),
+            "no memory channel should be created without an embedding provider"
+        );
+        // The collapse worker still starts.
+        assert!(
+            pool.collapse.is_some(),
+            "collapse worker should still start"
         );
 
         pool.shutdown().await;

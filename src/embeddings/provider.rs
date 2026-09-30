@@ -10,6 +10,8 @@ pub enum EmbeddingError {
     Timeout,
     #[error("Model not available: {0}")]
     ModelNotAvailable(String),
+    #[error("Storage error: {0}")]
+    Storage(String),
 }
 
 impl From<reqwest::Error> for EmbeddingError {

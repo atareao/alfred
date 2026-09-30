@@ -182,14 +182,25 @@ impl AppState {
                 Arc::new(crate::llm::ollama::OllamaProvider::new(config))
             };
 
+        // 5. Create embedding provider (None disables RAG and the memory worker)
+        let embedding_provider: Option<Arc<dyn crate::embeddings::EmbeddingProvider>> =
+            crate::embeddings::create_provider(config).map(Arc::from);
+
         // 5.5 Create worker pool (collapse + memory workers)
-        let worker_pool = WorkerPool::start(pool.clone(), config, llm_provider.clone());
+        let worker_pool = WorkerPool::start(
+            pool.clone(),
+            config,
+            llm_provider.clone(),
+            embedding_provider.clone(),
+        );
         let collapse_tx = worker_pool.collapse_tx;
         let memory_tx = worker_pool.memory_tx;
         let shutdown_tx = worker_pool.shutdown_tx;
 
         // 6. Create orchestrator
         let mut context_builder = ContextBuilder::new();
+        context_builder.pool = Some(pool.clone());
+        context_builder.provider = embedding_provider;
         context_builder.rag_budget_tokens = std::env::var("RAG_BUDGET_TOKENS")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -455,5 +466,54 @@ mod tests {
 
         env::remove_var("OPENROUTER_API_KEY");
         env::remove_var("OPENROUTER_MODEL");
+    }
+
+    /// With `EMBEDDING_PROVIDER`/`EMBEDDING_MODEL` configured, the production
+    /// wiring must hand a pool **and** a provider to the orchestrator's
+    /// `ContextBuilder`, otherwise RAG silently falls back to no memories.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn test_new_with_orchestrator_wires_context_builder_with_embeddings() {
+        env::set_var("EMBEDDING_PROVIDER", "ollama");
+        env::set_var("EMBEDDING_MODEL", "all-minilm");
+
+        let tmp_dir = env::temp_dir();
+        let db_filename = "valet_test_wire_rag.db";
+        let db_path = tmp_dir.join(db_filename);
+        let _ = std::fs::remove_file(&db_path);
+
+        use crate::config::Config;
+        let mut test_config = Config::from_env();
+        test_config.database_url = db_path
+            .to_str()
+            .expect("temp path must be valid UTF-8")
+            .to_string();
+
+        let state = AppState::new_with_orchestrator(&test_config)
+            .await
+            .expect("new_with_orchestrator should succeed with embeddings configured");
+
+        let orchestrator = state
+            .orchestrator
+            .as_ref()
+            .expect("orchestrator should be present");
+        let context_builder = &orchestrator.context_builder;
+
+        assert!(
+            context_builder.pool.is_some(),
+            "ContextBuilder.pool should be wired"
+        );
+        assert!(
+            context_builder.provider.is_some(),
+            "ContextBuilder.provider should be wired when embeddings are configured"
+        );
+
+        // Teardown
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(tmp_dir.join("valet_test_wire_rag.db-wal"));
+        let _ = std::fs::remove_file(tmp_dir.join("valet_test_wire_rag.db-shm"));
+
+        env::remove_var("EMBEDDING_PROVIDER");
+        env::remove_var("EMBEDDING_MODEL");
     }
 }

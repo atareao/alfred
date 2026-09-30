@@ -263,10 +263,6 @@ mod tests {
         > {
             unimplemented!("chat_stream not used in tests")
         }
-
-        async fn embed(&self, _input: &str) -> Result<Vec<f32>, LLMError> {
-            unimplemented!("embed not used in tests")
-        }
     }
 
     /// Helper: create an in-memory DbPool with migrations.

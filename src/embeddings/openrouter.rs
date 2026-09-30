@@ -28,14 +28,24 @@ struct OpenRouterEmbedResponse {
 pub struct OpenRouterProvider {
     api_key: String,
     model: String,
+    base_url: String,
     client: Client,
 }
 
 impl OpenRouterProvider {
-    pub fn new(api_key: String, model: Option<String>) -> Self {
+    /// Build a provider against the production OpenRouter base URL. The model
+    /// is mandatory (no hardcoded fallback).
+    pub fn new(api_key: String, model: String) -> Self {
+        Self::with_base_url(api_key, model, "https://openrouter.ai/api/v1".to_string())
+    }
+
+    /// Build a provider against a custom base URL. Used by tests to target a
+    /// mock server; production always uses [`OpenRouterProvider::new`].
+    pub fn with_base_url(api_key: String, model: String, base_url: String) -> Self {
         Self {
             api_key,
-            model: model.unwrap_or_else(|| "openai/text-embedding-3-small".to_string()),
+            model,
+            base_url,
             client: Client::new(),
         }
     }
@@ -44,7 +54,7 @@ impl OpenRouterProvider {
 #[async_trait]
 impl EmbeddingProvider for OpenRouterProvider {
     async fn embed(&self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
-        let url = "https://openrouter.ai/api/v1/embeddings";
+        let url = format!("{}/embeddings", self.base_url);
         let request = OpenRouterEmbedRequest {
             model: self.model.clone(),
             input: text.to_string(),
@@ -91,35 +101,29 @@ mod tests {
 
     #[tokio::test]
     async fn test_openrouter_no_api_key_returns_error() -> Result<(), Box<dyn std::error::Error>> {
-        let provider = OpenRouterProvider::new(String::new(), None);
+        let provider = OpenRouterProvider::new(String::new(), "test-model".to_string());
         let result = provider.embed("test").await;
         assert!(result.is_err());
         Ok(())
     }
 
     // -----------------------------------------------------------------------
-    // RED phase — OpenRouter application identification headers
-    //
-    // This test will FAIL because the HTTP-Referer and X-Title headers are not
-    // yet being sent by the LLM provider's embed() method.
+    // OpenRouter application identification headers (embeddings provider)
     // -----------------------------------------------------------------------
 
     #[tokio::test]
     async fn test_embed_sends_app_headers() {
-        use crate::llm::provider::LLMProvider;
         use wiremock::matchers::{any, method};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let mock_server = MockServer::start().await;
 
-        let config = crate::llm::openrouter::OpenRouterConfig {
-            api_key: "test-key".into(),
-            model: "test-model".into(),
-            base_url: mock_server.uri(),
-            max_retries: 3,
-            timeout_secs: 60,
-        };
-        let provider = crate::llm::openrouter::OpenRouterProvider::new(config);
+        // The embeddings provider is pointed at the mock server via with_base_url.
+        let provider = OpenRouterProvider::with_base_url(
+            "test-key".into(),
+            "test-model".into(),
+            mock_server.uri(),
+        );
 
         let captured_headers = std::sync::Arc::new(std::sync::Mutex::new(None));
         let captured = captured_headers.clone();

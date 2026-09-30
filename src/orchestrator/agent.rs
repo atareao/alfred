@@ -1887,10 +1887,6 @@ mod tests {
             let stream = futures::stream::iter(events);
             Ok(Box::pin(stream))
         }
-
-        async fn embed(&self, _input: &str) -> Result<Vec<f32>, LLMError> {
-            Ok(vec![])
-        }
     }
 
     /// Dummy tool that always succeeds — used to exercise the tool tracking code.
@@ -2086,10 +2082,6 @@ mod tests {
                 let stream = futures::stream::iter(events);
                 Ok(Box::pin(stream))
             }
-
-            async fn embed(&self, _input: &str) -> Result<Vec<f32>, LLMError> {
-                Ok(vec![])
-            }
         }
 
         // 3. Create collapse channel that should receive the message_id
@@ -2201,10 +2193,6 @@ mod tests {
                 let stream = futures::stream::iter(events);
                 Ok(Box::pin(stream))
             }
-
-            async fn embed(&self, _input: &str) -> Result<Vec<f32>, LLMError> {
-                Ok(vec![])
-            }
         }
 
         let llm = Arc::new(MemoryMockLLM);
@@ -2312,10 +2300,6 @@ mod tests {
 
                 let stream = futures::stream::iter(events);
                 Ok(Box::pin(stream))
-            }
-
-            async fn embed(&self, _input: &str) -> Result<Vec<f32>, LLMError> {
-                Ok(vec![])
             }
         }
 
@@ -2474,10 +2458,6 @@ mod tests {
 
             let stream = futures::stream::iter(events);
             Ok(Box::pin(stream))
-        }
-
-        async fn embed(&self, _input: &str) -> Result<Vec<f32>, LLMError> {
-            Ok(vec![])
         }
     }
 
@@ -2735,10 +2715,6 @@ mod tests {
             let stream = futures::stream::iter(events);
             Ok(Box::pin(stream))
         }
-
-        async fn embed(&self, _input: &str) -> Result<Vec<f32>, LLMError> {
-            Ok(vec![])
-        }
     }
 
     // -----------------------------------------------------------------------
@@ -2924,10 +2900,6 @@ mod tests {
             events.push(Ok(StreamEvent::Done(result)));
             let stream = futures::stream::iter(events);
             Ok(Box::pin(stream))
-        }
-
-        async fn embed(&self, _input: &str) -> Result<Vec<f32>, LLMError> {
-            Ok(vec![])
         }
     }
 
@@ -3158,10 +3130,6 @@ mod tests {
             let stream = futures::stream::iter(events);
             Ok(Box::pin(stream))
         }
-
-        async fn embed(&self, _input: &str) -> Result<Vec<f32>, LLMError> {
-            Ok(vec![])
-        }
     }
 
     #[tokio::test]
@@ -3349,10 +3317,6 @@ mod tests {
             let stream = futures::stream::iter(events);
             Ok(Box::pin(stream))
         }
-
-        async fn embed(&self, _input: &str) -> Result<Vec<f32>, LLMError> {
-            Ok(vec![])
-        }
     }
 
     /// Mock LLM that always fails with an HTTP error.
@@ -3370,10 +3334,6 @@ mod tests {
         ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, LLMError>> + Send>>, LLMError>
         {
             Err(LLMError::HttpError("fail".into()))
-        }
-
-        async fn embed(&self, _input: &str) -> Result<Vec<f32>, LLMError> {
-            Ok(vec![])
         }
     }
 

@@ -80,34 +80,31 @@ impl ContextBuilder {
         }
     }
 
-    /// Perform a real vector-similarity search if pool + provider are configured,
-    /// otherwise fall back to hardcoded placeholder memories.
+    /// Perform a real vector-similarity search.
+    ///
+    /// Returns `Vec::new()` (never placeholder memories) when the pool or the
+    /// embedding provider is missing, or when the embedding/search fails.
     async fn build_rag_memories(&self, user_message: &str) -> Vec<String> {
         let (Some(pool), Some(provider)) = (&self.pool, &self.provider) else {
-            return self.fallback_memories();
+            tracing::warn!("RAG: pool or embedding provider not configured; returning no memories");
+            return Vec::new();
         };
 
         let embedding = match provider.embed(user_message).await {
             Ok(emb) => emb,
             Err(e) => {
                 tracing::warn!("RAG: embedding generation failed: {e}");
-                return self.fallback_memories();
+                return Vec::new();
             }
         };
 
         match MemoryRepo::search_by_vector(pool, &embedding, 10, self.rag_budget_tokens).await {
-            Ok(memories) if memories.is_empty() => Vec::new(),
             Ok(memories) => memories.into_iter().map(|m| format_memory(&m)).collect(),
             Err(e) => {
                 tracing::warn!("RAG: vector search failed: {e}");
-                self.fallback_memories()
+                Vec::new()
             }
         }
-    }
-
-    /// Hardcoded placeholder memories when no real RAG pipeline is configured.
-    fn fallback_memories(&self) -> Vec<String> {
-        vec!["memory1".into(), "memory2".into()]
     }
 }
 
@@ -181,12 +178,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_rag_context_has_memories() -> Result<(), Box<dyn std::error::Error>> {
+    async fn test_rag_context_without_pool_is_empty() -> Result<(), Box<dyn std::error::Error>> {
         let builder = ContextBuilder::new();
         let ctx = builder
             .build(ContextStrategy::RAG, "profile-1", "search")
             .await?;
-        assert!(!ctx.rag_memories.is_empty());
+        // No pool/provider → no placeholder memories, just an empty vec.
+        assert!(ctx.rag_memories.is_empty());
         Ok(())
     }
 
@@ -199,10 +197,10 @@ mod tests {
             .build(ContextStrategy::RAG, "profile-1", "any")
             .await
             .expect("build should succeed even without pool");
-        // Without pool, falls back to hardcoded placeholders → not empty
+        // Without pool → no placeholder memories.
         assert!(
-            !ctx.rag_memories.is_empty(),
-            "expected hardcoded fallback memories when pool is None"
+            ctx.rag_memories.is_empty(),
+            "expected empty rag_memories when pool is None"
         );
     }
 
@@ -218,10 +216,10 @@ mod tests {
             .build(ContextStrategy::RAG, "profile-1", "any")
             .await
             .expect("build should succeed with pool but no provider");
-        // No provider → falls back to hardcoded placeholders
+        // No provider → no placeholder memories.
         assert!(
-            !ctx.rag_memories.is_empty(),
-            "expected hardcoded fallback memories when provider is None"
+            ctx.rag_memories.is_empty(),
+            "expected empty rag_memories when provider is None"
         );
     }
 
@@ -242,6 +240,47 @@ mod tests {
         assert!(
             ctx.rag_memories.is_empty(),
             "expected empty rag_memories when vec_memory is empty"
+        );
+    }
+
+    /// Insert an embedding row directly into `vec_memory` for tests.
+    async fn insert_embedding(pool: &SqlitePool, id: &str, embedding: &[f32]) {
+        let json = serde_json::to_string(embedding).expect("failed to serialize embedding");
+        sqlx::query("INSERT INTO vec_memory (id, embedding) VALUES (?1, ?2)")
+            .bind(id)
+            .bind(&json)
+            .execute(pool)
+            .await
+            .expect("failed to insert vec_memory row");
+    }
+
+    #[tokio::test]
+    async fn test_rag_with_pool_and_provider_returns_formatted_memories() {
+        let pool = setup_pool().await;
+
+        // A real memory card with tags.
+        let metadata = serde_json::json!({"tags": ["rust", "backend"]});
+        let mem = MemoryRepo::create(&pool, "User likes Rust", 10, &metadata)
+            .await
+            .expect("create memory should succeed");
+
+        // Embedding matches the mock provider's output dimension (3).
+        insert_embedding(&pool, &mem.id, &[0.1, 0.2, 0.3]).await;
+
+        let builder = ContextBuilder {
+            pool: Some(pool),
+            provider: Some(Arc::new(MockEmbedProvider)),
+            rag_budget_tokens: 2000,
+        };
+        let ctx = builder
+            .build(ContextStrategy::RAG, "profile-1", "what does the user like")
+            .await
+            .expect("build should succeed with pool + provider");
+
+        assert_eq!(
+            ctx.rag_memories,
+            vec!["[rust, backend] User likes Rust".to_string()],
+            "rag_memories should contain the formatted `[tags] content` memory"
         );
     }
 }
