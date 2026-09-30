@@ -114,9 +114,6 @@ Las variables de entorno se leen una vez al arrancar (ver `src/config.rs`) con d
 | `OPENWEATHER_API_KEY` | API key de OpenWeather | — |
 | `GOOGLE_PLACES_API_KEY` | API key de Google Places | — |
 | `BRAVE_SEARCH_API_KEY` | API key de Brave Search | — |
-| `BRIEFING_TIME` | Hora del briefing matutino | `08:15` |
-| `CONSOLIDATION_TIME` | Hora de la consolidación nocturna | `23:00` |
-| `TRAVEL_PREP_DAYS_BEFORE` | Días de antelación para preparar viajes | `3` |
 | `COLLAPSE_THRESHOLD_TOKENS` | Tokens antes del colapso de contexto | `2000` |
 | `COLLAPSE_MODEL` | Modelo para el colapso de contexto | `mistralai/mistral-small-24b-instruct-2501` |
 | `MEMORY_BATCH_TOKENS` | Tokens acumulados para trigger de ficha episódica | `2000` |

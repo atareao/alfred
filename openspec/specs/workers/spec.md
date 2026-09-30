@@ -1,7 +1,7 @@
 # workers Specification
 
 ## Purpose
-Workers en segundo plano de Valet: colapso de mensajes largos, generación de briefings, detección de conflictos de agenda, preparación de viajes y memoria episódica, con sus prompts y modelos configurables.
+Workers en segundo plano de Valet: colapso de mensajes largos y memoria episódica, con sus prompts y modelos configurables.
 
 ## Requirements
 
@@ -143,56 +143,8 @@ Workers en segundo plano de Valet: colapso de mensajes largos, generación de br
 #### Scenario: Worker pool runs on startup
 **Given** Valet is started  
 **When** the server begins listening  
-**Then** the Briefing worker SHALL still be running  
-**And** the Conflict-detector worker SHALL still be running  
-**And** the Travel-prep worker SHALL still be running  
-**And** the Memory-consolidator worker SHALL still be running  
-**And** the Collapse worker SHALL still be running  
+**Then** the Collapse worker SHALL still be running  
 **And** the EpisodicMemoryWorker SHALL still be running
-
-### Requirement: Briefing worker SHALL generate daily briefing on each tick
-
-**Given** the `WorkerPool` is started  
-**When** the briefing worker ticks (every 60s)  
-**Then** it SHALL instantiate `BriefingWorker::new(db, None)`  
-**And** SHALL call `generate()`  
-**And** SHALL log the generated briefing at `info` level  
-**And** SHALL log any error at `error` level
-
-#### Scenario: Briefing worker generates briefing on tick
-**Given** a running WorkerPool  
-**When** the briefing interval fires  
-**Then** `BriefingWorker::generate()` is called  
-**And** the result is logged
-
-### Requirement: Conflict-detector worker SHALL check for scheduling conflicts
-
-**Given** the `WorkerPool` is started  
-**When** the conflict-detector worker ticks (every 120s)  
-**Then** it SHALL query the first available profile from the database  
-**And** SHALL call `ConflictDetector::check_date(profile_id, today)`  
-**And** SHALL log any alerts found (Critical or Warning)
-
-#### Scenario: Conflict-detector logs alerts on tick
-**Given** a running WorkerPool with events in the database  
-**When** the conflict-detector interval fires  
-**Then** `ConflictDetector::check_date()` is called  
-**And** any conflict alerts are logged
-
-### Requirement: Travel-prep worker SHALL prepare trip suggestions
-
-**Given** the `WorkerPool` is started  
-**When** the travel-prep worker ticks (every 300s)  
-**Then** it SHALL query events with non-empty locations in the next 3 days  
-**And** SHALL call `TravelPrepWorker::prepare_for_trip(title, location)` for each  
-**And** SHALL log the preparation suggestions
-
-#### Scenario: Travel-prep worker processes upcoming trips
-**Given** a running WorkerPool with events that have locations  
-**When** the travel-prep interval fires  
-**Then** events with locations in the next 3 days are found  
-**And** `prepare_for_trip()` is called for each  
-**And** the suggestions are logged
 
 ### Requirement: EpisodicMemoryWorker SHALL rate-limit LLM retries after parse failure
 
