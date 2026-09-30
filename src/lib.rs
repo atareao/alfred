@@ -318,7 +318,7 @@ async fn health_handler(State(state): State<AppState>) -> Json<Value> {
 
     Json(serde_json::json!({
         "status": "ok",
-        "version": "0.1.0",
+        "version": env!("CARGO_PKG_VERSION"),
         "db": db_status,
     }))
 }
