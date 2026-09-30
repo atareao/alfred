@@ -10,14 +10,34 @@ import {
   Space,
   Spin,
 } from "antd";
-import { useProfile } from "../hooks/useProfile";
 import { useSettings } from "../hooks/useSettings";
+import { useProfileContext } from "../contexts/ProfileContext";
 
 const { TextArea } = Input;
 
 export interface SettingsDialogProps {
   visible: boolean;
   onClose: () => void;
+}
+
+const URL_SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.-]*:/;
+
+function isAllowedAvatarUrl(value: string | null | undefined): boolean {
+  const trimmed = (value ?? "").trim();
+  // Vacío o solo espacios: válido.
+  if (trimmed === "") return true;
+  // Espacios o caracteres de control embebidos: inválido.
+  if (/[\s\u0000-\u001f]/.test(trimmed)) return false;
+  // URL relativa al protocolo (//host): apunta a un host externo, inválida.
+  if (trimmed.startsWith("//")) return false;
+  // Ruta relativa del propio host: válida.
+  if (trimmed.startsWith("/")) return true;
+  // URL absoluta http/https (case-insensitive): válida.
+  if (/^https?:\/\//i.test(trimmed)) return true;
+  // Sin esquema (p. ej. "example.com/a.png"): se trata como ruta relativa.
+  if (!URL_SCHEME_RE.test(trimmed)) return true;
+  // Cualquier otro esquema (javascript:, data:, file:, ftp:, C:, …): inválido.
+  return false;
 }
 
 export interface SettingsFormValues {
@@ -36,7 +56,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
   visible,
   onClose,
 }) => {
-  const { profile, updateProfile } = useProfile();
+  const { profile, updateProfile } = useProfileContext();
   const {
     settings,
     loading: settingsLoading,
@@ -85,7 +105,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     try {
       await updateProfile({
         name: values.name,
-        avatar_url: values.avatar_url,
+        avatar_url: (values.avatar_url ?? "").trim(),
       });
       message.success("Perfil actualizado");
       onClose();
@@ -191,6 +211,18 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                 <Form.Item
                   label="Avatar URL"
                   name="avatar_url"
+                  rules={[
+                    {
+                      validator: (_rule, value: string) =>
+                        isAllowedAvatarUrl(value)
+                          ? Promise.resolve()
+                          : Promise.reject(
+                              new Error(
+                                "Usa una URL http(s) o una ruta relativa",
+                              ),
+                            ),
+                    },
+                  ]}
                 >
                   <Input />
                 </Form.Item>

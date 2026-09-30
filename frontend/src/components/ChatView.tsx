@@ -12,6 +12,7 @@ interface ChatViewProps {
   streamingContent?: string;
   activeTools?: string[];
   settings?: Record<string, string> | null;
+  userAvatarUrl?: string | null;
 }
 
 function isSameDay(date1: string, date2: string): boolean {
@@ -32,6 +33,7 @@ export const ChatView: React.FC<ChatViewProps> = (props) => {
     streaming,
     streamingContent,
     activeTools,
+    userAvatarUrl,
   } = props;
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<MessageInputHandle>(null);
@@ -84,7 +86,7 @@ export const ChatView: React.FC<ChatViewProps> = (props) => {
           return (
             <React.Fragment key={msg.id}>
               {showSeparator && <DateSeparator date={msg.created_at} />}
-              <MessageBubble message={msg} />
+              <MessageBubble message={msg} userAvatarUrl={userAvatarUrl} />
             </React.Fragment>
           );
         })}

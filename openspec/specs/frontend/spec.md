@@ -612,3 +612,227 @@ SettingsDialog SHALL permitir restaurar los valores por defecto de la interfaz m
 **When** se completa el streaming (`onDone`)
 **Then** el contenido del mensaje no concatena el footer `🔧 ...`
 **And** el contenido es exactamente el texto del assistant
+
+### Requirement: MessageBubble SHALL render the Valet logo as assistant avatar
+
+Los mensajes con rol `assistant` SHALL mostrar el logotipo de Valet (SVG vectorial)
+como avatar a la izquierda de la burbuja, en lugar del icono genérico
+`RobotOutlined` de Ant Design.
+
+**Given** un mensaje con `role = "assistant"`
+**When** `MessageBubble` se renderiza
+**Then** SHALL aparecer el logo de Valet como avatar a la izquierda de la burbuja
+**And** NO SHALL renderizarse el icono `RobotOutlined`
+
+#### Scenario: Mensaje del asistente muestra el logo de Valet
+**Given** `message.role = "assistant"` y `message.content = "Hola, soy Valet"`
+**When** se renderiza `MessageBubble`
+**Then** existe una imagen (`<img>`) cuyo `src` apunta al asset del logo de Valet
+**And** esa imagen tiene un `alt` no vacío
+**And** NO existe un elemento con la clase del icono robot de Ant Design
+
+#### Scenario: Mensaje de streaming usa el mismo avatar
+**Given** `message.id = "streaming"` y `message.role = "assistant"`
+**When** se renderiza `MessageBubble`
+**Then** el avatar SHALL ser también el logo de Valet
+**And** NO SHALL renderizarse el icono `RobotOutlined`
+
+#### Scenario: El rol system y el rol tool conservan su icono
+**Given** mensajes con `role = "system"` y `role = "tool"`
+**When** se renderizan
+**Then** SHALL mantener sus iconos actuales (`InfoCircleOutlined`, `CodeOutlined`)
+**And** NO SHALL mostrarse el logo de Valet
+
+### Requirement: MessageBubble SHALL render the user profile avatar in user messages
+
+Los mensajes con rol `user` SHALL mostrar como avatar la imagen del perfil recibida
+en la prop `userAvatarUrl`, a la derecha de la burbuja. Si `userAvatarUrl` es
+`null`, `undefined` o cadena vacía, SHALL mantener el icono `UserOutlined` actual.
+
+**Given** un mensaje con `role = "user"`
+**When** `MessageBubble` se renderiza
+**Then** SHALL usar `userAvatarUrl` como avatar si está disponible
+**And** SHALL degradar a `UserOutlined` si no lo está
+
+#### Scenario: Usuario con avatar configurado
+**Given** `message.role = "user"` y `userAvatarUrl = "https://example.com/me.png"`
+**When** se renderiza `MessageBubble`
+**Then** existe una imagen con `src = "https://example.com/me.png"` y `alt` no vacío
+**And** NO existe el icono `anticon-user`
+
+#### Scenario: Usuario sin avatar configurado (degradación)
+**Given** `message.role = "user"` y `userAvatarUrl = null`
+**When** se renderiza `MessageBubble`
+**Then** SHALL renderizarse el icono `UserOutlined`
+**And** NO SHALL renderizarse ninguna imagen de avatar de usuario
+
+#### Scenario: El avatar del usuario NO se usa en otros roles
+**Given** `userAvatarUrl = "https://example.com/me.png"`
+**And** mensajes con `role = "assistant"`, `role = "system"` y `role = "tool"`
+**When** se renderizan
+**Then** NO SHALL usarse `userAvatarUrl` en ninguno de ellos
+
+### Requirement: ChatView SHALL forward the user avatar URL to message bubbles
+
+`ChatView` SHALL aceptar una prop opcional `userAvatarUrl?: string | null` y
+reenviarla a cada `MessageBubble` que renderice, incluido el mensaje sintético de
+streaming.
+
+**Given** un `ChatView` con `userAvatarUrl` disponible
+**When** se renderiza
+**Then** cada `MessageBubble` SHALL recibir esa misma URL
+**And** los mensajes con `role = "user"` SHALL mostrar ese avatar
+
+#### Scenario: Propagación de la URL a las burbujas
+**Given** `messages` con un mensaje de rol `user` y `userAvatarUrl = "https://example.com/me.png"`
+**When** se renderiza `ChatView`
+**Then** la burbuja del mensaje de usuario SHALL mostrar una imagen con ese `src`
+
+#### Scenario: Prop ausente no rompe el render
+**Given** un `ChatView` renderizado sin la prop `userAvatarUrl`
+**When** se renderiza
+**Then** los mensajes con `role = "user"` SHALL mostrar `UserOutlined`
+**And** NO SHALL lanzarse ningún error
+
+### Requirement: ProfileProvider SHALL provide a single shared profile to the whole app
+
+El perfil del usuario SHALL obtenerse una sola vez y compartirse mediante un
+contexto React (`ProfileProvider` + `useProfileContext()`), de modo que
+`SettingsDialog` y el chat consuman la misma instancia y no haya copias
+desincronizadas.
+
+**Given** la app envuelta en `<ProfileProvider>`
+**When** un consumidor llama a `useProfileContext()`
+**Then** recibe `{ profile, loading, error, updateProfile }`
+**And** solo SHALL realizarse una petición `GET /api/profile` en toda la app
+
+#### Scenario: Uso fuera del provider falla explícitamente
+**Given** un componente que llama a `useProfileContext()` sin un `<ProfileProvider>` ancestro
+**When** se renderiza
+**Then** SHALL lanzarse un error indicando que falta el provider
+
+#### Scenario: Editar el avatar en Ajustes actualiza el chat sin recargar
+**Given** el usuario cambia "Avatar URL" en la pestaña Perfil y pulsa guardar
+**When** `updateProfile` resuelve con el perfil actualizado
+**Then** el contexto SHALL exponer el nuevo `avatar_url`
+**And** los mensajes con `role = "user"` del chat SHALL mostrar el nuevo avatar sin recargar la página
+
+#### Scenario: Proveedor único
+**Given** `SettingsDialog` y `AppLayout` renderizados bajo el mismo `<ProfileProvider>`
+**When** ambos consumen el perfil
+**Then** SHALL compartir la misma instancia de perfil
+**And** NO SHALL duplicarse la petición a `GET /api/profile`
+
+### Requirement: MessageBubble SHALL fall back to UserOutlined when the user avatar fails to load
+
+Cuando la imagen del avatar del perfil dispara un evento `error`, `MessageBubble`
+SHALL dejar de renderizar la imagen y SHALL mostrar el icono `UserOutlined` en su
+lugar, sin recargar la página ni perder el resto del mensaje.
+
+**Given** un mensaje con `role = "user"` y un `userAvatarUrl` que no carga
+**When** la imagen del avatar dispara un evento `error`
+**Then** SHALL renderizarse el icono `UserOutlined`
+**And** NO SHALL quedar visible la imagen rota
+
+#### Scenario: URL rota degrada a UserOutlined
+**Given** `message.role = "user"` y `userAvatarUrl = "https://example.com/roto.png"`
+**When** se renderiza `MessageBubble` y la imagen del avatar dispara `error`
+**Then** existe el icono `.anticon-user`
+**And** NO existe ninguna imagen de avatar del usuario
+
+#### Scenario: Una URL válida no degrada
+**Given** `message.role = "user"` y `userAvatarUrl = "https://example.com/me.png"`
+**When** se renderiza `MessageBubble` sin disparar ningún `error`
+**Then** SHALL mostrarse la imagen del avatar
+**And** NO SHALL mostrarse el icono `UserOutlined`
+
+#### Scenario: Cambiar de URL recupera la imagen
+**Given** un `UserAvatar` que ha degradado a `UserOutlined` por un error de carga
+**When** la prop `src` cambia a una URL nueva
+**Then** SHALL volver a intentarse la carga y SHALL mostrarse la imagen
+
+### Requirement: UserAvatar SHALL avoid referrer leakage and load lazily
+
+La imagen del avatar del perfil SHALL declarar `referrerPolicy="no-referrer"` y
+`loading="lazy"` en el elemento `img`.
+
+**Given** un `UserAvatar` con un `src` no vacío
+**When** se renderiza
+**Then** el elemento `img` SHALL tener `referrerPolicy="no-referrer"`
+**And** el elemento `img` SHALL tener `loading="lazy"`
+**And** SHALL tener un `alt` no vacío
+
+#### Scenario: Atributos de privacidad y carga diferida
+**Given** `<UserAvatar src="https://example.com/me.png" />`
+**When** se renderiza
+**Then** el `img` resultante tiene `referrerpolicy="no-referrer"` y `loading="lazy"`
+
+#### Scenario: Sin src no se renderiza ninguna imagen
+**Given** `<UserAvatar src={null} />`
+**When** se renderiza
+**Then** SHALL mostrarse `UserOutlined`
+**And** NO SHALL renderizarse ningún `img`
+
+#### Scenario: Un src en blanco se trata como ausente
+**Given** `<UserAvatar src="   " />` (solo espacios)
+**When** se renderiza
+**Then** SHALL tratarse como si no hubiera avatar y SHALL mostrarse `UserOutlined`
+**And** NO SHALL renderizarse ningún `img`
+
+### Requirement: SettingsDialog SHALL validate the avatar URL scheme
+
+El formulario de la pestaña Perfil SHALL aceptar en "Avatar URL" únicamente un valor
+vacío, una ruta relativa del propio host (que empiece por una única `/`), o una URL
+absoluta con esquema `http` o `https`. Cualquier otro esquema (por ejemplo
+`javascript:`, `data:` o `file:`), una URL relativa al protocolo (que empiece por
+`//`, porque apunta a un host externo) y cualquier valor que contenga caracteres de
+control o espacios embebidos SHALL mostrar un error de validación y SHALL impedir el
+guardado. El valor SHALL persistirse recortado de espacios al principio y al final.
+
+**Given** el formulario de Perfil con un valor en "Avatar URL"
+**When** el usuario pulsa guardar
+**Then** si el esquema no es `http`/`https` y no es una ruta relativa, SHALL mostrarse
+un error de validación
+**And** NO SHALL llamarse a `updateProfile`
+
+#### Scenario: Esquema no permitido muestra error y no guarda
+**Given** el usuario escribe `javascript:alert(1)` en "Avatar URL"
+**When** pulsa guardar
+**Then** SHALL mostrarse un error de validación en ese campo
+**And** NO SHALL llamarse a `updateProfile`
+
+#### Scenario: URL https válida se guarda
+**Given** el usuario escribe `https://example.com/me.png` en "Avatar URL"
+**When** pulsa guardar
+**Then** SHALL llamarse a `updateProfile` con esa URL
+**And** NO SHALL mostrarse ningún error de validación
+
+#### Scenario: Valor vacío sigue siendo válido
+**Given** el usuario deja "Avatar URL" vacío
+**When** pulsa guardar
+**Then** SHALL llamarse a `updateProfile`
+**And** NO SHALL mostrarse ningún error de validación
+
+#### Scenario: Ruta relativa válida se guarda
+**Given** el usuario escribe `/avatars/me.png` en "Avatar URL"
+**When** pulsa guardar
+**Then** SHALL llamarse a `updateProfile` con esa ruta
+**And** NO SHALL mostrarse ningún error de validación
+
+#### Scenario: El valor se persiste recortado
+**Given** el usuario escribe `"  https://example.com/me.png  "` con espacios al principio y al final en "Avatar URL"
+**When** pulsa guardar
+**Then** SHALL llamarse a `updateProfile` con `avatar_url = "https://example.com/me.png"`, sin los espacios
+**And** NO SHALL mostrarse ningún error de validación
+
+#### Scenario: Una URL relativa al protocolo se rechaza
+**Given** el usuario escribe `//evil.com/a.png` en "Avatar URL"
+**When** pulsa guardar
+**Then** SHALL mostrarse un error de validación en ese campo
+**And** NO SHALL llamarse a `updateProfile`
+
+#### Scenario: Caracteres de control embebidos se rechazan
+**Given** el usuario escribe un valor que contiene un tabulador embebido, como "java<TAB>script:alert(1)"
+**When** pulsa guardar
+**Then** SHALL mostrarse un error de validación en ese campo
+**And** NO SHALL llamarse a `updateProfile`
