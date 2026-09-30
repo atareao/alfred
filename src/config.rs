@@ -36,10 +36,6 @@ pub struct Config {
     // Brave Search
     pub brave_search_api_key: Option<String>,
 
-    // Workers
-    pub briefing_time: String,
-    pub consolidation_time: String,
-    pub travel_prep_days_before: u32,
     // Message collapse threshold
     pub collapse_threshold_tokens: usize,
     // Model used for collapse/summary
@@ -92,12 +88,6 @@ impl Config {
             google_places_api_key: env::var("GOOGLE_PLACES_API_KEY").ok(),
             brave_search_api_key: env::var("BRAVE_SEARCH_API_KEY").ok(),
 
-            briefing_time: env::var("BRIEFING_TIME").unwrap_or_else(|_| "08:15".into()),
-            consolidation_time: env::var("CONSOLIDATION_TIME").unwrap_or_else(|_| "23:00".into()),
-            travel_prep_days_before: env::var("TRAVEL_PREP_DAYS_BEFORE")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(3),
             collapse_threshold_tokens: env::var("COLLAPSE_THRESHOLD_TOKENS")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -162,9 +152,6 @@ mod tests {
             "OPENWEATHER_API_KEY",
             "GOOGLE_PLACES_API_KEY",
             "BRAVE_SEARCH_API_KEY",
-            "BRIEFING_TIME",
-            "CONSOLIDATION_TIME",
-            "TRAVEL_PREP_DAYS_BEFORE",
             "COLLAPSE_THRESHOLD_TOKENS",
             "COLLAPSE_MODEL",
             "MEMORY_BATCH_TOKENS",
@@ -201,9 +188,6 @@ mod tests {
         assert!(cfg.google_places_api_key.is_none());
         assert!(cfg.brave_search_api_key.is_none());
 
-        assert_eq!(cfg.briefing_time, "08:15");
-        assert_eq!(cfg.consolidation_time, "23:00");
-        assert_eq!(cfg.travel_prep_days_before, 3);
         assert_eq!(cfg.collapse_threshold_tokens, 2000);
         assert_eq!(
             cfg.collapse_model,
@@ -245,9 +229,6 @@ mod tests {
         env::set_var("OPENWEATHER_API_KEY", "weather-key-123");
         env::set_var("GOOGLE_PLACES_API_KEY", "google-places-key-456");
         env::set_var("BRAVE_SEARCH_API_KEY", "brave-search-key-789");
-        env::set_var("BRIEFING_TIME", "07:00");
-        env::set_var("CONSOLIDATION_TIME", "22:30");
-        env::set_var("TRAVEL_PREP_DAYS_BEFORE", "5");
         env::set_var("COLLAPSE_THRESHOLD_TOKENS", "500");
         env::set_var("COLLAPSE_MODEL", "google/gemini-2.0-flash-lite");
         env::set_var("MEMORY_BATCH_TOKENS", "5000");
@@ -287,9 +268,6 @@ mod tests {
             Some("brave-search-key-789")
         );
 
-        assert_eq!(cfg.briefing_time, "07:00");
-        assert_eq!(cfg.consolidation_time, "22:30");
-        assert_eq!(cfg.travel_prep_days_before, 5);
         assert_eq!(cfg.collapse_threshold_tokens, 500);
         assert_eq!(cfg.collapse_model, "google/gemini-2.0-flash-lite");
         assert_eq!(cfg.memory_batch_tokens, 5000);
@@ -319,9 +297,6 @@ mod tests {
             "OPENWEATHER_API_KEY",
             "GOOGLE_PLACES_API_KEY",
             "BRAVE_SEARCH_API_KEY",
-            "BRIEFING_TIME",
-            "CONSOLIDATION_TIME",
-            "TRAVEL_PREP_DAYS_BEFORE",
             "COLLAPSE_THRESHOLD_TOKENS",
             "COLLAPSE_MODEL",
             "MEMORY_BATCH_TOKENS",
@@ -358,9 +333,6 @@ mod tests {
             "OPENWEATHER_API_KEY",
             "GOOGLE_PLACES_API_KEY",
             "BRAVE_SEARCH_API_KEY",
-            "BRIEFING_TIME",
-            "CONSOLIDATION_TIME",
-            "TRAVEL_PREP_DAYS_BEFORE",
             "COLLAPSE_THRESHOLD_TOKENS",
             "COLLAPSE_MODEL",
             "MEMORY_BATCH_TOKENS",
@@ -400,9 +372,6 @@ mod tests {
             "OPENWEATHER_API_KEY",
             "GOOGLE_PLACES_API_KEY",
             "BRAVE_SEARCH_API_KEY",
-            "BRIEFING_TIME",
-            "CONSOLIDATION_TIME",
-            "TRAVEL_PREP_DAYS_BEFORE",
             "COLLAPSE_THRESHOLD_TOKENS",
             "COLLAPSE_MODEL",
             "MEMORY_BATCH_TOKENS",
