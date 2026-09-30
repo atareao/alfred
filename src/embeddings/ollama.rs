@@ -22,10 +22,12 @@ pub struct OllamaProvider {
 }
 
 impl OllamaProvider {
-    pub fn new(base_url: Option<String>, model: Option<String>) -> Self {
+    /// Build a provider for `model`. `base_url` defaults to the local Ollama
+    /// server; the model itself is mandatory (no hardcoded fallback).
+    pub fn new(base_url: Option<String>, model: String) -> Self {
         Self {
             base_url: base_url.unwrap_or_else(|| "http://localhost:11434".to_string()),
-            model: model.unwrap_or_else(|| "all-minilm".to_string()),
+            model,
             client: Client::new(),
         }
     }
@@ -71,7 +73,10 @@ mod tests {
     #[tokio::test]
     async fn test_ollama_embed_timeout_returns_error() -> Result<(), Box<dyn std::error::Error>> {
         // Point to unreachable address to test error handling
-        let provider = OllamaProvider::new(Some("http://localhost:1".to_string()), None);
+        let provider = OllamaProvider::new(
+            Some("http://localhost:1".to_string()),
+            "all-minilm".to_string(),
+        );
         let result = provider.embed("test").await;
         assert!(result.is_err());
         Ok(())

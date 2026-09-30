@@ -448,10 +448,6 @@ mod tests {
             let stream = futures::stream::iter(events);
             Ok(Box::pin(stream))
         }
-
-        async fn embed(&self, _input: &str) -> Result<Vec<f32>, crate::llm::provider::LLMError> {
-            Ok(vec![])
-        }
     }
 
     #[tokio::test]

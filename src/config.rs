@@ -48,6 +48,11 @@ pub struct Config {
     pub memory_poll_interval_minutes: u64,
     pub memory_model: String,
     pub rag_budget_tokens: usize,
+
+    // Embeddings (RAG)
+    pub embedding_provider: Option<String>,
+    pub embedding_model: Option<String>,
+    pub embedding_dimension: Option<usize>,
 }
 
 impl Config {
@@ -117,6 +122,22 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(2000),
+
+            // Embeddings are opt-in: no model is defaulted.
+            embedding_provider: env::var("EMBEDDING_PROVIDER").ok(),
+            embedding_model: env::var("EMBEDDING_MODEL").ok(),
+            embedding_dimension: match env::var("EMBEDDING_DIMENSION") {
+                Ok(raw) => match raw.parse::<usize>() {
+                    Ok(dimension) => Some(dimension),
+                    Err(_) => {
+                        tracing::warn!(
+                            "EMBEDDING_DIMENSION='{raw}' is not a valid usize; ignoring it"
+                        );
+                        None
+                    }
+                },
+                Err(_) => None,
+            },
         }
     }
 }
@@ -160,6 +181,9 @@ mod tests {
             "MEMORY_POLL_INTERVAL_MINUTES",
             "MEMORY_MODEL",
             "RAG_BUDGET_TOKENS",
+            "EMBEDDING_PROVIDER",
+            "EMBEDDING_MODEL",
+            "EMBEDDING_DIMENSION",
         ] {
             env::remove_var(var);
         }
@@ -203,6 +227,10 @@ mod tests {
             "mistralai/mistral-small-24b-instruct-2501"
         );
         assert_eq!(cfg.rag_budget_tokens, 2000);
+
+        assert!(cfg.embedding_provider.is_none());
+        assert!(cfg.embedding_model.is_none());
+        assert!(cfg.embedding_dimension.is_none());
     }
 
     /// When environment variables are set, [`Config::from_env`] must pick
@@ -237,6 +265,9 @@ mod tests {
         env::set_var("MEMORY_POLL_INTERVAL_MINUTES", "10");
         env::set_var("MEMORY_MODEL", "google/gemini-2.0-flash-lite");
         env::set_var("RAG_BUDGET_TOKENS", "4000");
+        env::set_var("EMBEDDING_PROVIDER", "openrouter");
+        env::set_var("EMBEDDING_MODEL", "openai/text-embedding-3-small");
+        env::set_var("EMBEDDING_DIMENSION", "1536");
 
         let cfg = Config::from_env();
 
@@ -277,6 +308,13 @@ mod tests {
         assert_eq!(cfg.memory_model, "google/gemini-2.0-flash-lite");
         assert_eq!(cfg.rag_budget_tokens, 4000);
 
+        assert_eq!(cfg.embedding_provider.as_deref(), Some("openrouter"));
+        assert_eq!(
+            cfg.embedding_model.as_deref(),
+            Some("openai/text-embedding-3-small")
+        );
+        assert_eq!(cfg.embedding_dimension, Some(1536));
+
         // Clean up to avoid polluting other tests
         for var in [
             "HOST",
@@ -305,6 +343,9 @@ mod tests {
             "MEMORY_POLL_INTERVAL_MINUTES",
             "MEMORY_MODEL",
             "RAG_BUDGET_TOKENS",
+            "EMBEDDING_PROVIDER",
+            "EMBEDDING_MODEL",
+            "EMBEDDING_DIMENSION",
         ] {
             env::remove_var(var);
         }
@@ -341,6 +382,9 @@ mod tests {
             "MEMORY_POLL_INTERVAL_MINUTES",
             "MEMORY_MODEL",
             "RAG_BUDGET_TOKENS",
+            "EMBEDDING_PROVIDER",
+            "EMBEDDING_MODEL",
+            "EMBEDDING_DIMENSION",
         ] {
             env::remove_var(var);
         }
@@ -380,6 +424,9 @@ mod tests {
             "MEMORY_POLL_INTERVAL_MINUTES",
             "MEMORY_MODEL",
             "RAG_BUDGET_TOKENS",
+            "EMBEDDING_PROVIDER",
+            "EMBEDDING_MODEL",
+            "EMBEDDING_DIMENSION",
         ] {
             env::remove_var(var);
         }
@@ -389,5 +436,18 @@ mod tests {
             cfg.collapse_model,
             "mistralai/mistral-small-24b-instruct-2501"
         );
+    }
+
+    /// An unparseable `EMBEDDING_DIMENSION` must be ignored (left as `None`)
+    /// instead of silently discarding the parse failure.
+    #[test]
+    #[serial]
+    fn test_config_embedding_dimension_invalid_is_none() {
+        env::set_var("EMBEDDING_DIMENSION", "not-a-number");
+
+        let cfg = Config::from_env();
+        assert!(cfg.embedding_dimension.is_none());
+
+        env::remove_var("EMBEDDING_DIMENSION");
     }
 }

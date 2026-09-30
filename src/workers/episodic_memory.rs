@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use crate::db::repos::memory::MemoryRepo;
 use crate::db::repos::stats::StatsRepo;
+use crate::embeddings::EmbeddingProvider;
 use crate::llm::provider::{ChatMessage, ChatRequest, LLMProvider};
 use crate::models::message::estimate_markdown_tokens_heuristic;
 
@@ -95,6 +96,7 @@ impl EpisodicMemoryWorker {
     pub fn start(
         db: SqlitePool,
         llm_provider: Arc<dyn LLMProvider>,
+        embedding_provider: Arc<dyn EmbeddingProvider>,
         mut memory_rx: mpsc::Receiver<()>,
         mut shutdown_rx: broadcast::Receiver<()>,
         config: EpisodicMemoryConfig,
@@ -112,11 +114,11 @@ impl EpisodicMemoryWorker {
                 tokio::select! {
                     _ = memory_rx.recv() => {
                         tracing::debug!("EpisodicMemoryWorker triggered by channel signal");
-                        Self::evaluate(&db, llm_provider.clone(), &config, &last_llm_attempt).await;
+                        Self::evaluate(&db, llm_provider.clone(), embedding_provider.clone(), &config, &last_llm_attempt).await;
                     }
                     _ = interval.tick() => {
                         tracing::debug!("EpisodicMemoryWorker triggered by timer");
-                        Self::evaluate(&db, llm_provider.clone(), &config, &last_llm_attempt).await;
+                        Self::evaluate(&db, llm_provider.clone(), embedding_provider.clone(), &config, &last_llm_attempt).await;
                     }
                     _ = shutdown_rx.recv() => {
                         tracing::info!("EpisodicMemoryWorker shutting down");
@@ -132,6 +134,7 @@ impl EpisodicMemoryWorker {
     pub(crate) async fn evaluate(
         db: &SqlitePool,
         llm_provider: Arc<dyn LLMProvider>,
+        embedding_provider: Arc<dyn EmbeddingProvider>,
         config: &EpisodicMemoryConfig,
         last_llm_attempt: &Arc<AtomicI64>,
     ) {
@@ -221,7 +224,7 @@ impl EpisodicMemoryWorker {
         };
 
         // 6. Persist memory + embedding + update messages
-        if let Err(e) = Self::persist(db, &llm_provider, &card, &primary).await {
+        if let Err(e) = Self::persist(db, &embedding_provider, &card, &primary).await {
             // A failed persist must also start the cooldown window, otherwise
             // the next poll would re-call the LLM for the same batch (cost loop).
             last_llm_attempt.store(chrono::Utc::now().timestamp(), Ordering::Relaxed);
@@ -638,7 +641,7 @@ impl EpisodicMemoryWorker {
     /// store in `vec_memory`, and update the indexed messages.
     async fn persist(
         db: &SqlitePool,
-        llm_provider: &Arc<dyn LLMProvider>,
+        embedding_provider: &Arc<dyn EmbeddingProvider>,
         card: &MemoryCard,
         primary: &[UnindexedMessage],
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -659,7 +662,7 @@ impl EpisodicMemoryWorker {
         });
 
         // 1. Generate embedding first (network call, no DB writes on failure).
-        let embedding = match llm_provider.embed(&ficha).await {
+        let embedding = match embedding_provider.embed(&ficha).await {
             Ok(emb) => emb,
             Err(e) => {
                 return Err(format!("embedding generation failed: {}", e).into());
@@ -707,6 +710,7 @@ impl EpisodicMemoryWorker {
 mod tests {
     use super::*;
     use crate::db::schema::run_migrations;
+    use crate::embeddings::provider::EmbeddingError;
     use crate::llm::provider::{ChatMessage, ChatRequest, ChatResponse, LLMError, TokenUsage};
     use async_trait::async_trait;
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -716,10 +720,7 @@ mod tests {
 
     struct MockEpisodicLLM {
         pub chat_calls: Arc<Mutex<Vec<ChatRequest>>>,
-        pub embed_calls: Arc<Mutex<Vec<String>>>,
         pub chat_response: String,
-        pub embed_response: Vec<f32>,
-        pub embed_error: bool,
     }
 
     #[async_trait]
@@ -759,30 +760,57 @@ mod tests {
         > {
             unimplemented!("chat_stream not used in tests")
         }
-
-        async fn embed(&self, input: &str) -> Result<Vec<f32>, LLMError> {
-            self.embed_calls.lock().unwrap().push(input.to_string());
-            if self.embed_error {
-                return Err(LLMError::Internal("embedding backend down".into()));
-            }
-            Ok(self.embed_response.clone())
-        }
     }
 
     impl MockEpisodicLLM {
         fn new(chat_response: &str) -> Self {
             Self {
                 chat_calls: Arc::new(Mutex::new(Vec::new())),
-                embed_calls: Arc::new(Mutex::new(Vec::new())),
                 chat_response: chat_response.to_string(),
-                embed_response: vec![0.1, 0.2, 0.3],
-                embed_error: false,
             }
         }
 
         fn wrap(self) -> Arc<dyn LLMProvider> {
             Arc::new(self)
         }
+    }
+
+    // ─── Mock Embedding Provider ──────────────────────────────────────────
+
+    struct MockEmbeddingProvider {
+        pub embed_calls: Arc<Mutex<Vec<String>>>,
+        pub embed_response: Vec<f32>,
+        pub embed_error: bool,
+    }
+
+    #[async_trait]
+    impl EmbeddingProvider for MockEmbeddingProvider {
+        async fn embed(&self, input: &str) -> Result<Vec<f32>, EmbeddingError> {
+            self.embed_calls.lock().unwrap().push(input.to_string());
+            if self.embed_error {
+                return Err(EmbeddingError::Api("embedding backend down".into()));
+            }
+            Ok(self.embed_response.clone())
+        }
+    }
+
+    impl MockEmbeddingProvider {
+        fn new() -> Self {
+            Self {
+                embed_calls: Arc::new(Mutex::new(Vec::new())),
+                embed_response: vec![0.1, 0.2, 0.3],
+                embed_error: false,
+            }
+        }
+
+        fn wrap(self) -> Arc<dyn EmbeddingProvider> {
+            Arc::new(self)
+        }
+    }
+
+    /// Convenience: a fresh mock embedding provider that succeeds.
+    fn embedding_provider() -> Arc<dyn EmbeddingProvider> {
+        MockEmbeddingProvider::new().wrap()
     }
 
     // ─── Test helpers ─────────────────────────────────────────────────────
@@ -882,6 +910,7 @@ mod tests {
         let _handle = EpisodicMemoryWorker::start(
             db.clone(),
             provider,
+            embedding_provider(),
             memory_rx,
             shutdown_rx,
             EpisodicMemoryConfig {
@@ -918,6 +947,7 @@ mod tests {
         let handle = EpisodicMemoryWorker::start(
             db.clone(),
             mock,
+            embedding_provider(),
             memory_rx,
             shutdown_rx,
             EpisodicMemoryConfig::default(),
@@ -962,6 +992,7 @@ mod tests {
         EpisodicMemoryWorker::evaluate(
             &db,
             provider,
+            embedding_provider(),
             &EpisodicMemoryConfig::default(),
             &no_attempt(),
         )
@@ -991,6 +1022,7 @@ mod tests {
         EpisodicMemoryWorker::evaluate(
             &db,
             provider,
+            embedding_provider(),
             &EpisodicMemoryConfig::default(),
             &no_attempt(),
         )
@@ -1020,6 +1052,7 @@ mod tests {
         EpisodicMemoryWorker::evaluate(
             &db,
             provider,
+            embedding_provider(),
             &EpisodicMemoryConfig::default(),
             &no_attempt(),
         )
@@ -1051,6 +1084,7 @@ mod tests {
         EpisodicMemoryWorker::evaluate(
             &db,
             provider,
+            embedding_provider(),
             &EpisodicMemoryConfig {
                 batch_tokens: 2000,
                 inactivity_minutes: 30,
@@ -1092,6 +1126,7 @@ mod tests {
         EpisodicMemoryWorker::evaluate(
             &db,
             provider,
+            embedding_provider(),
             &EpisodicMemoryConfig {
                 batch_tokens: 2000,
                 inactivity_minutes: 30,
@@ -1175,6 +1210,7 @@ mod tests {
         EpisodicMemoryWorker::evaluate(
             &db,
             provider,
+            embedding_provider(),
             &EpisodicMemoryConfig {
                 batch_tokens: 2000,
                 overlap: 2,
@@ -1237,6 +1273,7 @@ mod tests {
         EpisodicMemoryWorker::evaluate(
             &db,
             provider,
+            embedding_provider(),
             &EpisodicMemoryConfig::default(),
             &no_attempt(),
         )
@@ -1279,6 +1316,7 @@ mod tests {
         EpisodicMemoryWorker::evaluate(
             &db,
             provider,
+            embedding_provider(),
             &EpisodicMemoryConfig::default(),
             &no_attempt(),
         )
@@ -1318,12 +1356,16 @@ mod tests {
 
         let mock = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE);
         let chat_calls = mock.chat_calls.clone();
-        let embed_calls = mock.embed_calls.clone();
         let provider = mock.wrap();
+
+        let embed_mock = MockEmbeddingProvider::new();
+        let embed_calls = embed_mock.embed_calls.clone();
+        let embedding_provider = embed_mock.wrap();
 
         EpisodicMemoryWorker::evaluate(
             &db,
             provider,
+            embedding_provider,
             &EpisodicMemoryConfig::default(),
             &no_attempt(),
         )
@@ -1335,10 +1377,13 @@ mod tests {
             "LLM chat should have been called"
         );
 
-        // 2. Embedding was generated
+        // 2. Embedding was generated via the EmbeddingProvider
         {
             let embed_calls = embed_calls.lock().unwrap();
-            assert!(!embed_calls.is_empty(), "LLM embed should have been called");
+            assert!(
+                !embed_calls.is_empty(),
+                "EmbeddingProvider embed should have been called"
+            );
             assert!(
                 embed_calls[0].contains("FECHA/CONTEXTO"),
                 "Embedding input should be the ficha text"
@@ -1517,12 +1562,15 @@ mod tests {
         }
 
         // LLM chat succeeds but embedding (persist) fails.
-        let mock = MockEpisodicLLM {
-            embed_error: true,
-            ..MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE)
-        };
+        let mock = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE);
         let chat_calls = mock.chat_calls.clone();
         let provider = mock.wrap();
+
+        let embedding_provider = MockEmbeddingProvider {
+            embed_error: true,
+            ..MockEmbeddingProvider::new()
+        }
+        .wrap();
 
         let last = Arc::new(AtomicI64::new(0));
         let config = EpisodicMemoryConfig {
@@ -1531,7 +1579,14 @@ mod tests {
         };
 
         // First evaluate: LLM called once, then persist fails.
-        EpisodicMemoryWorker::evaluate(&db, provider.clone(), &config, &last).await;
+        EpisodicMemoryWorker::evaluate(
+            &db,
+            provider.clone(),
+            embedding_provider.clone(),
+            &config,
+            &last,
+        )
+        .await;
         assert_eq!(
             chat_calls.lock().unwrap().len(),
             1,
@@ -1539,7 +1594,7 @@ mod tests {
         );
 
         // Second evaluate within the cooldown must NOT re-call the LLM.
-        EpisodicMemoryWorker::evaluate(&db, provider, &config, &last).await;
+        EpisodicMemoryWorker::evaluate(&db, provider, embedding_provider, &config, &last).await;
         assert_eq!(
             chat_calls.lock().unwrap().len(),
             1,
@@ -1567,6 +1622,7 @@ mod tests {
         EpisodicMemoryWorker::evaluate(
             &db,
             provider,
+            embedding_provider(),
             &EpisodicMemoryConfig::default(),
             &no_attempt(),
         )

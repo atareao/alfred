@@ -50,20 +50,6 @@ impl LLMProvider for FallbackProvider {
         }
         Err(last_error)
     }
-
-    async fn embed(&self, input: &str) -> Result<Vec<f32>, LLMError> {
-        let mut last_error = LLMError::Internal("No providers configured".into());
-        for provider in &self.providers {
-            match provider.embed(input).await {
-                Ok(embedding) => return Ok(embedding),
-                Err(e) => {
-                    last_error = e;
-                    continue;
-                }
-            }
-        }
-        Err(last_error)
-    }
 }
 
 #[cfg(test)]
@@ -115,7 +101,16 @@ mod tests {
         };
         let provider: Box<dyn LLMProvider> = Box::new(OllamaProvider::new(config));
         let fallback = FallbackProvider::new(vec![provider]);
-        let result = fallback.embed("test").await;
+        let result = fallback
+            .chat(ChatRequest {
+                model: "test".into(),
+                messages: vec![],
+                tools: None,
+                temperature: None,
+                max_tokens: None,
+                stream: false,
+            })
+            .await;
         assert!(result.is_err());
         Ok(())
     }

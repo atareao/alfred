@@ -173,7 +173,8 @@ impl From<reqwest::Error> for LLMError {
 
 /// Trait that all LLM providers must implement.
 ///
-/// Provides chat completions (both streaming and non-streaming) and embeddings.
+/// Provides chat completions (both streaming and non-streaming). Embeddings are
+/// handled exclusively by [`crate::embeddings::EmbeddingProvider`].
 #[async_trait]
 pub trait LLMProvider: Send + Sync {
     /// Send a non-streaming chat completion request.
@@ -186,9 +187,6 @@ pub trait LLMProvider: Send + Sync {
         &self,
         request: ChatRequest,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, LLMError>> + Send>>, LLMError>;
-
-    /// Generate an embedding vector for the given input text.
-    async fn embed(&self, input: &str) -> Result<Vec<f32>, LLMError>;
 }
 
 #[cfg(test)]

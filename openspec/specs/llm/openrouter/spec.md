@@ -32,7 +32,7 @@ const APP_NAME: &str = "Valet";
 const APP_URL: &str = "https://github.com/atareao/valet-ai";
 ```
 
-Los métodos `chat()`, `chat_stream()` y `embed()` de `OpenRouterProvider` (en `src/llm/openrouter.rs`), así como `embed()` de `embeddings::OpenRouterProvider` (en `src/embeddings/openrouter.rs`), añaden los headers `HTTP-Referer` y `X-Title` a todas las peticiones HTTP a OpenRouter.
+Los métodos `chat()` y `chat_stream()` de `OpenRouterProvider` (en `src/llm/openrouter.rs`), así como `embed()` de `embeddings::OpenRouterProvider` (en `src/embeddings/openrouter.rs`), añaden los headers `HTTP-Referer` y `X-Title` a todas las peticiones HTTP a OpenRouter.
 
 ### `parse_response` content extraction
 
@@ -40,7 +40,6 @@ Los métodos `chat()`, `chat_stream()` y `embed()` de `OpenRouterProvider` (en `
 1. Si `message["content"]` es un string → se usa directamente.
 2. Si `message["content"]` es un array de partes (formato OpenAI multi-modal) → se concatenan todos los campos `text`.
 3. Si `message["content"]` es `null` → se usa string vacío.
-
 
 ### `ChatRequest.model` SHALL be respected
 
@@ -90,12 +89,6 @@ Los métodos `chat()`, `chat_stream()` y `embed()` de `OpenRouterProvider` (en `
 
 **Given** un `OpenRouterProvider` configurado  
 **When** se llama a `chat_stream()` con un `ChatRequest` válido  
-**Then** la petición HTTP incluye los headers `HTTP-Referer` y `X-Title`
-
-### Scenario 7: embed() (LLMProvider) sends application identification headers
-
-**Given** un `OpenRouterProvider` configurado  
-**When** se llama a `embed()` con un texto  
 **Then** la petición HTTP incluye los headers `HTTP-Referer` y `X-Title`
 
 ### Scenario 8: embed() (EmbeddingProvider) sends application identification headers
@@ -154,6 +147,26 @@ Si el campo no está presente o es `null`, SHALL devolver `0.0`.
 - **WHEN** the OpenRouter response contains `usage.cost`
 - **THEN** the parsed `TokenUsage` SHALL contain that cost value
 - **AND** a missing or null cost SHALL default to `0.0`
+
+### Requirement: OpenRouterProvider SHALL NOT implement embed on LLMProvider
+
+`OpenRouterProvider` SHALL NOT implementar `embed` como parte de `LLMProvider`. La generación de embeddings de OpenRouter SHALL realizarse exclusivamente a través de `embeddings::OpenRouterProvider`, que mantiene los headers de identificación de la aplicación.
+
+**Given** `OpenRouterProvider` en `src/llm/openrouter.rs`  
+**When** se inspecciona su impl de `LLMProvider`  
+**Then** SHALL NOT contener `async fn embed`  
+**And** el embedding de OpenRouter SHALL generarse vía `embeddings::OpenRouterProvider`  
+**And** `embeddings::OpenRouterProvider::embed()` SHALL seguir enviando los headers `HTTP-Referer` y `X-Title`
+
+#### Scenario: El provider LLM no implementa embed
+**Given** el impl `LLMProvider for OpenRouterProvider`  
+**When** se inspecciona  
+**Then** no contiene `async fn embed`
+
+#### Scenario: El provider de embeddings mantiene los headers
+**Given** un `embeddings::OpenRouterProvider` configurado  
+**When** se llama a `embed()`  
+**Then** la petición HTTP incluye `HTTP-Referer: https://github.com/atareao/valet-ai` y `X-Title: Valet`
 
 ## Scenarios
 
