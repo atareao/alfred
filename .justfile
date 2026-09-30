@@ -15,7 +15,7 @@ podman_fmt_config_image := '{{.Config.Image}}'
 
 # Levanta el servidor con frontend embebido (Podman)
 dev:
-    podman compose up -d --build
+    podman compose up -d --build --force-recreate
     @echo "Valet: http://localhost:3000"
 
 # Levanta el servidor con frontend embebido (Docker)
@@ -44,8 +44,11 @@ deploy tag="latest":
 
     # --no-build garantiza que el deploy NUNCA compila: si la imagen no estuviera
     # ya descargada, fallará en vez de ponerse a construir; no dependemos del pull.
+    # --force-recreate es imprescindible: podman-compose compara el hash de la
+    # configuración del fichero compose, no el digest de la imagen. Como el
+    # fichero no cambia, sin esta opción un `latest` nuevo nunca se aplica.
     echo "▶ Recreando el servicio desde la imagen publicada (sin compilar) ..."
-    podman compose up -d --no-build
+    podman compose up -d --no-build --force-recreate
 
     # Obtén el contenedor de forma robusta desde compose (sin cablear su nombre).
     cid="$(podman compose ps -q | head -n1)"
@@ -76,7 +79,7 @@ deploy-local:
     podman compose build
 
     echo "▶ Recreando el servicio ..."
-    podman compose up -d --no-build
+    podman compose up -d --no-build --force-recreate
 
     cid="$(podman compose ps -q | head -n1)"
     if [ -z "${cid}" ]; then
