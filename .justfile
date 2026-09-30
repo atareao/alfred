@@ -80,13 +80,16 @@ deploy-local:
 
 # Consulta puntual del endpoint de salud (muestra el JSON)
 health:
-    curl -fsS http://localhost:3000/api/health
+    curl -fsS http://127.0.0.1:3000/api/health
 
 # (privada) Espera acotada a que /api/health reporte status ok y db connected
 _verify-health:
     #!/usr/bin/env bash
     set -uo pipefail
-    url="http://localhost:3000/api/health"
+    # Se usa 127.0.0.1 y no localhost: con el backend de red `passt` localhost
+    # resuelve a ::1 y la conexión falla, mientras que 127.0.0.1 funciona tanto
+    # con `passt` como con `rootlessport`.
+    url="http://127.0.0.1:3000/api/health"
     attempts=30
     delay=2
 
