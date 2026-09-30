@@ -114,9 +114,6 @@ Environment variables are read once at startup (see `src/config.rs`) with sensib
 | `OPENWEATHER_API_KEY` | OpenWeather API key | — |
 | `GOOGLE_PLACES_API_KEY` | Google Places API key | — |
 | `BRAVE_SEARCH_API_KEY` | Brave Search API key | — |
-| `BRIEFING_TIME` | Morning briefing time | `08:15` |
-| `CONSOLIDATION_TIME` | Nightly consolidation time | `23:00` |
-| `TRAVEL_PREP_DAYS_BEFORE` | Days ahead to prepare travel | `3` |
 | `COLLAPSE_THRESHOLD_TOKENS` | Tokens before context collapse | `2000` |
 | `COLLAPSE_MODEL` | Model used for context collapse | `mistralai/mistral-small-24b-instruct-2501` |
 | `MEMORY_BATCH_TOKENS` | Accumulated tokens to trigger an episodic card | `2000` |

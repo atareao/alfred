@@ -36,10 +36,6 @@ pub struct Config {
     // Brave Search
     pub brave_search_api_key: Option<String>,
 
-    // Workers
-    pub briefing_time: String,
-    pub consolidation_time: String,
-    pub travel_prep_days_before: u32,
     // Message collapse threshold
     pub collapse_threshold_tokens: usize,
     // Model used for collapse/summary
@@ -52,6 +48,11 @@ pub struct Config {
     pub memory_poll_interval_minutes: u64,
     pub memory_model: String,
     pub rag_budget_tokens: usize,
+
+    // Embeddings (RAG)
+    pub embedding_provider: Option<String>,
+    pub embedding_model: Option<String>,
+    pub embedding_dimension: Option<usize>,
 }
 
 impl Config {
@@ -92,12 +93,6 @@ impl Config {
             google_places_api_key: env::var("GOOGLE_PLACES_API_KEY").ok(),
             brave_search_api_key: env::var("BRAVE_SEARCH_API_KEY").ok(),
 
-            briefing_time: env::var("BRIEFING_TIME").unwrap_or_else(|_| "08:15".into()),
-            consolidation_time: env::var("CONSOLIDATION_TIME").unwrap_or_else(|_| "23:00".into()),
-            travel_prep_days_before: env::var("TRAVEL_PREP_DAYS_BEFORE")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(3),
             collapse_threshold_tokens: env::var("COLLAPSE_THRESHOLD_TOKENS")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -127,6 +122,22 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(2000),
+
+            // Embeddings are opt-in: no model is defaulted.
+            embedding_provider: env::var("EMBEDDING_PROVIDER").ok(),
+            embedding_model: env::var("EMBEDDING_MODEL").ok(),
+            embedding_dimension: match env::var("EMBEDDING_DIMENSION") {
+                Ok(raw) => match raw.parse::<usize>() {
+                    Ok(dimension) => Some(dimension),
+                    Err(_) => {
+                        tracing::warn!(
+                            "EMBEDDING_DIMENSION='{raw}' is not a valid usize; ignoring it"
+                        );
+                        None
+                    }
+                },
+                Err(_) => None,
+            },
         }
     }
 }
@@ -162,9 +173,6 @@ mod tests {
             "OPENWEATHER_API_KEY",
             "GOOGLE_PLACES_API_KEY",
             "BRAVE_SEARCH_API_KEY",
-            "BRIEFING_TIME",
-            "CONSOLIDATION_TIME",
-            "TRAVEL_PREP_DAYS_BEFORE",
             "COLLAPSE_THRESHOLD_TOKENS",
             "COLLAPSE_MODEL",
             "MEMORY_BATCH_TOKENS",
@@ -173,6 +181,9 @@ mod tests {
             "MEMORY_POLL_INTERVAL_MINUTES",
             "MEMORY_MODEL",
             "RAG_BUDGET_TOKENS",
+            "EMBEDDING_PROVIDER",
+            "EMBEDDING_MODEL",
+            "EMBEDDING_DIMENSION",
         ] {
             env::remove_var(var);
         }
@@ -201,9 +212,6 @@ mod tests {
         assert!(cfg.google_places_api_key.is_none());
         assert!(cfg.brave_search_api_key.is_none());
 
-        assert_eq!(cfg.briefing_time, "08:15");
-        assert_eq!(cfg.consolidation_time, "23:00");
-        assert_eq!(cfg.travel_prep_days_before, 3);
         assert_eq!(cfg.collapse_threshold_tokens, 2000);
         assert_eq!(
             cfg.collapse_model,
@@ -219,6 +227,10 @@ mod tests {
             "mistralai/mistral-small-24b-instruct-2501"
         );
         assert_eq!(cfg.rag_budget_tokens, 2000);
+
+        assert!(cfg.embedding_provider.is_none());
+        assert!(cfg.embedding_model.is_none());
+        assert!(cfg.embedding_dimension.is_none());
     }
 
     /// When environment variables are set, [`Config::from_env`] must pick
@@ -245,9 +257,6 @@ mod tests {
         env::set_var("OPENWEATHER_API_KEY", "weather-key-123");
         env::set_var("GOOGLE_PLACES_API_KEY", "google-places-key-456");
         env::set_var("BRAVE_SEARCH_API_KEY", "brave-search-key-789");
-        env::set_var("BRIEFING_TIME", "07:00");
-        env::set_var("CONSOLIDATION_TIME", "22:30");
-        env::set_var("TRAVEL_PREP_DAYS_BEFORE", "5");
         env::set_var("COLLAPSE_THRESHOLD_TOKENS", "500");
         env::set_var("COLLAPSE_MODEL", "google/gemini-2.0-flash-lite");
         env::set_var("MEMORY_BATCH_TOKENS", "5000");
@@ -256,6 +265,9 @@ mod tests {
         env::set_var("MEMORY_POLL_INTERVAL_MINUTES", "10");
         env::set_var("MEMORY_MODEL", "google/gemini-2.0-flash-lite");
         env::set_var("RAG_BUDGET_TOKENS", "4000");
+        env::set_var("EMBEDDING_PROVIDER", "openrouter");
+        env::set_var("EMBEDDING_MODEL", "openai/text-embedding-3-small");
+        env::set_var("EMBEDDING_DIMENSION", "1536");
 
         let cfg = Config::from_env();
 
@@ -287,9 +299,6 @@ mod tests {
             Some("brave-search-key-789")
         );
 
-        assert_eq!(cfg.briefing_time, "07:00");
-        assert_eq!(cfg.consolidation_time, "22:30");
-        assert_eq!(cfg.travel_prep_days_before, 5);
         assert_eq!(cfg.collapse_threshold_tokens, 500);
         assert_eq!(cfg.collapse_model, "google/gemini-2.0-flash-lite");
         assert_eq!(cfg.memory_batch_tokens, 5000);
@@ -298,6 +307,13 @@ mod tests {
         assert_eq!(cfg.memory_poll_interval_minutes, 10);
         assert_eq!(cfg.memory_model, "google/gemini-2.0-flash-lite");
         assert_eq!(cfg.rag_budget_tokens, 4000);
+
+        assert_eq!(cfg.embedding_provider.as_deref(), Some("openrouter"));
+        assert_eq!(
+            cfg.embedding_model.as_deref(),
+            Some("openai/text-embedding-3-small")
+        );
+        assert_eq!(cfg.embedding_dimension, Some(1536));
 
         // Clean up to avoid polluting other tests
         for var in [
@@ -319,9 +335,6 @@ mod tests {
             "OPENWEATHER_API_KEY",
             "GOOGLE_PLACES_API_KEY",
             "BRAVE_SEARCH_API_KEY",
-            "BRIEFING_TIME",
-            "CONSOLIDATION_TIME",
-            "TRAVEL_PREP_DAYS_BEFORE",
             "COLLAPSE_THRESHOLD_TOKENS",
             "COLLAPSE_MODEL",
             "MEMORY_BATCH_TOKENS",
@@ -330,6 +343,9 @@ mod tests {
             "MEMORY_POLL_INTERVAL_MINUTES",
             "MEMORY_MODEL",
             "RAG_BUDGET_TOKENS",
+            "EMBEDDING_PROVIDER",
+            "EMBEDDING_MODEL",
+            "EMBEDDING_DIMENSION",
         ] {
             env::remove_var(var);
         }
@@ -358,9 +374,6 @@ mod tests {
             "OPENWEATHER_API_KEY",
             "GOOGLE_PLACES_API_KEY",
             "BRAVE_SEARCH_API_KEY",
-            "BRIEFING_TIME",
-            "CONSOLIDATION_TIME",
-            "TRAVEL_PREP_DAYS_BEFORE",
             "COLLAPSE_THRESHOLD_TOKENS",
             "COLLAPSE_MODEL",
             "MEMORY_BATCH_TOKENS",
@@ -369,6 +382,9 @@ mod tests {
             "MEMORY_POLL_INTERVAL_MINUTES",
             "MEMORY_MODEL",
             "RAG_BUDGET_TOKENS",
+            "EMBEDDING_PROVIDER",
+            "EMBEDDING_MODEL",
+            "EMBEDDING_DIMENSION",
         ] {
             env::remove_var(var);
         }
@@ -400,9 +416,6 @@ mod tests {
             "OPENWEATHER_API_KEY",
             "GOOGLE_PLACES_API_KEY",
             "BRAVE_SEARCH_API_KEY",
-            "BRIEFING_TIME",
-            "CONSOLIDATION_TIME",
-            "TRAVEL_PREP_DAYS_BEFORE",
             "COLLAPSE_THRESHOLD_TOKENS",
             "COLLAPSE_MODEL",
             "MEMORY_BATCH_TOKENS",
@@ -411,6 +424,9 @@ mod tests {
             "MEMORY_POLL_INTERVAL_MINUTES",
             "MEMORY_MODEL",
             "RAG_BUDGET_TOKENS",
+            "EMBEDDING_PROVIDER",
+            "EMBEDDING_MODEL",
+            "EMBEDDING_DIMENSION",
         ] {
             env::remove_var(var);
         }
@@ -420,5 +436,18 @@ mod tests {
             cfg.collapse_model,
             "mistralai/mistral-small-24b-instruct-2501"
         );
+    }
+
+    /// An unparseable `EMBEDDING_DIMENSION` must be ignored (left as `None`)
+    /// instead of silently discarding the parse failure.
+    #[test]
+    #[serial]
+    fn test_config_embedding_dimension_invalid_is_none() {
+        env::set_var("EMBEDDING_DIMENSION", "not-a-number");
+
+        let cfg = Config::from_env();
+        assert!(cfg.embedding_dimension.is_none());
+
+        env::remove_var("EMBEDDING_DIMENSION");
     }
 }

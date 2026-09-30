@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { render } from "@testing-library/react";
+import { render, fireEvent } from "@testing-library/react";
 import { MessageBubble } from "../components/MessageBubble";
 import type { Message } from "../types";
 
@@ -156,5 +156,143 @@ describe("MessageBubble", () => {
     };
     const { container } = render(<MessageBubble message={msg} />);
     expect(container.textContent).not.toContain(":");
+  });
+});
+
+// ════════════════════════════════════════════════════════════════
+// RED phase tests — chat-avatars (logo de Valet + avatar de usuario)
+// ════════════════════════════════════════════════════════════════
+
+function makeMessage(
+  partial: Partial<Message> & Pick<Message, "id" | "role" | "content">,
+): Message {
+  return {
+    created_at: "2026-09-27T10:30:00Z",
+    ...partial,
+  };
+}
+
+describe("MessageBubble — avatar del asistente (logo de Valet)", () => {
+  it("muestra el logo de Valet y NO el icono robot", () => {
+    const msg = makeMessage({
+      id: "assistant-logo",
+      role: "assistant",
+      content: "Hola, soy Valet",
+    });
+    const { container } = render(<MessageBubble message={msg} />);
+
+    const logo = container.querySelector("img[src*='valet-icon']");
+    expect(logo).not.toBeNull();
+    expect(logo!.getAttribute("alt")).toBeTruthy();
+    expect(container.querySelector(".anticon-robot")).toBeNull();
+  });
+
+  it("el mensaje de streaming usa el mismo avatar de Valet y NO el icono robot", () => {
+    const msg = makeMessage({
+      id: "streaming",
+      role: "assistant",
+      content: "Escribiendo...",
+    });
+    const { container } = render(<MessageBubble message={msg} />);
+
+    const logo = container.querySelector("img[src*='valet-icon']");
+    expect(logo).not.toBeNull();
+    expect(logo!.getAttribute("alt")).toBeTruthy();
+    expect(container.querySelector(".anticon-robot")).toBeNull();
+  });
+});
+
+describe("MessageBubble — roles system y tool conservan su icono", () => {
+  it("system mantiene InfoCircleOutlined y no usa el logo de Valet", () => {
+    const msg = makeMessage({ id: "sys", role: "system", content: "System message" });
+    const { container } = render(<MessageBubble message={msg} />);
+
+    expect(container.querySelector(".anticon-info-circle")).not.toBeNull();
+    expect(container.querySelector("img[src*='valet-icon']")).toBeNull();
+  });
+
+  it("tool mantiene CodeOutlined y no usa el logo de Valet", () => {
+    const msg = makeMessage({ id: "tool", role: "tool", content: "Tool output" });
+    const { container } = render(<MessageBubble message={msg} />);
+
+    expect(container.querySelector(".anticon-code")).not.toBeNull();
+    expect(container.querySelector("img[src*='valet-icon']")).toBeNull();
+  });
+});
+
+describe("MessageBubble — avatar del usuario", () => {
+  const avatarUrl = "https://example.com/me.png";
+
+  it("usuario con avatar configurado muestra la imagen y NO UserOutlined", () => {
+    const msg = makeMessage({ id: "u-avatar", role: "user", content: "Hola" });
+    const { container } = render(
+      <MessageBubble message={msg} userAvatarUrl={avatarUrl} />,
+    );
+
+    const img = container.querySelector(`img[src="${avatarUrl}"]`);
+    expect(img).not.toBeNull();
+    expect(img!.getAttribute("alt")).toBeTruthy();
+    expect(container.querySelector(".anticon-user")).toBeNull();
+  });
+
+  it("usuario sin avatar (null) degrada a UserOutlined", () => {
+    const msg = makeMessage({ id: "u-null", role: "user", content: "Hola" });
+    const { container } = render(
+      <MessageBubble message={msg} userAvatarUrl={null} />,
+    );
+
+    expect(container.querySelector(".anticon-user")).not.toBeNull();
+    expect(container.querySelector(`img[src="${avatarUrl}"]`)).toBeNull();
+  });
+
+  it("usuario sin avatar (cadena vacía) degrada a UserOutlined", () => {
+    const msg = makeMessage({ id: "u-empty", role: "user", content: "Hola" });
+    const { container } = render(
+      <MessageBubble message={msg} userAvatarUrl="" />,
+    );
+
+    expect(container.querySelector(".anticon-user")).not.toBeNull();
+    expect(container.querySelector(`img[src="${avatarUrl}"]`)).toBeNull();
+  });
+
+  it("el avatar del usuario NO se usa en roles assistant/system/tool", () => {
+    for (const role of ["assistant", "system", "tool"] as const) {
+      const msg = makeMessage({
+        id: `other-${role}`,
+        role,
+        content: "contenido",
+      });
+      const { container, unmount } = render(
+        <MessageBubble message={msg} userAvatarUrl={avatarUrl} />,
+      );
+      expect(container.querySelector(`img[src="${avatarUrl}"]`)).toBeNull();
+      unmount();
+    }
+  });
+
+  it("URL rota degrada a UserOutlined", () => {
+    const brokenUrl = "https://example.com/roto.png";
+    const msg = makeMessage({ id: "u-roto", role: "user", content: "Hola" });
+    const { container } = render(
+      <MessageBubble message={msg} userAvatarUrl={brokenUrl} />,
+    );
+
+    const img = container.querySelector(`img[src="${brokenUrl}"]`);
+    expect(img).not.toBeNull();
+
+    fireEvent.error(img!);
+
+    expect(container.querySelector(".anticon-user")).not.toBeNull();
+    expect(container.querySelector(`img[src="${brokenUrl}"]`)).toBeNull();
+  });
+
+  it("una URL válida no degrada", () => {
+    const msg = makeMessage({ id: "u-valida", role: "user", content: "Hola" });
+    const { container } = render(
+      <MessageBubble message={msg} userAvatarUrl={avatarUrl} />,
+    );
+
+    expect(container.querySelector(`img[src="${avatarUrl}"]`)).not.toBeNull();
+    expect(container.querySelector(".anticon-user")).toBeNull();
   });
 });

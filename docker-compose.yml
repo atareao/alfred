@@ -1,5 +1,6 @@
 services:
   valet:
+    image: ghcr.io/atareao/valet-ai:latest
     build:
       context: .
       dockerfile: Dockerfile
@@ -12,6 +13,9 @@ services:
       - RUST_LOG=debug
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - OPENROUTER_MODEL=${OPENROUTER_MODEL}
+      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL}
+      - EMBEDDING_DIMENSION=${EMBEDDING_DIMENSION}
       - OPENWEATHER_API_KEY=${OPENWEATHER_API_KEY}
       - GOOGLE_PLACES_API_KEY=${GOOGLE_PLACES_API_KEY}
       - BRAVE_SEARCH_API_KEY=${BRAVE_SEARCH_API_KEY}

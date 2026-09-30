@@ -448,10 +448,6 @@ mod tests {
             let stream = futures::stream::iter(events);
             Ok(Box::pin(stream))
         }
-
-        async fn embed(&self, _input: &str) -> Result<Vec<f32>, crate::llm::provider::LLMError> {
-            Ok(vec![])
-        }
     }
 
     #[tokio::test]
@@ -528,6 +524,7 @@ mod tests {
             tool_registry: Some(registry),
             auth_config: None,
             collapse_tx: None,
+            collapse_threshold_tokens: 2000,
             memory_tx: None,
             shutdown_tx: None,
             last_api_call: Arc::new(RwLock::new(None)),

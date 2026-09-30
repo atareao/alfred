@@ -459,40 +459,6 @@ impl LLMProvider for OpenRouterProvider {
         let stream = ReceiverStream::new(rx);
         Ok(Box::pin(stream))
     }
-
-    async fn embed(&self, input: &str) -> Result<Vec<f32>, LLMError> {
-        let url = format!("{}/embeddings", self.config.base_url);
-        let body = serde_json::json!({
-            "model": "openai/text-embedding-3-small",
-            "input": input,
-        });
-
-        let response = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.config.api_key))
-            .header("Content-Type", "application/json")
-            .header("HTTP-Referer", APP_URL)
-            .header("X-Title", APP_NAME)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| LLMError::HttpError(e.to_string()))?;
-
-        let response_body: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| LLMError::HttpError(format!("Failed to parse: {}", e)))?;
-
-        let embedding: Vec<f32> = response_body["data"][0]["embedding"]
-            .as_array()
-            .ok_or_else(|| LLMError::Internal("No embedding in response".into()))?
-            .iter()
-            .map(|v| v.as_f64().unwrap_or(0.0) as f32)
-            .collect();
-
-        Ok(embedding)
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1261,8 +1227,7 @@ mod tests {
     // RED phase — OpenRouter application identification headers
     //
     // These tests will FAIL because the HTTP-Referer and X-Title headers are
-    // not yet being sent by OpenRouterProvider::chat(), chat_stream(), or
-    // embed().
+    // not yet being sent by OpenRouterProvider::chat() or chat_stream().
     // -----------------------------------------------------------------------
 
     #[tokio::test]

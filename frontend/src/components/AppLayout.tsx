@@ -13,6 +13,7 @@ import { TaskView } from "./TaskView";
 import { StatsDashboard } from "../pages/StatsDashboard";
 import { useMainChat } from "../hooks/useMainChat";
 import { useSettings } from "../hooks/useSettings";
+import { useProfileContext } from "../contexts/ProfileContext";
 
 const { Header, Content } = Layout;
 const { Text } = Typography;
@@ -24,6 +25,7 @@ interface AppLayoutProps {
 export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
   const mainChat = useMainChat();
   const { settings } = useSettings();
+  const { profile } = useProfileContext();
 
   // Apply font-size as CSS variable on root element
   const fontSize = settings?.font_size ? parseInt(settings.font_size, 10) : 16;
@@ -98,6 +100,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
             streamingContent={mainChat.streamingContent}
             activeTools={mainChat.activeTools}
             settings={settings}
+            userAvatarUrl={profile?.avatar_url ?? null}
           />
         )}
       </Content>

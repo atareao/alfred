@@ -165,44 +165,6 @@ impl LLMProvider for OllamaProvider {
         let stream = futures::stream::once(async move { Ok(StreamEvent::Done(result)) });
         Ok(Box::pin(stream))
     }
-
-    async fn embed(&self, input: &str) -> Result<Vec<f32>, LLMError> {
-        let url = format!("{}/api/embeddings", self.config.base_url);
-        let body = serde_json::json!({
-            "model": self.config.model,
-            "prompt": input,
-        });
-
-        let response = self
-            .client
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| {
-                if e.is_timeout() {
-                    LLMError::Timeout(e.to_string())
-                } else if e.is_connect() {
-                    LLMError::HttpError(format!("Connection refused: {}", e))
-                } else {
-                    LLMError::HttpError(e.to_string())
-                }
-            })?;
-
-        let response_body: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| LLMError::HttpError(format!("Failed to parse: {}", e)))?;
-
-        let embedding: Vec<f32> = response_body["embedding"]
-            .as_array()
-            .ok_or_else(|| LLMError::Internal("No embedding in response".into()))?
-            .iter()
-            .map(|v| v.as_f64().unwrap_or(0.0) as f32)
-            .collect();
-
-        Ok(embedding)
-    }
 }
 
 #[cfg(test)]
@@ -230,21 +192,6 @@ mod tests {
         };
         let provider = OllamaProvider::new(config);
         let _ = provider;
-    }
-
-    // Simulate embedding with mocked endpoint
-    #[tokio::test]
-    async fn test_ollama_embed_no_server_returns_error() -> Result<(), Box<dyn std::error::Error>> {
-        let config = OllamaConfig {
-            base_url: "http://localhost:19999".into(),
-            model: "nomic-embed-text".into(),
-            timeout_secs: 1,
-            keep_alive: "1m".into(),
-        };
-        let provider = OllamaProvider::new(config);
-        let result = provider.embed("test").await;
-        assert!(result.is_err());
-        Ok(())
     }
 
     // ---------------------------------------------------------------------------

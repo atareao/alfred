@@ -1,7 +1,7 @@
 # ═══════════════════════════════════════════════════════════════
 # Stage 1: Backend (Rust)
 # ═══════════════════════════════════════════════════════════════
-FROM docker.io/library/rust:alpine3.21 AS backend-builder
+FROM docker.io/library/rust:1.98.1-alpine3.21 AS backend-builder
 
 RUN apk add --no-cache --update \
     build-base \
@@ -14,7 +14,8 @@ WORKDIR /build
 RUN cargo init --bin --name valet . && \
     echo "pub fn dummy() {}" > src/lib.rs && \
     mkdir -p src/bin && \
-    echo "fn main() {}" > src/bin/seed.rs
+    echo "fn main() {}" > src/bin/seed.rs && \
+    echo "fn main() {}" > src/bin/reindex.rs
 
 COPY Cargo.toml Cargo.lock ./
 RUN cargo build --release && \
@@ -51,6 +52,7 @@ RUN apk add --no-cache --update \
 
 WORKDIR /app
 COPY --from=backend-builder /build/target/release/valet /app/valet
+COPY --from=backend-builder /build/target/release/valet-reindex /app/valet-reindex
 COPY --from=frontend-builder /build/dist /app/static
 COPY migrations ./migrations
 

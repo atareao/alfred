@@ -1,4 +1,4 @@
-use sqlx::{Row, SqlitePool};
+use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 use uuid::Uuid;
 
 use crate::models::Memory;
@@ -18,6 +18,23 @@ impl MemoryRepo {
         tokens_count: usize,
         metadata: &serde_json::Value,
     ) -> Result<Memory, sqlx::Error> {
+        let mut tx = pool.begin().await?;
+        let memory = Self::create_in_tx(&mut tx, content, tokens_count, metadata).await?;
+        tx.commit().await?;
+        Ok(memory)
+    }
+
+    /// Create a new episodic memory card inside an existing transaction.
+    ///
+    /// Identical to [`create`](Self::create) but participates in the caller's
+    /// transaction, so the `memory` row can be committed atomically together
+    /// with its `vec_memory` embedding (no orphan rows on failure).
+    pub async fn create_in_tx(
+        tx: &mut Transaction<'_, Sqlite>,
+        content: &str,
+        tokens_count: usize,
+        metadata: &serde_json::Value,
+    ) -> Result<Memory, sqlx::Error> {
         let id = Uuid::new_v4().to_string();
         let now = chrono::Utc::now().to_rfc3339();
         let metadata_str = serde_json::to_string(metadata).unwrap_or_else(|_| "{}".to_string());
@@ -31,7 +48,7 @@ impl MemoryRepo {
         .bind(tokens_count as i64)
         .bind(&now)
         .bind(&metadata_str)
-        .execute(pool)
+        .execute(&mut **tx)
         .await?;
 
         Ok(Memory {
@@ -154,6 +171,14 @@ impl MemoryRepo {
             let id: String = row.get(0);
             let emb_str: String = row.get(1);
             if let Ok(emb) = serde_json::from_str::<Vec<f32>>(&emb_str) {
+                if emb.len() != query_embedding.len() {
+                    tracing::warn!(
+                        query_dim = query_embedding.len(),
+                        stored_dim = emb.len(),
+                        "search_by_vector: skipping embedding with mismatched dimension"
+                    );
+                    continue;
+                }
                 let score = cosine_similarity(query_embedding, &emb);
                 candidates.push((id, score));
             }
@@ -430,5 +455,50 @@ mod tests {
             results.is_empty(),
             "empty query embedding should return no results"
         );
+    }
+
+    /// An embedding whose dimension differs from the query must be discarded
+    /// (not silently scored as 0.0), so it never appears in the results.
+    #[tokio::test]
+    async fn test_search_by_vector_skips_mismatched_dimension() {
+        let pool = setup_pool().await;
+
+        let mem = MemoryRepo::create(&pool, "Wrong dimension", 10, &serde_json::json!({}))
+            .await
+            .unwrap();
+        // Stored embedding has dimension 2.
+        insert_embedding(&pool, &mem.id, &[1.0, 0.0]).await;
+
+        // Query has dimension 3.
+        let results = MemoryRepo::search_by_vector(&pool, &[1.0, 0.0, 0.0], 10, 5000)
+            .await
+            .expect("search_by_vector should succeed");
+
+        assert!(
+            results.is_empty(),
+            "an embedding with a mismatched dimension must be discarded"
+        );
+    }
+
+    /// A matching dimension is scored normally and returned.
+    #[tokio::test]
+    async fn test_search_by_vector_matching_dimension_is_scored() {
+        let pool = setup_pool().await;
+
+        let mem = MemoryRepo::create(&pool, "Right dimension", 10, &serde_json::json!({}))
+            .await
+            .unwrap();
+        insert_embedding(&pool, &mem.id, &[1.0, 0.0, 0.0]).await;
+
+        let results = MemoryRepo::search_by_vector(&pool, &[1.0, 0.0, 0.0], 10, 5000)
+            .await
+            .expect("search_by_vector should succeed");
+
+        assert_eq!(
+            results.len(),
+            1,
+            "an embedding with a matching dimension should be scored and returned"
+        );
+        assert_eq!(results[0].id, mem.id);
     }
 }

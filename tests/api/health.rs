@@ -49,8 +49,9 @@ async fn test_health_body_status_ok() {
     assert_eq!(json["status"], "ok");
 }
 
-/// RED phase test: asserts that the JSON body contains version = "0.1.0".
-/// This will FAIL because the stub returns version = "0.0.0".
+/// RED phase test: asserts that the JSON body version matches the crate version
+/// declared in Cargo.toml (`env!("CARGO_PKG_VERSION")`).
+/// This will FAIL while the handler still returns a hardcoded version.
 #[tokio::test]
 async fn test_health_body_version() {
     let app = valet::app().await;
@@ -71,7 +72,7 @@ async fn test_health_body_version() {
 
     let json: Value = serde_json::from_slice(&body_bytes).unwrap();
 
-    assert_eq!(json["version"], "0.1.0");
+    assert_eq!(json["version"], env!("CARGO_PKG_VERSION"));
 }
 
 /// RED phase test: asserts that the JSON body contains db = "connected".

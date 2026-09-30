@@ -1,7 +1,7 @@
 # workers Specification
 
 ## Purpose
-Workers en segundo plano de Valet: colapso de mensajes largos, generación de briefings, detección de conflictos de agenda, preparación de viajes y memoria episódica, con sus prompts y modelos configurables.
+Workers en segundo plano de Valet: colapso de mensajes largos y memoria episódica, con sus prompts y modelos configurables.
 
 ## Requirements
 
@@ -64,9 +64,11 @@ Workers en segundo plano de Valet: colapso de mensajes largos, generación de br
 **Then** `collapse_model` SHALL be `"google/gemini-2.0-flash-lite"`
 
 ### Requirement: Handler SHALL wire collapse callback on message creation
+
 **Given** a message with `tokens_count >= collapse_threshold_tokens`  
 **When** `create_message` handler is called  
-**Then** it SHALL send the message ID through the collapse channel
+**Then** it SHALL send the message ID through the collapse channel  
+**And** the threshold SHALL be read from `config.collapse_threshold_tokens` (not hardcoded)
 
 #### Scenario: Short message does not trigger collapse
 **Given** a message with 100 chars  
@@ -76,6 +78,11 @@ Workers en segundo plano de Valet: colapso de mensajes largos, generación de br
 #### Scenario: Long message triggers collapse
 **Given** a message with 8000 chars  
 **When** created via the API  
+**Then** the collapse channel SHALL receive the message ID
+
+#### Scenario: Custom threshold is honoured
+**Given** `COLLAPSE_THRESHOLD_TOKENS` = `500`  
+**When** a message with ~600 tokens is created  
 **Then** the collapse channel SHALL receive the message ID
 
 ### Requirement: WorkerPool SHALL include CollapseWorker
@@ -143,56 +150,8 @@ Workers en segundo plano de Valet: colapso de mensajes largos, generación de br
 #### Scenario: Worker pool runs on startup
 **Given** Valet is started  
 **When** the server begins listening  
-**Then** the Briefing worker SHALL still be running  
-**And** the Conflict-detector worker SHALL still be running  
-**And** the Travel-prep worker SHALL still be running  
-**And** the Memory-consolidator worker SHALL still be running  
-**And** the Collapse worker SHALL still be running  
+**Then** the Collapse worker SHALL still be running  
 **And** the EpisodicMemoryWorker SHALL still be running
-
-### Requirement: Briefing worker SHALL generate daily briefing on each tick
-
-**Given** the `WorkerPool` is started  
-**When** the briefing worker ticks (every 60s)  
-**Then** it SHALL instantiate `BriefingWorker::new(db, None)`  
-**And** SHALL call `generate()`  
-**And** SHALL log the generated briefing at `info` level  
-**And** SHALL log any error at `error` level
-
-#### Scenario: Briefing worker generates briefing on tick
-**Given** a running WorkerPool  
-**When** the briefing interval fires  
-**Then** `BriefingWorker::generate()` is called  
-**And** the result is logged
-
-### Requirement: Conflict-detector worker SHALL check for scheduling conflicts
-
-**Given** the `WorkerPool` is started  
-**When** the conflict-detector worker ticks (every 120s)  
-**Then** it SHALL query the first available profile from the database  
-**And** SHALL call `ConflictDetector::check_date(profile_id, today)`  
-**And** SHALL log any alerts found (Critical or Warning)
-
-#### Scenario: Conflict-detector logs alerts on tick
-**Given** a running WorkerPool with events in the database  
-**When** the conflict-detector interval fires  
-**Then** `ConflictDetector::check_date()` is called  
-**And** any conflict alerts are logged
-
-### Requirement: Travel-prep worker SHALL prepare trip suggestions
-
-**Given** the `WorkerPool` is started  
-**When** the travel-prep worker ticks (every 300s)  
-**Then** it SHALL query events with non-empty locations in the next 3 days  
-**And** SHALL call `TravelPrepWorker::prepare_for_trip(title, location)` for each  
-**And** SHALL log the preparation suggestions
-
-#### Scenario: Travel-prep worker processes upcoming trips
-**Given** a running WorkerPool with events that have locations  
-**When** the travel-prep interval fires  
-**Then** events with locations in the next 3 days are found  
-**And** `prepare_for_trip()` is called for each  
-**And** the suggestions are logged
 
 ### Requirement: EpisodicMemoryWorker SHALL rate-limit LLM retries after parse failure
 
@@ -239,3 +198,80 @@ Workers en segundo plano de Valet: colapso de mensajes largos, generación de br
 - **WHEN** the worker calls the LLM
 - **THEN** a minimal non-empty fallback prompt is used
 - **AND** a warning including the error is logged
+
+### Requirement: Collapse channel SHALL NOT silently drop message IDs
+
+**Given** the collapse channel is full  
+**When** a message ID is sent  
+**Then** the sender SHALL apply backpressure (await capacity) or log a warning  
+**And** SHALL NOT discard the ID without any log
+
+#### Scenario: Full channel does not lose the ID silently
+**Given** a collapse channel with capacity 1 already holding one ID  
+**When** a second ID is sent  
+**Then** the ID SHALL be delivered once capacity frees up (or a warning SHALL be logged)
+
+### Requirement: EpisodicMemoryWorker SHALL NOT re-call the LLM after a persist failure within the cooldown
+
+**Given** the worker obtained a valid memory card from the LLM  
+**When** `persist()` fails  
+**Then** the worker SHALL start the cooldown window  
+**And** SHALL NOT call the LLM again until the cooldown elapses
+
+#### Scenario: Persist failure does not trigger an immediate LLM retry
+**Given** a batch that produces a valid card but whose persist fails  
+**When** `evaluate()` is called again within the cooldown  
+**Then** the LLM SHALL NOT be called again
+
+### Requirement: EpisodicMemoryWorker SHALL persist memory and embedding atomically
+
+**Given** a memory card to persist  
+**When** the worker writes to `memory` and `vec_memory`  
+**Then** both writes SHALL happen in a single transaction  
+**And** a failure in either SHALL leave no orphan row
+
+#### Scenario: vec_memory failure leaves no orphan memory row
+**Given** the `vec_memory` insert fails  
+**When** `persist()` runs  
+**Then** the `memory` table SHALL NOT contain a row for that card
+
+### Requirement: Workers SHALL record LLM stats with a NULL profile_id
+
+**Given** a worker (Collapse or EpisodicMemory) records an LLM request  
+**When** it calls `StatsRepo::record_request`  
+**Then** the `profile_id` SHALL be `NULL` (system operation)  
+**And** SHALL NOT use a literal such as `"background"` or `"episodic"` that violates the FK
+
+#### Scenario: Collapse stats are recorded with NULL profile
+**Given** a database with one profile  
+**When** the CollapseWorker records an LLM request  
+**Then** the `llm_requests` row SHALL be inserted successfully  
+**And** its `profile_id` SHALL be `NULL`
+
+#### Scenario: Episodic stats are recorded with NULL profile
+**Given** a database with one profile  
+**When** the EpisodicMemoryWorker records an LLM request  
+**Then** the `llm_requests` row SHALL be inserted successfully  
+**And** its `profile_id` SHALL be `NULL`
+
+### Requirement: EpisodicMemoryWorker SHALL use the EmbeddingProvider for embeddings
+
+`EpisodicMemoryWorker` SHALL generar los embeddings de las fichas mediante un `Arc<dyn EmbeddingProvider>` inyectado, y SHALL NOT usar `LLMProvider::embed`. El mismo provider SHALL ser el usado por `ContextBuilder` para las consultas.
+
+**Given** el `EpisodicMemoryWorker`  
+**When** persiste una ficha de memoria  
+**Then** SHALL generar el embedding vía `Arc<dyn EmbeddingProvider>`  
+**And** SHALL NOT llamar a `LLMProvider::embed`  
+**And** el provider SHALL ser el mismo que usa `ContextBuilder` para consultar
+
+#### Scenario: persist usa EmbeddingProvider
+**Given** un worker con un `EmbeddingProvider` mock  
+**When** `persist()` guarda una ficha  
+**Then** el mock registra la llamada a `embed`  
+**And** el embedding se almacena en `vec_memory`
+
+#### Scenario: Worker no arranca sin provider configurado
+**Given** `WorkerPool::start` con `embedding_provider = None`  
+**When** se construye el pool  
+**Then** el worker episódico NO SHALL arrancar  
+**And** SHALL loguearse un warning

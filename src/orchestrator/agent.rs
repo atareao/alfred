@@ -30,6 +30,8 @@ pub struct OrchestratorConfig {
     pub max_tokens_per_turn: u32,
     pub model: String,
     pub enable_reflection: bool,
+    /// Token threshold above which a message is sent to the collapse worker.
+    pub collapse_threshold_tokens: usize,
 }
 
 /// Minimal generic system prompt used only when `settings.system_prompt` is
@@ -44,6 +46,7 @@ impl Default for OrchestratorConfig {
             max_tokens_per_turn: 4096,
             model: "default".into(),
             enable_reflection: true,
+            collapse_threshold_tokens: 2000,
         }
     }
 }
@@ -412,7 +415,7 @@ impl Orchestrator {
                         &self.db,
                         &Uuid::new_v4().to_string(),
                         &self.config.model,
-                        profile_id,
+                        Some(profile_id),
                         0,
                         0,
                         0,
@@ -462,7 +465,7 @@ impl Orchestrator {
                 &self.db,
                 &Uuid::new_v4().to_string(),
                 &self.config.model,
-                profile_id,
+                Some(profile_id),
                 prompt_tokens,
                 completion_tokens,
                 total_tokens,
@@ -831,11 +834,10 @@ impl Orchestrator {
         // Persist user message to DB
         let location = self.resolve_location().await;
         let user_message_id = {
-            let collapse_callback = self.collapse_tx.clone().map(|tx| {
-                Box::new(move |msg_id: String| {
-                    let _ = tx.try_send(msg_id);
-                }) as Box<dyn Fn(String) + Send>
-            });
+            let collapse_callback = self
+                .collapse_tx
+                .clone()
+                .map(crate::workers::collapse::collapse_forwarder);
             let msg = crate::db::repos::messages::MessagesRepo::create(
                 &self.db,
                 "user",
@@ -844,7 +846,7 @@ impl Orchestrator {
                 None,
                 location.as_deref(),
                 None, // tools_used (user messages don't have this)
-                2000,
+                self.config.collapse_threshold_tokens,
                 collapse_callback,
             )
             .await?;
@@ -930,7 +932,7 @@ impl Orchestrator {
                             &self.db,
                             &Uuid::new_v4().to_string(),
                             &self.config.model,
-                            profile_id,
+                            Some(profile_id),
                             prompt_tokens,
                             completion_tokens,
                             total_tokens,
@@ -1204,12 +1206,10 @@ impl Orchestrator {
                             // Persist assistant message to DB (capture the real UUID)
                             let location = self.resolve_location().await;
                             let assistant_message_id = {
-                                let collapse_callback = self.collapse_tx.clone().map(|tx| {
-                                    Box::new(move |msg_id: String| {
-                                        let _ = tx.try_send(msg_id);
-                                    })
-                                        as Box<dyn Fn(String) + Send>
-                                });
+                                let collapse_callback = self
+                                    .collapse_tx
+                                    .clone()
+                                    .map(crate::workers::collapse::collapse_forwarder);
                                 let msg = crate::db::repos::messages::MessagesRepo::create(
                                     &self.db,
                                     "assistant",
@@ -1218,7 +1218,7 @@ impl Orchestrator {
                                     None,
                                     location.as_deref(),
                                     tools_used.as_deref(),
-                                    2000,
+                                    self.config.collapse_threshold_tokens,
                                     collapse_callback,
                                 )
                                 .await?;
@@ -1386,7 +1386,7 @@ Respond in JSON format:
                     db,
                     &Uuid::new_v4().to_string(),
                     "default",
-                    profile_id,
+                    Some(profile_id),
                     prompt_tokens,
                     completion_tokens,
                     total_tokens,
@@ -1491,7 +1491,7 @@ Respond in JSON format:
                     db,
                     &Uuid::new_v4().to_string(),
                     "default",
-                    profile_id,
+                    Some(profile_id),
                     0,
                     0,
                     0,
@@ -1887,10 +1887,6 @@ mod tests {
             let stream = futures::stream::iter(events);
             Ok(Box::pin(stream))
         }
-
-        async fn embed(&self, _input: &str) -> Result<Vec<f32>, LLMError> {
-            Ok(vec![])
-        }
     }
 
     /// Dummy tool that always succeeds — used to exercise the tool tracking code.
@@ -2086,10 +2082,6 @@ mod tests {
                 let stream = futures::stream::iter(events);
                 Ok(Box::pin(stream))
             }
-
-            async fn embed(&self, _input: &str) -> Result<Vec<f32>, LLMError> {
-                Ok(vec![])
-            }
         }
 
         // 3. Create collapse channel that should receive the message_id
@@ -2201,10 +2193,6 @@ mod tests {
                 let stream = futures::stream::iter(events);
                 Ok(Box::pin(stream))
             }
-
-            async fn embed(&self, _input: &str) -> Result<Vec<f32>, LLMError> {
-                Ok(vec![])
-            }
         }
 
         let llm = Arc::new(MemoryMockLLM);
@@ -2312,10 +2300,6 @@ mod tests {
 
                 let stream = futures::stream::iter(events);
                 Ok(Box::pin(stream))
-            }
-
-            async fn embed(&self, _input: &str) -> Result<Vec<f32>, LLMError> {
-                Ok(vec![])
             }
         }
 
@@ -2474,10 +2458,6 @@ mod tests {
 
             let stream = futures::stream::iter(events);
             Ok(Box::pin(stream))
-        }
-
-        async fn embed(&self, _input: &str) -> Result<Vec<f32>, LLMError> {
-            Ok(vec![])
         }
     }
 
@@ -2735,10 +2715,6 @@ mod tests {
             let stream = futures::stream::iter(events);
             Ok(Box::pin(stream))
         }
-
-        async fn embed(&self, _input: &str) -> Result<Vec<f32>, LLMError> {
-            Ok(vec![])
-        }
     }
 
     // -----------------------------------------------------------------------
@@ -2924,10 +2900,6 @@ mod tests {
             events.push(Ok(StreamEvent::Done(result)));
             let stream = futures::stream::iter(events);
             Ok(Box::pin(stream))
-        }
-
-        async fn embed(&self, _input: &str) -> Result<Vec<f32>, LLMError> {
-            Ok(vec![])
         }
     }
 
@@ -3158,10 +3130,6 @@ mod tests {
             let stream = futures::stream::iter(events);
             Ok(Box::pin(stream))
         }
-
-        async fn embed(&self, _input: &str) -> Result<Vec<f32>, LLMError> {
-            Ok(vec![])
-        }
     }
 
     #[tokio::test]
@@ -3349,10 +3317,6 @@ mod tests {
             let stream = futures::stream::iter(events);
             Ok(Box::pin(stream))
         }
-
-        async fn embed(&self, _input: &str) -> Result<Vec<f32>, LLMError> {
-            Ok(vec![])
-        }
     }
 
     /// Mock LLM that always fails with an HTTP error.
@@ -3370,10 +3334,6 @@ mod tests {
         ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, LLMError>> + Send>>, LLMError>
         {
             Err(LLMError::HttpError("fail".into()))
-        }
-
-        async fn embed(&self, _input: &str) -> Result<Vec<f32>, LLMError> {
-            Ok(vec![])
         }
     }
 
