@@ -139,6 +139,8 @@ export JWT_SECRET="change-me-in-production"
 docker compose -f docker-compose.prod.yml up -d
 ```
 
+**Known gap: the container does not survive a host reboot.** `docker-compose.yml` omits `restart:`, so if the machine goes down the service stays down until it is started by hand — on 2026-10-01 that meant about 9.5 hours of downtime. Enabling auto-start is deliberately deferred; the verified fix is in `AGENTS.md` § V.
+
 ## 🏛️ Architecture
 
 ```
