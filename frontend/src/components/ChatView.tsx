@@ -1,4 +1,4 @@
-import React, { useRef, useEffect } from "react";
+import React, { useRef, useEffect, useMemo } from "react";
 import type { Message } from "../types";
 import { MessageBubble } from "./MessageBubble";
 import { DateSeparator } from "./DateSeparator";
@@ -38,18 +38,21 @@ export const ChatView: React.FC<ChatViewProps> = (props) => {
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<MessageInputHandle>(null);
 
-  const allMessages =
-    streaming && streamingContent
-      ? [
-          ...messages,
-          {
-            id: "streaming",
-            role: "assistant" as const,
-            content: streamingContent,
-            created_at: new Date().toISOString(),
-          },
-        ]
-      : messages;
+  const allMessages = useMemo(
+    () =>
+      streaming && streamingContent
+        ? [
+            ...messages,
+            {
+              id: "streaming",
+              role: "assistant" as const,
+              content: streamingContent,
+              created_at: new Date().toISOString(),
+            },
+          ]
+        : messages,
+    [messages, streaming, streamingContent],
+  );
 
   // Auto-scroll to bottom when messages or streaming content changes
   useEffect(() => {

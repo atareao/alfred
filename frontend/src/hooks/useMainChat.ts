@@ -53,7 +53,6 @@ export function useMainChat() {
 
   useEffect(() => {
     let mounted = true;
-    setLoading(true);
 
     api
       .chatInit()

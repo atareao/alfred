@@ -1,12 +1,12 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 
 export function useMediaQuery(query: string): boolean {
-  const getMatches = (): boolean => {
+  const getMatches = useCallback((): boolean => {
     if (typeof window !== "undefined") {
       return window.matchMedia(query).matches;
     }
     return false;
-  };
+  }, [query]);
 
   const [matches, setMatches] = useState(getMatches);
 
@@ -15,7 +15,7 @@ export function useMediaQuery(query: string): boolean {
     const handler = () => setMatches(getMatches());
     mql.addEventListener("change", handler);
     return () => mql.removeEventListener("change", handler);
-  }, [query]);
+  }, [query, getMatches]);
 
   return matches;
 }

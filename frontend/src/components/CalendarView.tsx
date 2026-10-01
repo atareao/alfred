@@ -17,17 +17,9 @@ import { useEvents } from "../hooks/useEvents";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { EventModal } from "./EventModal";
 import { EventDetail } from "./EventDetail";
+import { CATEGORY_COLORS } from "./calendar.constants";
 
 const { Text, Title } = Typography;
-
-export const CATEGORY_COLORS: Record<string, string> = {
-  default: "#1677ff",
-  work: "#52c41a",
-  personal: "#fa8c16",
-  health: "#f5222d",
-  birthday: "#eb2f96",
-  holiday: "#722ed1",
-};
 
 const CATEGORY_LABELS: Record<string, string> = {
   default: "Default",
