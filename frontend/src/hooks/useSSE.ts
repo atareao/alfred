@@ -74,7 +74,6 @@ export function useSSE() {
         const decoder = new TextDecoder();
         let buffer = "";
 
-        /* eslint-disable no-constant-condition */
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;

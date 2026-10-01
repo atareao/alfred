@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from "react";
-import { Card, InputNumber, Button, message, Skeleton } from "antd";
+import { Card, InputNumber, Button, App as AntdApp, Skeleton } from "antd";
 import { SaveOutlined } from "@ant-design/icons";
 import { api } from "../../api/client";
 
 export const RetentionConfig: React.FC = () => {
+  const { message: messageApi } = AntdApp.useApp();
   const [days, setDays] = useState<number>(30);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -16,18 +17,18 @@ export const RetentionConfig: React.FC = () => {
         setLoading(false);
       })
       .catch(() => {
-        message.error("Failed to load retention config");
+        messageApi.error("Failed to load retention config");
         setLoading(false);
       });
-  }, []);
+  }, [messageApi]);
 
   const handleSave = async () => {
     setSaving(true);
     try {
       await api.setRetention(days);
-      message.success("Retention config updated");
+      messageApi.success("Retention config updated");
     } catch {
-      message.error("Failed to save retention config");
+      messageApi.error("Failed to save retention config");
     } finally {
       setSaving(false);
     }

@@ -29,6 +29,40 @@ export default tseslint.config(
       // llama a loaders/refetch dentro de useEffect; degradada a warning para
       // no forzar refactors masivos fuera del alcance de este change.
       'react-hooks/set-state-in-effect': 'warn',
+      // La API estática de antd crea el nodo del aviso fuera del árbol de React
+      // y su setTimeout sobrevive al desmontaje. Usar `App.useApp()` en su lugar.
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: 'antd',
+              importNames: ['message', 'notification'],
+              message:
+                'Usa `App.useApp()`: la API estática de antd vive fuera del ciclo de vida de React.',
+            },
+          ],
+          patterns: [
+            {
+              group: ['antd/es/*', 'antd/lib/*'],
+              message:
+                'Importa desde "antd", no por rutas internas del paquete.',
+            },
+          ],
+        },
+      ],
+      // Los estáticos de `Modal` tienen la misma fuga de temporizador que
+      // `message`/`notification`: crean el nodo del aviso fuera del árbol de
+      // React y su `setTimeout` sobrevive al desmontaje. Usar `App.useApp().modal`.
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector:
+            'MemberExpression[object.name=/Modal$/][property.name=/^(confirm|info|success|error|warning|destroy)$/]',
+          message:
+            'Los estáticos de `Modal` crean el nodo fuera del árbol de React y su temporizador sobrevive al desmontaje. Usa `App.useApp().modal`.',
+        },
+      ],
     },
   },
 )
