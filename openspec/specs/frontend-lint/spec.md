@@ -1,7 +1,7 @@
 # frontend-lint Specification
 
 ## Purpose
-TBD - created by archiving change frontend-lint-zero. Update Purpose after archive.
+Salud del código del frontend: efectos de carga sin `setState` síncrono, dependencias de hooks completas y estables, y el presupuesto de ESLint en cero.
 
 ## Requirements
 
