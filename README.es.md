@@ -139,6 +139,8 @@ export JWT_SECRET="cambiar-en-produccion"
 docker compose -f docker-compose.prod.yml up -d
 ```
 
+**Carencia conocida: el contenedor no sobrevive a un reinicio del host.** `docker-compose.yml` no declara `restart:`, así que si la máquina se apaga el servicio se queda caído hasta levantarlo a mano — el 2026-10-01 supuso unas 9 h y media de caída. Habilitar el autoarranque está deliberadamente aplazado; el arreglo verificado está en `AGENTS.md` § V.
+
 ## 🏛️ Arquitectura
 
 ```
