@@ -149,3 +149,25 @@ Always prefix your progress updates with the current status tag:
 
 ## V. CURRENT PROJECT STATE
 
+Lo **decidido**, esté aplazado o resuelto. Lo que está en marcha no se apunta aquí: vive en `openspec/specs/` y en el historial de git.
+
+### Aplazado por decisión del usuario — no ejecutar sin nueva orden
+
+**1. El servicio no arranca solo tras reiniciar el host.**
+
+Estado verificado el 2026-10-01: `docker-compose.yml` no declara `restart:` en el servicio; el contenedor quedó con `RestartPolicy: no`; `podman-restart.service` está `disabled`; y `Linger=yes` para el usuario, así que la unidad de usuario sí podría arrancar — el problema es que no está habilitada.
+
+Ya se ha sufrido: el host se apagó a las 09:25:50, el contenedor salió con `Exited (0)` y el host no volvió hasta las 18:55. **El servicio estuvo unas 9 h 30 min caído** y solo se levantó a mano, encontrando el volumen `valet_valet_data` intacto y la imagen alineada con `latest`.
+
+Arreglo viable, ya comprobado: añadir `restart: unless-stopped` al servicio y ejecutar `systemctl --user enable --now podman-restart.service`. La unidad filtra por `should-start-on-boot=true`, que cubre `always` y `unless-stopped`, así que la política del compose encajaría sin tocar la unidad.
+
+**2. `docker-compose.prod.yml` no se toca.**
+
+Se mantiene tal cual (backend + frontend nginx independiente + PocketID). El despliegue de trabajo se hace con `docker-compose.yml` sobre Podman. Cambiarlo requiere orden explícita.
+
+### Resuelto — no volver a abrir
+
+**3. Los ficheros sueltos de la raíz.**
+
+`assets.svg` y `temporal.svg` llevaban sin trackear desde el 2026-09-29 y los vieron tres sesiones seguidas, que se limitaron a clasificarlos como "preexistentes y ajenos" sin decidir nada. El 2026-10-01 quedaron movidos a `~/.local/share/valet-scratch/`, con un `NOTAS.md` allí que explica qué son. Eran restos inválidos de la generación de iconos (uno de ellos ni siquiera es un SVG: es un fragmento pegado sin etiqueta `<svg>`), nunca estuvieron en git, y los iconos reales y versionados están en `frontend/src/assets/valet-icon.svg`, `assets/linux/hicolor/scalable/apps/valet.svg` y `assets/icono.svg`. Si vuelven a aparecer en la raíz, es que alguien los ha traído de vuelta a propósito.
+
