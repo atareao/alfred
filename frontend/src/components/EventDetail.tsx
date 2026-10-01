@@ -3,15 +3,7 @@ import { Modal, Descriptions, Tag, Button, Space, Popconfirm } from "antd";
 import { DeleteOutlined, EditOutlined } from "@ant-design/icons";
 import type { CalendarEvent } from "../types";
 import { useMediaQuery } from "../hooks/useMediaQuery";
-
-const CATEGORY_COLORS: Record<string, string> = {
-  default: "#1677ff",
-  work: "#52c41a",
-  personal: "#fa8c16",
-  health: "#f5222d",
-  birthday: "#eb2f96",
-  holiday: "#722ed1",
-};
+import { CATEGORY_COLORS } from "./calendar.constants";
 
 interface EventDetailProps {
   open: boolean;

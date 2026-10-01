@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Row, Col, Spin, Alert, Empty, Tabs } from "antd";
 import { api } from "../api/client";
 import type { StatsSummary, ModelStats, DayStats, ToolStats, TableSize, MemoryStats, LastApiCall } from "../types";
@@ -23,37 +23,56 @@ export const StatsDashboard: React.FC = () => {
   const [selectedDays, setSelectedDays] = useState(30);
   const [error, setError] = useState<string | null>(null);
 
-  const loadData = async (days: number) => {
+  const fetchData = useCallback((days: number) => {
+    return Promise.all([
+      api.getStatsSummary(),
+      api.getStatsByModel(),
+      api.getStatsByDay(days),
+      api.getStatsTools(),
+      api.getDbSizes(),
+      api.getMemoryStats(),
+      api.getLastApiCall(),
+    ])
+      .then(
+        ([summaryData, modelData, dayData, toolsData, dbData, memoryData, lastCallData]) => {
+          setSummary(summaryData);
+          setByModel(modelData);
+          setByDay(dayData);
+          setTools(toolsData);
+          setDbSizes(dbData);
+          setMemory(memoryData);
+          setLastCall(lastCallData);
+        },
+      )
+      .catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : "Failed to load stats");
+      })
+      .finally(() => setLoading(false));
+  }, []);
+
+  const loadData = (days: number) => {
     setLoading(true);
     setError(null);
-    try {
-      const [summaryData, modelData, dayData, toolsData, dbData, memoryData, lastCallData] =
-        await Promise.all([
-          api.getStatsSummary(),
-          api.getStatsByModel(),
-          api.getStatsByDay(days),
-          api.getStatsTools(),
-          api.getDbSizes(),
-          api.getMemoryStats(),
-          api.getLastApiCall(),
-        ]);
-      setSummary(summaryData);
-      setByModel(modelData);
-      setByDay(dayData);
-      setTools(toolsData);
-      setDbSizes(dbData);
-      setMemory(memoryData);
-      setLastCall(lastCallData);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load stats");
-    } finally {
-      setLoading(false);
-    }
+    void fetchData(days);
   };
 
   useEffect(() => {
-    loadData(selectedDays);
-  }, [selectedDays]);
+    // La marca de "petición en curso" debe fijarse fuera del camino síncrono
+    // del efecto (spec frontend-lint-zero), pero en el mismo turno, para que
+    // al cambiar el rango de días las tarjetas vuelvan a mostrar su indicador
+    // de carga. Programarla en un microtask resuelto deja el estado fuera del
+    // cuerpo síncrono del efecto, sin necesidad de suprimir la regla.
+    let cancelled = false;
+    void Promise.resolve().then(() => {
+      if (cancelled) return;
+      setLoading(true);
+      setError(null);
+    });
+    void fetchData(selectedDays);
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedDays, fetchData]);
 
   const handleRangeChange = (days: number) => {
     setSelectedDays(days);

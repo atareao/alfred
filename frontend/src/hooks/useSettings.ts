@@ -16,21 +16,21 @@ export function useSettings(): UseSettingsReturn {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const data = await api.getSettings();
-      setSettings(data);
-      setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Error loading settings");
-    } finally {
-      setLoading(false);
-    }
+  const load = useCallback(() => {
+    return api
+      .getSettings()
+      .then((data) => {
+        setSettings(data);
+        setError(null);
+      })
+      .catch((e: unknown) => {
+        setError(e instanceof Error ? e.message : "Error loading settings");
+      })
+      .finally(() => setLoading(false));
   }, []);
 
   useEffect(() => {
-    load();
+    void load();
   }, [load]);
 
   const updateSettings = useCallback(async (data: Record<string, string>) => {

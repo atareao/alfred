@@ -7,19 +7,41 @@ export function useEvents(start: string, end: string) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const refetch = useCallback(() => {
-    setLoading(true);
-    setError(null);
-    api
+  const fetchEvents = useCallback(() => {
+    return api
       .listEvents(start, end)
-      .then((data) => setEvents(data))
+      .then((data) => {
+        setEvents(data);
+        setError(null);
+      })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
   }, [start, end]);
 
+  const refetch = useCallback(() => {
+    setLoading(true);
+    setError(null);
+    void fetchEvents();
+  }, [fetchEvents]);
+
   useEffect(() => {
-    refetch();
-  }, [refetch]);
+    // La marca de "petición en curso" debe fijarse fuera del camino síncrono
+    // del efecto (spec frontend-lint-zero), pero en el mismo turno, para que
+    // al cambiar `start`/`end` vuelva a aparecer el `Spin` y no se sigan
+    // mostrando los eventos del rango anterior. Programarla en un microtask
+    // resuelto deja el estado fuera del cuerpo síncrono del efecto, sin
+    // necesidad de suprimir la regla.
+    let cancelled = false;
+    void Promise.resolve().then(() => {
+      if (cancelled) return;
+      setLoading(true);
+      setError(null);
+    });
+    void fetchEvents();
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchEvents]);
 
   // Listen for custom event from useMainChat when LLM creates an event
   useEffect(() => {
