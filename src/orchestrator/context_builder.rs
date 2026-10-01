@@ -372,11 +372,7 @@ mod tests {
     async fn characterization_only_rag_returns_the_stored_memory() {
         let builder = builder_with_one_stored_memory().await;
         let ctx = builder
-            .build(
-                ContextStrategy::RAG,
-                "profile-1",
-                "what does the user like",
-            )
+            .build(ContextStrategy::RAG, "profile-1", "what does the user like")
             .await
             .expect("build should succeed");
         assert_eq!(
