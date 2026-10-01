@@ -113,7 +113,7 @@ export const EventModal: React.FC<EventModalProps> = ({
         return;
       }
       const msg = err instanceof Error ? err.message : "Failed to save event";
-      message.error(msg);
+      messageApi.error(msg);
     }
   };
 
