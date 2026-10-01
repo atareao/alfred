@@ -27,8 +27,14 @@ futures = "0.3"
 async-stream = "0.3"
 url = "2"
 
-# Optional: sqlite-vec for vector search virtual table
+# sqlite-vec provides the `vec0` virtual table. It must be registered on the
+# *same* libsqlite3-sys instance that sqlx opens connections with, otherwise the
+# extension would land on a second, unseen copy of SQLite. Declaring
+# `libsqlite3-sys` as a direct dependency pins that single instance; Cargo then
+# unifies it with the one `sqlx-sqlite` pulls in. `sqlite-vec 0.1.9` itself does
+# not depend on `libsqlite3-sys`, so there is no version conflict to resolve.
 sqlite-vec = { version = "0.1", optional = true }
+libsqlite3-sys = "0.37"
 
 [[bin]]
 name = "valet"
@@ -43,6 +49,7 @@ name = "valet-reindex"
 path = "src/bin/reindex.rs"
 
 [features]
+default = ["vec0"]
 vec0 = ["sqlite-vec"]
 
 [dev-dependencies]
