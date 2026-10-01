@@ -1,7 +1,7 @@
 # ui-feedback Specification
 
 ## Purpose
-TBD - created by archiving change antd-message-context. Update Purpose after archive.
+Avisos de la interfaz de Valet: se muestran mediante la API contextual de antd (`App.useApp()`), se limpian al desmontar y el lint impide reintroducir la API estática.
 
 ## Requirements
 
