@@ -41,7 +41,7 @@ impl ContextBuilder {
         Self {
             pool: None,
             provider: None,
-            rag_budget_tokens: 2000,
+            rag_budget_tokens: 800,
         }
     }
 
@@ -80,7 +80,15 @@ impl ContextBuilder {
         }
     }
 
-    /// Perform a real vector-similarity search.
+    /// Perform a real vector-similarity search and assemble the memory block.
+    ///
+    /// Retrieval (KNN, similarity threshold, temporal decay, ordering) is done
+    /// by [`MemoryRepo::search_by_vector`]. This method owns only the **prompt
+    /// budget**: it reads `RAG_BUDGET_TOKENS` from `settings` on every call
+    /// (falling back to the configured `rag_budget_tokens`) and accumulates
+    /// `tokens_count` until the next card would overflow the budget, at which
+    /// point it stops with `break` — a card that does not fit must not let a
+    /// later, less relevant card slip in for being smaller (design D6).
     ///
     /// Returns `Vec::new()` (never placeholder memories) when the pool or the
     /// embedding provider is missing, or when the embedding/search fails.
@@ -98,14 +106,41 @@ impl ContextBuilder {
             }
         };
 
-        match MemoryRepo::search_by_vector(pool, &embedding, 10, self.rag_budget_tokens).await {
-            Ok(memories) => memories.into_iter().map(|m| format_memory(&m)).collect(),
+        let memories = match MemoryRepo::search_by_vector(pool, &embedding).await {
+            Ok(memories) => memories,
             Err(e) => {
                 tracing::warn!("RAG: vector search failed: {e}");
-                Vec::new()
+                return Vec::new();
             }
+        };
+
+        let budget_tokens = read_rag_budget_tokens(pool)
+            .await
+            .unwrap_or(self.rag_budget_tokens);
+
+        let mut results = Vec::new();
+        let mut running_tokens: usize = 0;
+        for memory in memories {
+            if running_tokens + memory.tokens_count > budget_tokens {
+                // Step 7 (D6): stop, do NOT keep scanning for a smaller card.
+                break;
+            }
+            running_tokens += memory.tokens_count;
+            results.push(format_memory(&memory));
         }
+        results
     }
+}
+
+/// Read `RAG_BUDGET_TOKENS` from `settings`, so it can be changed in the UI
+/// without a restart. Returns `None` when it is absent or unparseable, so the
+/// caller can fall back to the statically configured value.
+async fn read_rag_budget_tokens(pool: &SqlitePool) -> Option<usize> {
+    crate::db::repos::settings::SettingsRepo::get(pool, "RAG_BUDGET_TOKENS")
+        .await
+        .ok()
+        .flatten()
+        .and_then(|v| v.trim().parse::<usize>().ok())
 }
 
 /// Format a `Memory` card into the `[{tags}] {content}` display string.
@@ -425,5 +460,145 @@ mod tests {
             "You are Valet, analyzing historical data."
         );
         assert_eq!(rag.system_prompt, "You are Valet, using RAG context.");
+    }
+
+    // ─── 6.4 / block 5.4: the prompt budget cuts with `break` ────────────────
+
+    /// Provider that embeds every input to the x-axis, so a stored vector's
+    /// cosine similarity to the query is exactly its first component.
+    struct AxisEmbedProvider;
+
+    #[async_trait]
+    impl EmbeddingProvider for AxisEmbedProvider {
+        async fn embed(&self, _input: &str) -> Result<Vec<f32>, EmbeddingError> {
+            Ok(v1024(&[1.0, 0.0, 0.0]))
+        }
+    }
+
+    /// A unit vector at cosine similarity `s` to `(1, 0, 0)`, padded to 1024.
+    fn cosine_vector(s: f32) -> Vec<f32> {
+        v1024(&[s, (1.0 - s * s).max(0.0).sqrt(), 0.0])
+    }
+
+    async fn set_setting(pool: &SqlitePool, key: &str, value: &str) {
+        crate::db::repos::settings::SettingsRepo::set(pool, key, value)
+            .await
+            .expect("failed to set setting");
+    }
+
+    /// Seed a card with its own vector and token count.
+    async fn seed_card(pool: &SqlitePool, content: &str, tokens: usize, similarity: f32) -> String {
+        let mem = MemoryRepo::create(pool, content, tokens, &serde_json::json!({}))
+            .await
+            .expect("create memory should succeed");
+        insert_embedding(pool, &mem.id, &cosine_vector(similarity)).await;
+        mem.id
+    }
+
+    fn axis_builder(pool: SqlitePool) -> ContextBuilder {
+        ContextBuilder {
+            pool: Some(pool),
+            provider: Some(Arc::new(AxisEmbedProvider)),
+            // Reserve value; the live budget is read from `settings`.
+            rag_budget_tokens: 800,
+        }
+    }
+
+    /// `RAG_BUDGET_TOKENS = 300` and two 237-token cards: the first fits, the
+    /// second does not, and the accumulation stops there.
+    #[tokio::test]
+    async fn test_rag_budget_includes_first_card_not_second() {
+        let pool = setup_pool().await;
+        set_setting(&pool, "RAG_BUDGET_TOKENS", "300").await;
+
+        seed_card(&pool, "First", 237, 0.99).await;
+        seed_card(&pool, "Second", 237, 0.98).await;
+
+        let ctx = axis_builder(pool)
+            .build(ContextStrategy::RAG, "profile-1", "query")
+            .await
+            .expect("build should succeed");
+
+        assert_eq!(
+            ctx.rag_memories.len(),
+            1,
+            "only the first 237-token card fits in a 300-token budget"
+        );
+        assert!(
+            ctx.rag_memories[0].contains("First"),
+            "the fitting card must be the first one, got {:?}",
+            ctx.rag_memories
+        );
+    }
+
+    /// The spec scenario: budget 800 with cards of 347/307/248/245/210/164/138
+    /// tokens → exactly 2 cards (347 + 307). The 138-token card must NOT slip
+    /// in by skipping the 248-token one — that would be the `continue` bug.
+    #[tokio::test]
+    async fn test_rag_budget_stops_at_first_card_that_does_not_fit() {
+        let pool = setup_pool().await;
+        set_setting(&pool, "RAG_BUDGET_TOKENS", "800").await;
+
+        // Decreasing similarity ⇒ deterministic relevance order.
+        for (content, tokens, similarity) in [
+            ("a", 347usize, 0.99f32),
+            ("b", 307, 0.98),
+            ("c", 248, 0.97),
+            ("d", 245, 0.96),
+            ("e", 210, 0.95),
+            ("f", 164, 0.94),
+            ("g", 138, 0.93),
+        ] {
+            seed_card(&pool, content, tokens, similarity).await;
+        }
+
+        let ctx = axis_builder(pool)
+            .build(ContextStrategy::RAG, "profile-1", "query")
+            .await
+            .expect("build should succeed");
+
+        assert_eq!(
+            ctx.rag_memories.len(),
+            2,
+            "347 + 307 fit; the next card does not and nothing later may slip in, got {:?}",
+            ctx.rag_memories
+        );
+        assert!(
+            ctx.rag_memories[0].contains('a') && ctx.rag_memories[1].contains('b'),
+            "the two fitting cards must be the 347 and 307 ones, got {:?}",
+            ctx.rag_memories
+        );
+        assert!(
+            !ctx.rag_memories.iter().any(|m| m.contains('g')),
+            "the small 138-token card must NOT be included"
+        );
+    }
+
+    /// The budget is read from `settings` on every call, so changing it takes
+    /// effect without a restart and is not governed by the reserve field.
+    #[tokio::test]
+    async fn test_rag_budget_read_from_settings_takes_effect_without_restart() {
+        let pool = setup_pool().await;
+
+        seed_card(&pool, "One", 300, 0.99).await;
+        seed_card(&pool, "Two", 300, 0.98).await;
+
+        let builder = axis_builder(pool.clone());
+
+        // Reserve field says 800, but settings says 300 → only one card.
+        set_setting(&pool, "RAG_BUDGET_TOKENS", "300").await;
+        let tight = builder
+            .build(ContextStrategy::RAG, "profile-1", "query")
+            .await
+            .expect("build should succeed");
+        assert_eq!(tight.rag_memories.len(), 1);
+
+        // Raising the setting, same builder, no restart → both cards.
+        set_setting(&pool, "RAG_BUDGET_TOKENS", "800").await;
+        let wide = builder
+            .build(ContextStrategy::RAG, "profile-1", "query")
+            .await
+            .expect("build should succeed");
+        assert_eq!(wide.rag_memories.len(), 2);
     }
 }

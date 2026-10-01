@@ -531,4 +531,73 @@ mod tests {
             "vec0 must reject a vector of the wrong dimension, got: {message}"
         );
     }
+
+    // ─── 6.1: the four episodic-memory knobs in `settings` ───────────────────
+
+    /// Read the memory-settings migration SQL from disk.
+    fn memory_settings_migration_sql() -> String {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("migrations/20261001000002_memory_settings.sql");
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()))
+    }
+
+    async fn settings_value(pool: &SqlitePool, key: &str) -> String {
+        sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?1")
+            .bind(key)
+            .fetch_one(pool)
+            .await
+            .unwrap_or_else(|e| panic!("setting '{key}' should exist: {e}"))
+    }
+
+    /// A freshly migrated database carries the four knobs with their defaults.
+    #[tokio::test]
+    async fn test_memory_settings_seeded_with_defaults() {
+        let pool = setup().await;
+
+        assert_eq!(settings_value(&pool, "MEMORY_HALF_LIFE_DAYS").await, "90");
+        assert_eq!(settings_value(&pool, "SIMILARITY_THRESHOLD").await, "0.5");
+        assert_eq!(settings_value(&pool, "RAG_BUDGET_TOKENS").await, "800");
+        assert_eq!(settings_value(&pool, "MEMORY_KNN_CANDIDATES").await, "20");
+    }
+
+    /// A non-empty pre-existing value is respected by the seeding migration
+    /// (same "only overwrite empty/NULL" idiom as the prompts migration).
+    #[tokio::test]
+    async fn test_memory_settings_respects_existing_value() {
+        let pool = setup().await;
+
+        sqlx::query("UPDATE settings SET value = '1200' WHERE key = 'RAG_BUDGET_TOKENS'")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // Re-run the seeding body (the migration itself is already recorded).
+        let sql = memory_settings_migration_sql();
+        sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            settings_value(&pool, "RAG_BUDGET_TOKENS").await,
+            "1200",
+            "a non-empty custom value must be preserved by the migration"
+        );
+
+        // An empty value, on the other hand, is backfilled with the default.
+        sqlx::query("UPDATE settings SET value = '' WHERE key = 'RAG_BUDGET_TOKENS'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            settings_value(&pool, "RAG_BUDGET_TOKENS").await,
+            "800",
+            "an empty value must be backfilled with the default"
+        );
+    }
 }

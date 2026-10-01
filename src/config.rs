@@ -121,7 +121,7 @@ impl Config {
             rag_budget_tokens: env::var("RAG_BUDGET_TOKENS")
                 .ok()
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(2000),
+                .unwrap_or(800),
 
             // Embeddings are opt-in: no model is defaulted.
             embedding_provider: env::var("EMBEDDING_PROVIDER").ok(),
@@ -226,7 +226,7 @@ mod tests {
             cfg.memory_model,
             "mistralai/mistral-small-24b-instruct-2501"
         );
-        assert_eq!(cfg.rag_budget_tokens, 2000);
+        assert_eq!(cfg.rag_budget_tokens, 800);
 
         assert!(cfg.embedding_provider.is_none());
         assert!(cfg.embedding_model.is_none());
