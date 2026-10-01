@@ -11,7 +11,6 @@ pub struct BuiltContext {
     pub messages: Vec<ChatMessage>,
     pub token_estimate: usize,
     pub rag_memories: Vec<String>,
-    pub session_summary: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -65,21 +64,12 @@ impl ContextBuilder {
                 messages: vec![],
                 token_estimate: 500 + memory_len,
                 rag_memories,
-                session_summary: None,
             }),
             ContextStrategy::Historical => Ok(BuiltContext {
                 system_prompt: "You are Valet, analyzing historical data.".into(),
                 messages: vec![],
                 token_estimate: 5000 + memory_len,
                 rag_memories,
-                session_summary: None,
-            }),
-            ContextStrategy::RAG => Ok(BuiltContext {
-                system_prompt: "You are Valet, using RAG context.".into(),
-                messages: vec![],
-                token_estimate: 500 + memory_len,
-                rag_memories,
-                session_summary: None,
             }),
         }
     }
@@ -220,24 +210,30 @@ mod tests {
         Ok(())
     }
 
+    // The `!doc`/`RAG` strategy no longer exists (block 9.1). These tests used
+    // to invoke `build()` through `ContextStrategy::RAG`; that vehicle is gone,
+    // so they now drive the same assertions through `SlidingWindow`. This is a
+    // mechanical substitution of a removed enum variant, not an assertion
+    // change: what each test pins is unchanged.
+
     #[tokio::test]
-    async fn test_rag_context_without_pool_is_empty() -> Result<(), Box<dyn std::error::Error>> {
+    async fn test_memory_context_without_pool_is_empty() -> Result<(), Box<dyn std::error::Error>> {
         let builder = ContextBuilder::new();
         let ctx = builder
-            .build(ContextStrategy::RAG, "profile-1", "search")
+            .build(ContextStrategy::SlidingWindow, "profile-1", "search")
             .await?;
         // No pool/provider → no placeholder memories, just an empty vec.
         assert!(ctx.rag_memories.is_empty());
         Ok(())
     }
 
-    // ─── New RAG tests ───────────────────────────────────────────────────
+    // ─── Memory retrieval tests ──────────────────────────────────────────
 
     #[tokio::test]
-    async fn test_rag_without_pool() {
+    async fn test_memory_without_pool() {
         let builder = ContextBuilder::new();
         let ctx = builder
-            .build(ContextStrategy::RAG, "profile-1", "any")
+            .build(ContextStrategy::SlidingWindow, "profile-1", "any")
             .await
             .expect("build should succeed even without pool");
         // Without pool → no placeholder memories.
@@ -248,7 +244,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_rag_with_pool_no_provider() {
+    async fn test_memory_with_pool_no_provider() {
         let pool = setup_pool().await;
         let builder = ContextBuilder {
             pool: Some(pool),
@@ -256,7 +252,7 @@ mod tests {
             rag_budget_tokens: 2000,
         };
         let ctx = builder
-            .build(ContextStrategy::RAG, "profile-1", "any")
+            .build(ContextStrategy::SlidingWindow, "profile-1", "any")
             .await
             .expect("build should succeed with pool but no provider");
         // No provider → no placeholder memories.
@@ -267,7 +263,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_rag_empty_db() {
+    async fn test_memory_empty_db() {
         let pool = setup_pool().await;
         let provider = Arc::new(MockEmbedProvider);
         let builder = ContextBuilder {
@@ -276,7 +272,7 @@ mod tests {
             rag_budget_tokens: 2000,
         };
         let ctx = builder
-            .build(ContextStrategy::RAG, "profile-1", "search")
+            .build(ContextStrategy::SlidingWindow, "profile-1", "search")
             .await
             .expect("build should succeed with empty vec_memory");
         // No memories stored → search_by_vector returns empty vec
@@ -342,7 +338,7 @@ mod tests {
     /// `[tags]` prefix is removed (task 8.1) and replaced by the temporal
     /// anchor, so this assertion now pins `[{created_at}] {content}`.
     #[tokio::test]
-    async fn test_rag_with_pool_and_provider_returns_formatted_memories() {
+    async fn test_memory_with_pool_and_provider_returns_formatted_memories() {
         let pool = setup_pool().await;
 
         // A real memory card. It deliberately still carries `tags` in metadata
@@ -361,7 +357,11 @@ mod tests {
             rag_budget_tokens: 2000,
         };
         let ctx = builder
-            .build(ContextStrategy::RAG, "profile-1", "what does the user like")
+            .build(
+                ContextStrategy::SlidingWindow,
+                "profile-1",
+                "what does the user like",
+            )
             .await
             .expect("build should succeed with pool + provider");
 
@@ -377,33 +377,30 @@ mod tests {
         );
     }
 
-    // ─── Characterization: the strategy governs memory (task 1.2) ──────────
+    // ─── Retrieval is orthogonal to the context strategy (task 8.6) ─────────
     //
-    // These tests used to pin down the OLD behaviour: the `ContextStrategy`
-    // decided whether episodic memory was retrieved at all. `SlidingWindow` and
-    // `Historical` hard-coded `rag_memories: vec![]`, so only `RAG` returned the
-    // card. Block 8 deliberately breaks that premise (spec «La estrategia de
-    // contexto SHALL NOT gobernar la memoria episódica»): retrieval is now
-    // orthogonal to the strategy, so the three tests below were UPDATED to
-    // assert the new contract. Their old assertions (`is_empty()` for
-    // SlidingWindow/Historical and the `[{tags}]` format for RAG) are precisely
-    // the measure of this change.
+    // Block 8 deliberately broke the old premise that `ContextStrategy` decided
+    // whether episodic memory was retrieved at all: both `SlidingWindow` and
+    // `Historical` now inject memory identically (spec «La estrategia de
+    // contexto SHALL NOT gobernar la memoria episódica»). Block 9.1 then removed
+    // the `RAG` variant and `!doc`, so these tests can only exercise the two
+    // surviving strategies; the assertions are the block-8 ones.
     //
     // ─── The three and only exceptions to the invariant (task 1.3) ──────────
     //
     // These are the ONLY test assertions allowed to change on purpose:
-    //   1. `test_rag_with_pool_and_provider_returns_formatted_memories`, which
-    //      pinned the `[{tags}] {content}` format (task 8.2).
+    //   1. `test_memory_with_pool_and_provider_returns_formatted_memories`,
+    //      which pinned the `[{tags}] {content}` format (task 8.2).
     //   2. Any test (here and in `db::repos::memory`) that assumes
     //      `vec_memory.embedding` stores JSON text.
     //   3. `test_doc_override` and `test_classify_with_doc` in
-    //      `context_classifier`, which disappear along with `!doc`.
+    //      `context_classifier`, which disappear along with `!doc` (task 9.2).
     // Any OTHER test that breaks when implementing the change is a regression,
     // not an update.
 
     /// Build a `ContextBuilder` wired with a pool + provider and seed exactly
     /// one memory card (with tags) plus its `vec_memory` embedding row. The
-    /// same builder + state is then reused across all three strategies.
+    /// same builder + state is then reused across the surviving strategies.
     async fn builder_with_one_stored_memory() -> ContextBuilder {
         let pool = setup_pool().await;
 
@@ -422,11 +419,12 @@ mod tests {
         }
     }
 
-    /// 8.6 — `SlidingWindow` now retrieves episodic memory too. With a pool, a
-    /// provider and a matching stored card, the result is NOT empty and equals
-    /// what `RAG` returns for the same builder and state.
+    /// 8.6 / spec «Misma memoria en `SlidingWindow` y `Historical`» — both
+    /// surviving strategies retrieve the same episodic memory now that retrieval
+    /// is orthogonal to the strategy. `Historical` here takes the place the
+    /// removed `RAG` variant used to play.
     #[tokio::test]
-    async fn sliding_window_retrieves_the_same_memory_as_rag() {
+    async fn sliding_window_and_historical_retrieve_the_same_memory() {
         let builder = builder_with_one_stored_memory().await;
         let sliding = builder
             .build(
@@ -436,24 +434,29 @@ mod tests {
             )
             .await
             .expect("build should succeed");
-        let rag = builder
-            .build(ContextStrategy::RAG, "profile-1", "what does the user like")
+        let historical = builder
+            .build(
+                ContextStrategy::Historical,
+                "profile-1",
+                "what does the user like",
+            )
             .await
             .expect("build should succeed");
 
         assert!(
             !sliding.rag_memories.is_empty(),
-            "SlidingWindow must now retrieve the stored memory"
+            "SlidingWindow must retrieve the stored memory"
         );
         assert_eq!(
-            sliding.rag_memories, rag.rag_memories,
-            "SlidingWindow and RAG must retrieve the same memory"
+            sliding.rag_memories, historical.rag_memories,
+            "SlidingWindow and Historical must retrieve the same memory"
         );
     }
 
-    /// 8.6 — `Historical` now retrieves episodic memory too, identically to RAG.
+    /// 8.6 — `Historical` retrieves the stored card. Kept separate from the
+    /// equality check above so each strategy is pinned on its own.
     #[tokio::test]
-    async fn historical_retrieves_the_same_memory_as_rag() {
+    async fn historical_retrieves_the_stored_memory() {
         let builder = builder_with_one_stored_memory().await;
         let historical = builder
             .build(
@@ -463,18 +466,15 @@ mod tests {
             )
             .await
             .expect("build should succeed");
-        let rag = builder
-            .build(ContextStrategy::RAG, "profile-1", "what does the user like")
-            .await
-            .expect("build should succeed");
 
         assert!(
             !historical.rag_memories.is_empty(),
-            "Historical must now retrieve the stored memory"
+            "Historical must retrieve the stored memory"
         );
-        assert_eq!(
-            historical.rag_memories, rag.rag_memories,
-            "Historical and RAG must retrieve the same memory"
+        assert!(
+            historical.rag_memories[0].ends_with("User likes Rust"),
+            "Historical must return the stored card, got {:?}",
+            historical.rag_memories
         );
     }
 
@@ -510,19 +510,24 @@ mod tests {
     /// UPDATED (was `characterization_only_rag_returns_the_stored_memory`):
     /// the old assertion pinned the `[{tags}] {content}` format (now obsolete,
     /// task 8.2) and the "only RAG retrieves" premise (now obsolete, task 8.6).
-    /// It is kept to prove that RAG keeps working and returns the card in the
-    /// new `[{created_at}] {content}` format.
+    /// It is kept to prove the surviving retrieval path returns the card in the
+    /// new `[{created_at}] {content}` format; `RAG` was removed in block 9.1, so
+    /// it is driven through `SlidingWindow`.
     #[tokio::test]
-    async fn rag_retrieves_the_stored_memory() {
+    async fn sliding_window_retrieves_the_stored_memory() {
         let builder = builder_with_one_stored_memory().await;
         let ctx = builder
-            .build(ContextStrategy::RAG, "profile-1", "what does the user like")
+            .build(
+                ContextStrategy::SlidingWindow,
+                "profile-1",
+                "what does the user like",
+            )
             .await
             .expect("build should succeed");
         assert_eq!(ctx.rag_memories.len(), 1);
         assert!(
             ctx.rag_memories[0].ends_with("User likes Rust"),
-            "RAG must still return the stored memory, got {:?}",
+            "SlidingWindow must return the stored memory, got {:?}",
             ctx.rag_memories
         );
     }
@@ -531,6 +536,12 @@ mod tests {
     /// ignores it and reads the real prompt from `settings.system_prompt`. This
     /// test only records the dead values so their removal is visible; it does
     /// not assert anything about what the LLM receives.
+    ///
+    /// Still valid after block 10.1: that block removed the
+    /// `BuiltContext::session_summary` field (always `None`), not
+    /// `system_prompt`. Block 9.1 removed the `RAG` branch, so its dead value
+    /// ("You are Valet, using RAG context.") disappeared with it and only the
+    /// two surviving strategies are recorded here.
     #[tokio::test]
     async fn characterization_built_context_system_prompt_is_vestigial() {
         let builder = builder_with_one_stored_memory().await;
@@ -541,10 +552,6 @@ mod tests {
             .expect("build should succeed");
         let historical = builder
             .build(ContextStrategy::Historical, "profile-1", "hi")
-            .await
-            .expect("build should succeed");
-        let rag = builder
-            .build(ContextStrategy::RAG, "profile-1", "hi")
             .await
             .expect("build should succeed");
 
@@ -558,7 +565,6 @@ mod tests {
             historical.system_prompt,
             "You are Valet, analyzing historical data."
         );
-        assert_eq!(rag.system_prompt, "You are Valet, using RAG context.");
     }
 
     // ─── 6.4 / block 5.4: the prompt budget cuts with `break` ────────────────
@@ -606,7 +612,7 @@ mod tests {
     /// `RAG_BUDGET_TOKENS = 300` and two 237-token cards: the first fits, the
     /// second does not, and the accumulation stops there.
     #[tokio::test]
-    async fn test_rag_budget_includes_first_card_not_second() {
+    async fn test_memory_budget_includes_first_card_not_second() {
         let pool = setup_pool().await;
         set_setting(&pool, "RAG_BUDGET_TOKENS", "300").await;
 
@@ -614,7 +620,7 @@ mod tests {
         seed_card(&pool, "Second", 237, 0.98).await;
 
         let ctx = axis_builder(pool)
-            .build(ContextStrategy::RAG, "profile-1", "query")
+            .build(ContextStrategy::SlidingWindow, "profile-1", "query")
             .await
             .expect("build should succeed");
 
@@ -634,7 +640,7 @@ mod tests {
     /// tokens → exactly 2 cards (347 + 307). The 138-token card must NOT slip
     /// in by skipping the 248-token one — that would be the `continue` bug.
     #[tokio::test]
-    async fn test_rag_budget_stops_at_first_card_that_does_not_fit() {
+    async fn test_memory_budget_stops_at_first_card_that_does_not_fit() {
         let pool = setup_pool().await;
         set_setting(&pool, "RAG_BUDGET_TOKENS", "800").await;
 
@@ -652,7 +658,7 @@ mod tests {
         }
 
         let ctx = axis_builder(pool)
-            .build(ContextStrategy::RAG, "profile-1", "query")
+            .build(ContextStrategy::SlidingWindow, "profile-1", "query")
             .await
             .expect("build should succeed");
 
@@ -676,7 +682,7 @@ mod tests {
     /// The budget is read from `settings` on every call, so changing it takes
     /// effect without a restart and is not governed by the reserve field.
     #[tokio::test]
-    async fn test_rag_budget_read_from_settings_takes_effect_without_restart() {
+    async fn test_memory_budget_read_from_settings_takes_effect_without_restart() {
         let pool = setup_pool().await;
 
         seed_card(&pool, "One", 300, 0.99).await;
@@ -687,7 +693,7 @@ mod tests {
         // Reserve field says 800, but settings says 300 → only one card.
         set_setting(&pool, "RAG_BUDGET_TOKENS", "300").await;
         let tight = builder
-            .build(ContextStrategy::RAG, "profile-1", "query")
+            .build(ContextStrategy::SlidingWindow, "profile-1", "query")
             .await
             .expect("build should succeed");
         assert_eq!(tight.rag_memories.len(), 1);
@@ -695,7 +701,7 @@ mod tests {
         // Raising the setting, same builder, no restart → both cards.
         set_setting(&pool, "RAG_BUDGET_TOKENS", "800").await;
         let wide = builder
-            .build(ContextStrategy::RAG, "profile-1", "query")
+            .build(ContextStrategy::SlidingWindow, "profile-1", "query")
             .await
             .expect("build should succeed");
         assert_eq!(wide.rag_memories.len(), 2);

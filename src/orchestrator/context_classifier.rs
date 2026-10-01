@@ -2,14 +2,12 @@
 pub enum ContextStrategy {
     SlidingWindow,
     Historical,
-    RAG,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Override {
     None,
     Historical(String),
-    Doc(String),
     Reset,
 }
 
@@ -41,7 +39,6 @@ impl ContextClassifier {
         };
         let strategy = match &override_cmd {
             Override::Historical(_) => ContextStrategy::Historical,
-            Override::Doc(_) => ContextStrategy::RAG,
             Override::Reset | Override::None => ContextStrategy::SlidingWindow,
         };
         Classification {
@@ -55,8 +52,6 @@ impl ContextClassifier {
         let trimmed = message.trim();
         if let Some(query) = trimmed.strip_prefix("!historico ") {
             Override::Historical(query.to_string())
-        } else if let Some(query) = trimmed.strip_prefix("!doc ") {
-            Override::Doc(query.to_string())
         } else if trimmed == "!reset" {
             Override::Reset
         } else {
@@ -85,13 +80,6 @@ mod tests {
     }
 
     #[test]
-    fn test_doc_override() {
-        let classifier = ContextClassifier::new();
-        let result = classifier.check_override("!doc recomendación hotel");
-        assert!(matches!(result, Override::Doc(q) if q == "recomendación hotel"));
-    }
-
-    #[test]
     fn test_reset_override() {
         let classifier = ContextClassifier::new();
         let result = classifier.check_override("!reset");
@@ -114,16 +102,37 @@ mod tests {
     }
 
     #[test]
-    fn test_classify_with_doc() {
-        let classifier = ContextClassifier::new();
-        let result = classifier.classify("!doc receta pasta");
-        assert_eq!(result.strategy, ContextStrategy::RAG);
-    }
-
-    #[test]
     fn test_classify_with_reset() {
         let classifier = ContextClassifier::new();
         let result = classifier.classify("!reset");
         assert_eq!(result.strategy, ContextStrategy::SlidingWindow);
+    }
+
+    /// 9.3 — `!historico` still governs its own strategy (`Historical`), now
+    /// independent of memory retrieval. Retrieval no longer depends on the
+    /// strategy (see `ContextBuilder`), so the classifier only shapes the
+    /// prompt; it must keep classifying correctly now that `!doc` is gone —
+    /// which is what proves nothing else was removed by accident.
+    #[test]
+    fn historico_override_governs_historical_strategy() {
+        let classifier = ContextClassifier::new();
+        let result = classifier.classify("!historico ¿qué planes hicimos?");
+        assert_eq!(result.strategy, ContextStrategy::Historical);
+        assert_eq!(
+            result.override_cmd,
+            Override::Historical("¿qué planes hicimos?".into())
+        );
+        assert_eq!(result.confidence, 1.0);
+    }
+
+    /// 9.3 — `!reset` still governs its own strategy (`SlidingWindow`), now
+    /// independent of memory retrieval.
+    #[test]
+    fn reset_override_governs_sliding_window_strategy() {
+        let classifier = ContextClassifier::new();
+        let result = classifier.classify("!reset");
+        assert_eq!(result.strategy, ContextStrategy::SlidingWindow);
+        assert_eq!(result.override_cmd, Override::Reset);
+        assert_eq!(result.confidence, 1.0);
     }
 }

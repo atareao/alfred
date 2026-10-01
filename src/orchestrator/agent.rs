@@ -384,17 +384,6 @@ impl Orchestrator {
             });
         }
 
-        // Inject session summary if available
-        if let Some(ref summary) = ctx.session_summary {
-            messages.push(ChatMessage {
-                role: "system".into(),
-                content: format!("[Session summary] {}", summary),
-                tool_calls: None,
-                tool_result: None,
-                tool_call_id: None,
-            });
-        }
-
         // Load conversation history from DB using token budget
         {
             let history = crate::db::repos::messages::MessagesRepo::list_by_token_budget(
@@ -779,16 +768,6 @@ impl Orchestrator {
             messages.push(ChatMessage {
                 role: "system".into(),
                 content: block,
-                tool_calls: None,
-                tool_result: None,
-                tool_call_id: None,
-            });
-        }
-
-        if let Some(ref summary) = ctx.session_summary {
-            messages.push(ChatMessage {
-                role: "system".into(),
-                content: format!("[Session summary] {}", summary),
                 tool_calls: None,
                 tool_result: None,
                 tool_call_id: None,
@@ -1787,7 +1766,7 @@ mod tests {
     //
     // The block-1 characterization tests pinned the OLD behaviour: memory was
     // injected as a `system` message prefixed with the literal
-    // `"[Memory context] "` and ONLY on the `RAG` path (`!doc ...`). Block 8
+    // `"[Memory context] "` and only on the `RAG` strategy. Block 8
     // deliberately breaks both halves of that contract:
     //   * memory is now retrieved for every strategy (block 8.6), so the
     //     `SlidingWindow` path (`Hola`, no override) receives memory too, and
@@ -1812,8 +1791,9 @@ mod tests {
     /// 8.3/8.4 — in `process_message`, the injected block carries the section
     /// title, the `<episodic_memory>` tags, the "these are antecedents, not the
     /// current turn" instruction and the card content; the old `[Memory
-    /// context]` literal is gone. Uses the `RAG` path (`!doc`) to prove it
-    /// still works there.
+    /// context]` literal is gone. Driven through a plain message: since block
+    /// 8.6 memory is retrieved regardless of the strategy, and block 9.1 removed
+    /// the old `RAG` override path entirely.
     #[tokio::test]
     async fn injects_episodic_memory_block_in_process_message(
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -1829,7 +1809,7 @@ mod tests {
         .await;
 
         orchestrator
-            .process_message("profile-1", "!doc what does the user like")
+            .process_message("profile-1", "what does the user like")
             .await?;
 
         let messages = captured
@@ -1875,7 +1855,7 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel(100);
         orchestrator
-            .process_message_stream("profile-1", "!doc what does the user like", None, tx)
+            .process_message_stream("profile-1", "what does the user like", None, tx)
             .await?;
         while rx.recv().await.is_some() {}
 
