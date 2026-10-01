@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
+import { message } from "antd";
 import { StatsDashboard } from "./StatsDashboard";
 import { api } from "../api/client";
 
@@ -56,9 +57,19 @@ vi.mock("../api/client", () => ({
   },
 }));
 
+// El retorno de `message.success` es un `MessageType` (callable), así que un
+// único `as` basta: el literal no es asignable a `MessageType` sin él.
+const noopMessage = (() => {}) as ReturnType<typeof message.success>;
+
 describe("StatsDashboard", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    // `RetentionConfig` (montado por la pestaña "Sistema") llama al `message`
+    // estático de antd, que deja un setTimeout de 3 s vivo al desmontar jsdom y
+    // rompe el CI con "ReferenceError: window is not defined". Neutralizado de
+    // forma preventiva: hoy solo se ejercita su ruta de éxito.
+    vi.spyOn(message, "success").mockImplementation(() => noopMessage);
+    vi.spyOn(message, "error").mockImplementation(() => noopMessage);
     Object.defineProperty(window, "matchMedia", {
       writable: true,
       value: vi.fn().mockImplementation((query: string) => ({
