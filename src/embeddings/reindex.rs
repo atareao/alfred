@@ -93,6 +93,70 @@ pub async fn reindex_all(
     })
 }
 
+/// Outcome of a source reset ([`reset_memory_source`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResetReport {
+    /// Messages whose `is_indexed` flag was cleared (and `summary_ref` nulled).
+    pub messages_reset: u64,
+    /// Rows removed from the `memory` (source-of-truth) table.
+    pub memories_deleted: u64,
+    /// Vectors removed from the `vec_memory` index.
+    pub vectors_deleted: u64,
+}
+
+/// Reset the *source* from which the episodic index is rebuilt.
+///
+/// Messages are the original data; the `memory` cards are derived data. The
+/// robust rebuild is therefore to re-archive from the messages rather than to
+/// re-embed the existing cards: re-embedding would feed already-summarised text
+/// — and any mistake in a previous LLM summary — back into the index. So this
+/// drops the derived data and un-indexes the messages, letting the
+/// `EpisodicMemoryWorker` re-archive from scratch:
+///
+/// 1. `UPDATE messages SET is_indexed = 0, summary_ref = NULL` — every message
+///    becomes unindexed again.
+/// 2. `DELETE FROM memory` — drop the derived cards.
+/// 3. `DELETE FROM vec_memory` — drop the vector index.
+///
+/// # FTS / triggers
+///
+/// The `memory` table has **no** FTS index and **no** triggers: the legacy
+/// `memories_fts` virtual table and its `memories_fts_{ai,ad,au}` triggers
+/// belonged to the old `memories` table and were dropped together with it by
+/// migration `20260926000003_episodic_memory.sql`. The only FTS triggers left
+/// in the schema hang off `messages` and `notes`, so deleting `memory` cannot
+/// leave an FTS index stale. Step 1's `UPDATE` on `messages` fires the
+/// `messages_fts_au` AFTER UPDATE trigger, which keeps `messages_fts` in sync.
+///
+/// All three statements run in a single transaction, so the source and the
+/// index are never observed half-reset.
+pub async fn reset_memory_source(pool: &SqlitePool) -> Result<ResetReport, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+
+    let messages_reset = sqlx::query("UPDATE messages SET is_indexed = 0, summary_ref = NULL")
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+
+    let memories_deleted = sqlx::query("DELETE FROM memory")
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+
+    let vectors_deleted = sqlx::query("DELETE FROM vec_memory")
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+
+    tx.commit().await?;
+
+    Ok(ResetReport {
+        messages_reset,
+        memories_deleted,
+        vectors_deleted,
+    })
+}
+
 /// Map a sqlx error from the storage layer into [`EmbeddingError::Storage`].
 fn storage_error(e: sqlx::Error) -> EmbeddingError {
     EmbeddingError::Storage(e.to_string())
