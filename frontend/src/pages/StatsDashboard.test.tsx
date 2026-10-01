@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
-import { message } from "antd";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { App as AntdApp } from "antd";
+import type { ReactElement, ReactNode } from "react";
 import { StatsDashboard } from "./StatsDashboard";
 import { api } from "../api/client";
 
@@ -57,19 +58,19 @@ vi.mock("../api/client", () => ({
   },
 }));
 
-// El retorno de `message.success` es un `MessageType` (callable), así que un
-// único `as` basta: el literal no es asignable a `MessageType` sin él.
-const noopMessage = (() => {}) as ReturnType<typeof message.success>;
+// antd `App.useApp()` exige un `<App>` ancestro. Sin él el contexto por defecto
+// son objetos vacíos: `messageApi.success` sería `undefined` y lanzaría un
+// TypeError (fallo ruidoso, no un fallback silencioso a la API estática).
+const AppWrapper = ({ children }: { children: ReactNode }) => (
+  <AntdApp>{children}</AntdApp>
+);
+
+const renderDashboard = (ui: ReactElement) =>
+  render(ui, { wrapper: AppWrapper });
 
 describe("StatsDashboard", () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    // `RetentionConfig` (montado por la pestaña "Sistema") llama al `message`
-    // estático de antd, que deja un setTimeout de 3 s vivo al desmontar jsdom y
-    // rompe el CI con "ReferenceError: window is not defined". Neutralizado de
-    // forma preventiva: hoy solo se ejercita su ruta de éxito.
-    vi.spyOn(message, "success").mockImplementation(() => noopMessage);
-    vi.spyOn(message, "error").mockImplementation(() => noopMessage);
     Object.defineProperty(window, "matchMedia", {
       writable: true,
       value: vi.fn().mockImplementation((query: string) => ({
@@ -93,7 +94,7 @@ describe("StatsDashboard", () => {
     vi.mocked(api.getDbSizes).mockReturnValue(new Promise(() => {}));
     vi.mocked(api.getLastApiCall).mockReturnValue(new Promise(() => {}));
 
-    const { container } = render(<StatsDashboard />);
+    const { container } = renderDashboard(<StatsDashboard />);
     const spin = container.querySelector(".ant-spin-spinning");
     expect(spin).toBeInTheDocument();
   });
@@ -108,7 +109,7 @@ describe("StatsDashboard", () => {
     vi.mocked(api.getMemoryStats).mockResolvedValue(mockMemory);
     vi.mocked(api.getLastApiCall).mockResolvedValue(null);
 
-    render(<StatsDashboard />);
+    renderDashboard(<StatsDashboard />);
 
     // Wait for data to load — Resumen tab is default active
     expect(await screen.findByText("LLM Usage Summary")).toBeInTheDocument();
@@ -146,7 +147,7 @@ describe("StatsDashboard", () => {
     vi.mocked(api.getDbSizes).mockResolvedValue([]);
     vi.mocked(api.getLastApiCall).mockResolvedValue(null);
 
-    render(<StatsDashboard />);
+    renderDashboard(<StatsDashboard />);
 
     expect(await screen.findByText("No stats data available yet")).toBeInTheDocument();
   });
@@ -160,9 +161,55 @@ describe("StatsDashboard", () => {
     vi.mocked(api.getMemoryStats).mockRejectedValue(new Error("API error"));
     vi.mocked(api.getLastApiCall).mockRejectedValue(new Error("API error"));
 
-    render(<StatsDashboard />);
+    renderDashboard(<StatsDashboard />);
 
     expect(await screen.findByText("Error loading stats")).toBeInTheDocument();
     expect(await screen.findByText("API error")).toBeInTheDocument();
+  });
+
+  it("RetentionConfig avisa por el contexto al guardar (sin API estática)", async () => {
+    vi.mocked(api.getStatsSummary).mockResolvedValue(mockSummary);
+    vi.mocked(api.getStatsByModel).mockResolvedValue(mockByModel);
+    vi.mocked(api.getStatsByDay).mockResolvedValue(mockByDay);
+    vi.mocked(api.getStatsTools).mockResolvedValue(mockTools);
+    vi.mocked(api.getDbSizes).mockResolvedValue(mockDbSizes);
+    vi.mocked(api.getRetention).mockResolvedValue({ days: 30 });
+    vi.mocked(api.setRetention).mockResolvedValue({ days: 30 });
+    vi.mocked(api.getMemoryStats).mockResolvedValue(mockMemory);
+    vi.mocked(api.getLastApiCall).mockResolvedValue(null);
+
+    renderDashboard(<StatsDashboard />);
+
+    fireEvent.click(await screen.findByText("⚙️ Sistema"));
+    fireEvent.click(await screen.findByRole("button", { name: /save/i }));
+
+    await waitFor(() => {
+      expect(api.setRetention).toHaveBeenCalled();
+    });
+
+    // El `message` de `App.useApp()` es estable: el efecto no debe re-dispararse.
+    expect(api.getRetention).toHaveBeenCalledTimes(1);
+
+    // REFACTOR (tarea 3.3): el aviso se asevera sobre el DOM.
+    expect(await screen.findByText("Retention config updated")).toBeInTheDocument();
+  });
+
+  it("RetentionConfig avisa del fallo de carga por el contexto", async () => {
+    vi.mocked(api.getStatsSummary).mockResolvedValue(mockSummary);
+    vi.mocked(api.getStatsByModel).mockResolvedValue(mockByModel);
+    vi.mocked(api.getStatsByDay).mockResolvedValue(mockByDay);
+    vi.mocked(api.getStatsTools).mockResolvedValue(mockTools);
+    vi.mocked(api.getDbSizes).mockResolvedValue(mockDbSizes);
+    vi.mocked(api.getRetention).mockRejectedValue(new Error("boom"));
+    vi.mocked(api.getMemoryStats).mockResolvedValue(mockMemory);
+    vi.mocked(api.getLastApiCall).mockResolvedValue(null);
+
+    renderDashboard(<StatsDashboard />);
+
+    fireEvent.click(await screen.findByText("⚙️ Sistema"));
+
+    expect(
+      await screen.findByText("Failed to load retention config"),
+    ).toBeInTheDocument();
   });
 });

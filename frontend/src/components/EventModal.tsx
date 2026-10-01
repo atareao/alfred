@@ -7,7 +7,7 @@ import {
   Switch,
   Select,
   InputNumber,
-  message,
+  App as AntdApp,
 } from "antd";
 import dayjs from "dayjs";
 import type { Dayjs } from "dayjs";
@@ -47,7 +47,7 @@ export const EventModal: React.FC<EventModalProps> = ({
   onSaved,
 }) => {
   const [form] = Form.useForm();
-  const [messageApi, contextHolder] = message.useMessage();
+  const { message: messageApi } = AntdApp.useApp();
   const { create, loading: creating } = useCreateEvent();
   const { update, loading: updating } = useUpdateEvent();
   const isEditing = !!event;
@@ -118,82 +118,79 @@ export const EventModal: React.FC<EventModalProps> = ({
   };
 
   return (
-    <>
-      {contextHolder}
-      <Modal
-        title={isEditing ? "Edit Event" : "New Event"}
-        open={open}
-        onOk={handleSubmit}
-        onCancel={onClose}
-        confirmLoading={creating || updating}
-        destroyOnClose
-        width={isMobile ? "calc(100vw - 32px)" : 520}
+    <Modal
+      title={isEditing ? "Edit Event" : "New Event"}
+      open={open}
+      onOk={handleSubmit}
+      onCancel={onClose}
+      confirmLoading={creating || updating}
+      destroyOnClose
+      width={isMobile ? "calc(100vw - 32px)" : 520}
+    >
+      <Form
+        form={form}
+        layout="vertical"
+        initialValues={{
+          all_day: false,
+          category: "default",
+          scope: "personal",
+        }}
       >
-        <Form
-          form={form}
-          layout="vertical"
-          initialValues={{
-            all_day: false,
-            category: "default",
-            scope: "personal",
-          }}
+        <Form.Item
+          name="title"
+          label="Title"
+          rules={[{ required: true, message: "Please enter a title" }]}
         >
-          <Form.Item
-            name="title"
-            label="Title"
-            rules={[{ required: true, message: "Please enter a title" }]}
-          >
-            <Input placeholder="Event title" />
-          </Form.Item>
+          <Input placeholder="Event title" />
+        </Form.Item>
 
-          <Form.Item
-            name="start_time"
-            label="Start"
-            rules={[{ required: true, message: "Please select start time" }]}
-          >
-            <DatePicker showTime style={{ width: "100%" }} />
-          </Form.Item>
+        <Form.Item
+          name="start_time"
+          label="Start"
+          rules={[{ required: true, message: "Please select start time" }]}
+        >
+          <DatePicker showTime style={{ width: "100%" }} />
+        </Form.Item>
 
-          <Form.Item
-            name="end_time"
-            label="End"
-            rules={[{ required: true, message: "Please select end time" }]}
-          >
-            <DatePicker showTime style={{ width: "100%" }} />
-          </Form.Item>
+        <Form.Item
+          name="end_time"
+          label="End"
+          rules={[{ required: true, message: "Please select end time" }]}
+        >
+          <DatePicker showTime style={{ width: "100%" }} />
+        </Form.Item>
 
-          <Form.Item name="all_day" label="All Day" valuePropName="checked">
-            <Switch />
-          </Form.Item>
+        <Form.Item name="all_day" label="All Day" valuePropName="checked">
+          <Switch />
+        </Form.Item>
 
-          <Form.Item name="category" label="Category">
-            <Select options={CATEGORY_OPTIONS} />
-          </Form.Item>
+        <Form.Item name="category" label="Category">
+          <Select options={CATEGORY_OPTIONS} />
+        </Form.Item>
 
-          <Form.Item name="scope" label="Scope">
-            <Select options={SCOPE_OPTIONS} />
-          </Form.Item>
+        <Form.Item name="scope" label="Scope">
+          <Select options={SCOPE_OPTIONS} />
+        </Form.Item>
 
-          <Form.Item name="rrule" label="Recurrence Rule (RRULE)">
-            <Input placeholder="e.g. FREQ=WEEKLY;BYDAY=MO" />
-          </Form.Item>
+        <Form.Item name="rrule" label="Recurrence Rule (RRULE)">
+          <Input placeholder="e.g. FREQ=WEEKLY;BYDAY=MO" />
+        </Form.Item>
 
-          <Form.Item
-            name="reminder_minutes_before"
-            label="Reminder (minutes before)"
-          >
-            <InputNumber min={0} style={{ width: "100%" }} />
-          </Form.Item>
+        <Form.Item
+          name="reminder_minutes_before"
+          label="Reminder (minutes before)"
+        >
+          <InputNumber min={0} style={{ width: "100%" }} />
+        </Form.Item>
 
-          <Form.Item name="description" label="Description">
-            <TextArea rows={3} placeholder="Event description" />
-          </Form.Item>
+        <Form.Item name="description" label="Description">
+          <TextArea rows={3} placeholder="Event description" />
+        </Form.Item>
 
-          <Form.Item name="location" label="Location">
-            <Input placeholder="Event location" />
-          </Form.Item>
-        </Form>
-      </Modal>
-    </>
+        <Form.Item name="location" label="Location">
+          <Input placeholder="Event location" />
+        </Form.Item>
+      </Form>
+    </Modal>
   );
 };

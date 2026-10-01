@@ -1,5 +1,5 @@
 import React, { useEffect } from "react";
-import { Modal, Form, Input, Select, DatePicker, message } from "antd";
+import { Modal, Form, Input, Select, DatePicker, App as AntdApp } from "antd";
 import dayjs from "dayjs";
 import type { Task } from "../types";
 import { useCreateTask, useUpdateTask } from "../hooks/useTasks";
@@ -42,7 +42,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({
   onSaved,
 }) => {
   const [form] = Form.useForm();
-  const [messageApi, contextHolder] = message.useMessage();
+  const { message: messageApi } = AntdApp.useApp();
   const { create, loading: creating } = useCreateTask();
   const { update, loading: updating } = useUpdateTask();
   const isEditing = !!task;
@@ -99,56 +99,53 @@ export const TaskModal: React.FC<TaskModalProps> = ({
   };
 
   return (
-    <>
-      {contextHolder}
-      <Modal
-        title={isEditing ? "Edit Task" : "New Task"}
-        open={open}
-        onOk={handleSubmit}
-        onCancel={onClose}
-        confirmLoading={creating || updating}
-        destroyOnClose
-        width={520}
+    <Modal
+      title={isEditing ? "Edit Task" : "New Task"}
+      open={open}
+      onOk={handleSubmit}
+      onCancel={onClose}
+      confirmLoading={creating || updating}
+      destroyOnClose
+      width={520}
+    >
+      <Form
+        form={form}
+        layout="vertical"
+        initialValues={{
+          status: "inbox",
+          priority: "medium",
+          scope: "personal",
+        }}
       >
-        <Form
-          form={form}
-          layout="vertical"
-          initialValues={{
-            status: "inbox",
-            priority: "medium",
-            scope: "personal",
-          }}
+        <Form.Item
+          name="content"
+          label="Content"
+          rules={[{ required: true, message: "Please enter task content" }]}
         >
-          <Form.Item
-            name="content"
-            label="Content"
-            rules={[{ required: true, message: "Please enter task content" }]}
-          >
-            <TextArea rows={3} placeholder="What needs to be done?" />
-          </Form.Item>
+          <TextArea rows={3} placeholder="What needs to be done?" />
+        </Form.Item>
 
-          <Form.Item name="status" label="Status">
-            <Select options={STATUS_OPTIONS} />
-          </Form.Item>
+        <Form.Item name="status" label="Status">
+          <Select options={STATUS_OPTIONS} />
+        </Form.Item>
 
-          <Form.Item name="priority" label="Priority">
-            <Select options={PRIORITY_OPTIONS} />
-          </Form.Item>
+        <Form.Item name="priority" label="Priority">
+          <Select options={PRIORITY_OPTIONS} />
+        </Form.Item>
 
-          <Form.Item name="project" label="Project">
-            <Input placeholder="Project name (optional)" />
-          </Form.Item>
+        <Form.Item name="project" label="Project">
+          <Input placeholder="Project name (optional)" />
+        </Form.Item>
 
-          <Form.Item name="due_date" label="Due Date">
-            <DatePicker showTime style={{ width: "100%" }} />
-          </Form.Item>
+        <Form.Item name="due_date" label="Due Date">
+          <DatePicker showTime style={{ width: "100%" }} />
+        </Form.Item>
 
-          <Form.Item name="scope" label="Scope">
-            <Select options={SCOPE_OPTIONS} />
-          </Form.Item>
-        </Form>
-      </Modal>
-    </>
+        <Form.Item name="scope" label="Scope">
+          <Select options={SCOPE_OPTIONS} />
+        </Form.Item>
+      </Form>
+    </Modal>
   );
 };
 
