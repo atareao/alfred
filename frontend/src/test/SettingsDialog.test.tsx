@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, within, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { message } from "antd";
 
 // ---------------------------------------------------------------------------
 // Ant Design matchMedia mock
@@ -61,9 +62,19 @@ vi.mock("../hooks/useSettings", () => ({
 import { SettingsDialog } from "../components/SettingsDialog";
 import { ProfileProvider } from "../contexts/ProfileProvider";
 
+// El retorno de `message.success` es un `MessageType` (callable), así que un
+// único `as` basta: el literal no es asignable a `MessageType` sin él.
+const noopMessage = (() => {}) as ReturnType<typeof message.success>;
+
 describe("SettingsDialog", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // El `message` estático de antd programa un setTimeout de 3 s por aviso que
+    // sobrevive al desmontaje de jsdom: en CI provoca
+    // "ReferenceError: window is not defined" con todos los tests en verde.
+    // Neutralizarlo evita crear el aviso (y por tanto el temporizador).
+    vi.spyOn(message, "success").mockImplementation(() => noopMessage);
+    vi.spyOn(message, "error").mockImplementation(() => noopMessage);
   });
 
   it("is not visible when visible=false", () => {
@@ -109,7 +120,7 @@ describe("SettingsDialog", () => {
     await user.click(screen.getByRole("button", { name: /guardar/i }));
 
     await waitFor(() => {
-      expect(screen.getByText("Error al actualizar perfil")).toBeInTheDocument();
+      expect(message.error).toHaveBeenCalledWith("Error al actualizar perfil");
     });
   });
 
