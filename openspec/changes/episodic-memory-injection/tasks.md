@@ -9,16 +9,16 @@
 
 ## 1. Caracterización previa de lo existente (baseline GREEN)
 
-- [ ] 1.1 Ejecutar `cargo test --lib orchestrator::context_builder && cargo test --lib orchestrator::context_classifier && cargo test --lib db::repos::memory` y registrar el resultado como baseline. Confirmar GREEN antes de tocar nada.
-- [ ] 1.2 Añadir tests de caracterización que documenten el comportamiento actual: `build()` devuelve `rag_memories` vacío en `SlidingWindow` y `Historical`, y `[Memory context]` aparece solo en `RAG`. Ejecutar `cargo test --lib orchestrator::context_builder && cargo test --lib orchestrator::agent` y confirmar GREEN (caracterización, no comportamiento nuevo).
-- [ ] 1.3 Documentar en el test de caracterización las tres únicas excepciones a la invariante: `test_rag_with_pool_and_provider_returns_formatted_memories` (formato `[{tags}] {content}`), los tests que asumen `embedding` como JSON en `vec_memory`, y `test_doc_override`/`test_classify_with_doc`. Ejecutar `cargo test --lib orchestrator::context_builder && cargo test --lib db::repos::memory` y confirmar GREEN.
+- [x] 1.1 Ejecutar `cargo test --lib orchestrator::context_builder && cargo test --lib orchestrator::context_classifier && cargo test --lib db::repos::memory` y registrar el resultado como baseline. Confirmar GREEN antes de tocar nada.
+- [x] 1.2 Añadir tests de caracterización que documenten el comportamiento actual: `build()` devuelve `rag_memories` vacío en `SlidingWindow` y `Historical`, y `[Memory context]` aparece solo en `RAG`. Ejecutar `cargo test --lib orchestrator::context_builder && cargo test --lib orchestrator::agent` y confirmar GREEN (caracterización, no comportamiento nuevo).
+- [x] 1.3 Documentar en el test de caracterización las tres únicas excepciones a la invariante: `test_rag_with_pool_and_provider_returns_formatted_memories` (formato `[{tags}] {content}`), los tests que asumen `embedding` como JSON en `vec_memory`, y `test_doc_override`/`test_classify_with_doc`. Ejecutar `cargo test --lib orchestrator::context_builder && cargo test --lib db::repos::memory` y confirmar GREEN.
 
 ## 2. Dependencia `vec0`, registro de la extensión y fail-fast (RED → GREEN)
 
-- [ ] 2.1 Activar el feature `vec0` de `Cargo.toml` (hoy declarado y sin usar: `sqlite-vec` opcional + feature `vec0`) y añadir `libsqlite3-sys = "0.37"` como dependencia directa, para registrar la extensión sobre la misma instancia que usa `sqlx-sqlite`. Ejecutar `cargo tree -i libsqlite3-sys` y confirmar una **única** instancia `0.37.0` compartida por `sqlx-sqlite` (spike: `sqlite-vec 0.1.9` no depende de `libsqlite3-sys`, así que Cargo unifica).
-- [ ] 2.2 Registrar `sqlite3_auto_extension(sqlite3_vec_init)` al arrancar (una sola vez, antes de abrir el pool). Añadir un test que ejecute `SELECT vec_version()` **desde una conexión del pool** y confirme que devuelve `v0.1.9`. Ejecutar `cargo test --lib db` y confirmar RED → GREEN.
-- [ ] 2.3 Añadir un test que ejecute `SELECT vec_version()` **desde una conexión nueva** (fuera del pool) y confirme `v0.1.9`, verificando que el registro alcanza a cada conexión al abrirse. Ejecutar `cargo test --lib db` y confirmar GREEN.
-- [ ] 2.4 Fail-fast (D11): probar `SELECT vec_version()` al arrancar y, si falla, **no arrancar**, con un error explícito que diga qué falta. Test de que el arranque falla si la extensión no está registrada. Ejecutar `cargo test --lib lib` y confirmar GREEN.
+- [x] 2.1 Activar el feature `vec0` de `Cargo.toml` (hoy declarado y sin usar: `sqlite-vec` opcional + feature `vec0`) y añadir `libsqlite3-sys = "0.37"` como dependencia directa, para registrar la extensión sobre la misma instancia que usa `sqlx-sqlite`. Ejecutar `cargo tree -i libsqlite3-sys` y confirmar una **única** instancia `0.37.0` compartida por `sqlx-sqlite` (spike: `sqlite-vec 0.1.9` no depende de `libsqlite3-sys`, así que Cargo unifica).
+- [x] 2.2 Registrar `sqlite3_auto_extension(sqlite3_vec_init)` al arrancar (una sola vez, antes de abrir el pool). Añadir un test que ejecute `SELECT vec_version()` **desde una conexión del pool** y confirme que devuelve `v0.1.9`. Ejecutar `cargo test --lib db` y confirmar RED → GREEN.
+- [x] 2.3 Añadir un test que ejecute `SELECT vec_version()` **desde una conexión nueva** (fuera del pool) y confirme `v0.1.9`, verificando que el registro alcanza a cada conexión al abrirse. Ejecutar `cargo test --lib db` y confirmar GREEN.
+- [x] 2.4 Fail-fast (D11): probar `SELECT vec_version()` al arrancar y, si falla, **no arrancar**, con un error explícito que diga qué falta. Test de que el arranque falla si la extensión no está registrada. Ejecutar `cargo test --lib lib` y confirmar GREEN.
 
 ## 3. Migración a la tabla virtual `vec0` y comprobación de dimensión al arrancar (RED → GREEN)
 
@@ -50,42 +50,44 @@
 
 ## 7. Panel de ajustes de memoria en el frontend (RED → GREEN)
 
-- [ ] 7.1 Añadir tests en `frontend/src/test/SettingsDialog.test.tsx` que verifiquen el panel "Memoria" con los cuatro campos (`MEMORY_HALF_LIFE_DAYS`, `SIMILARITY_THRESHOLD`, `RAG_BUDGET_TOKENS`, `MEMORY_KNN_CANDIDATES`), su carga desde `GET /settings` y su guardado vía `PUT /settings`. Ejecutar `cd frontend && npx vitest run` y confirmar RED.
-- [ ] 7.2 Implementar el panel "Memoria" en `SettingsDialog.tsx` (campos numéricos), actualizar `useSettings.ts` y `types/index.ts` si aplica. Ejecutar `cd frontend && npx tsc --noEmit && npx vitest run` y confirmar GREEN.
+- [x] 7.1 Añadir tests en `frontend/src/test/SettingsDialog.test.tsx` que verifiquen el panel "Memoria" con los cuatro campos (`MEMORY_HALF_LIFE_DAYS`, `SIMILARITY_THRESHOLD`, `RAG_BUDGET_TOKENS`, `MEMORY_KNN_CANDIDATES`), su carga desde `GET /settings` y su guardado vía `PUT /settings`. Ejecutar `cd frontend && npx vitest run` y confirmar RED.
+- [x] 7.2 Implementar el panel "Memoria" en `SettingsDialog.tsx` (campos numéricos), actualizar `useSettings.ts` y `types/index.ts` si aplica. Ejecutar `cd frontend && npx tsc --noEmit && npx vitest run` y confirmar GREEN.
 
 ## 8. Composición, aislamiento e inyección automática del bloque (RED → GREEN)
 
-- [ ] 8.1 Reescribir `format_memory()` para producir la ficha con ancla temporal (`created_at`) y sin `[{tags}]`; añadir test de que una ficha sin `tags` no contiene `[]` ni `[tags]`. Ejecutar `cargo test --lib orchestrator::context_builder` y confirmar RED.
-- [ ] 8.2 Actualizar `test_rag_with_pool_and_provider_returns_formatted_memories` al nuevo formato (excepción 1: única aserción de formato que cambia a propósito). Ejecutar `cargo test --lib orchestrator::context_builder` y confirmar GREEN.
-- [ ] 8.3 Añadir en `src/orchestrator/agent.rs` la composición del bloque `<episodic_memory>` dentro de la sección `# CONTEXTO DE MEMORIA EPISÓDICA (CAPA B)`, con la instrucción de que son antecedentes y no parte del turno actual. Añadir test de que el prompt contiene las etiquetas y la instrucción. Ejecutar `cargo test --lib orchestrator::agent` y confirmar RED.
-- [ ] 8.4 Implementar la composición y sustituir el literal `format!("[Memory context] {}", memory)` en `process_message` y `process_message_stream`; el bloque se compone **en código**, nunca desde un placeholder de `settings.system_prompt` (D2). Añadir test de que `[Memory context]` ya no aparece. Ejecutar `cargo test --lib orchestrator::agent` y confirmar GREEN.
-- [ ] 8.5 Añadir test de que el bloque `<episodic_memory>` va **antes** del primer mensaje del historial. Ejecutar `cargo test --lib orchestrator::agent` y confirmar GREEN.
-- [ ] 8.6 Añadir tests en `context_builder.rs` de que `SlidingWindow` y `Historical` recuperan la misma memoria que antes recuperaba `RAG`, cuando existen fichas sobre el umbral. Ejecutar `cargo test --lib orchestrator::context_builder` y confirmar RED → GREEN.
-- [ ] 8.7 Añadir test de que un mensaje clasificado como `Override::None` / `SlidingWindow` recibe memoria si supera el umbral. Ejecutar `cargo test --lib orchestrator::context_classifier && cargo test --lib orchestrator::context_builder` y confirmar GREEN.
+- [x] 8.1 Reescribir `format_memory()` para producir la ficha con ancla temporal (`created_at`) y sin `[{tags}]`; añadir test de que una ficha sin `tags` no contiene `[]` ni `[tags]`. Ejecutar `cargo test --lib orchestrator::context_builder` y confirmar RED.
+- [x] 8.2 Actualizar `test_rag_with_pool_and_provider_returns_formatted_memories` al nuevo formato (excepción 1: única aserción de formato que cambia a propósito). Ejecutar `cargo test --lib orchestrator::context_builder` y confirmar GREEN.
+- [x] 8.3 Añadir en `src/orchestrator/agent.rs` la composición del bloque `<episodic_memory>` dentro de la sección `# CONTEXTO DE MEMORIA EPISÓDICA (CAPA B)`, con la instrucción de que son antecedentes y no parte del turno actual. Añadir test de que el prompt contiene las etiquetas y la instrucción. Ejecutar `cargo test --lib orchestrator::agent` y confirmar RED.
+- [x] 8.4 Implementar la composición y sustituir el literal `format!("[Memory context] {}", memory)` en `process_message` y `process_message_stream`; el bloque se compone **en código**, nunca desde un placeholder de `settings.system_prompt` (D2). Añadir test de que `[Memory context]` ya no aparece. Ejecutar `cargo test --lib orchestrator::agent` y confirmar GREEN.
+- [x] 8.5 Añadir test de que el bloque `<episodic_memory>` va **antes** del primer mensaje del historial. Ejecutar `cargo test --lib orchestrator::agent` y confirmar GREEN.
+- [x] 8.6 Añadir tests en `context_builder.rs` de que `SlidingWindow` y `Historical` recuperan la misma memoria que antes recuperaba `RAG`, cuando existen fichas sobre el umbral. Ejecutar `cargo test --lib orchestrator::context_builder` y confirmar RED → GREEN.
+- [x] 8.7 Añadir test de que un mensaje clasificado como `Override::None` / `SlidingWindow` recibe memoria si supera el umbral. Ejecutar `cargo test --lib orchestrator::context_classifier && cargo test --lib orchestrator::context_builder` y confirmar GREEN.
 
 ## 9. Eliminación de la estrategia RAG y de `!doc` (RED → GREEN)
 
-- [ ] 9.1 Eliminar la variante `ContextStrategy::RAG`, su rama en `ContextBuilder::build()`, `Override::Doc` del clasificador y la detección de `!doc` en `classify()`. Ejecutar `cargo check --all-targets` y confirmar que no quedan referencias.
-- [ ] 9.2 Eliminar los tests `test_doc_override` y `test_classify_with_doc` (excepción 3: desaparecen con la funcionalidad). Ejecutar `cargo test --lib orchestrator::context_classifier` y confirmar GREEN.
-- [ ] 9.3 Añadir tests de que `!historico` y `!reset` siguen gobernando su propia estrategia, ya independiente de la memoria. Ejecutar `cargo test --lib orchestrator::context_classifier` y confirmar GREEN.
-- [ ] 9.4 Verificar que el requisito `search_by_vector SHALL warn on embedding dimension mismatch` se retira (delta `REMOVED` en `db/repos`) y que no quedan tests que lo asuman salvo los declarados. Ejecutar `cargo test --lib db::repos::memory` y confirmar GREEN.
+- [x] 9.1 Eliminar la variante `ContextStrategy::RAG`, su rama en `ContextBuilder::build()`, `Override::Doc` del clasificador y la detección de `!doc` en `classify()`. Ejecutar `cargo check --all-targets` y confirmar que no quedan referencias.
+- [x] 9.2 Eliminar los tests `test_doc_override` y `test_classify_with_doc` (excepción 3: desaparecen con la funcionalidad). Ejecutar `cargo test --lib orchestrator::context_classifier` y confirmar GREEN.
+- [x] 9.3 Añadir tests de que `!historico` y `!reset` siguen gobernando su propia estrategia, ya independiente de la memoria. Ejecutar `cargo test --lib orchestrator::context_classifier` y confirmar GREEN.
+- [x] 9.4 Verificar que el requisito `search_by_vector SHALL warn on embedding dimension mismatch` se retira (delta `REMOVED` en `db/repos`) y que no quedan tests que lo asuman salvo los declarados. Ejecutar `cargo test --lib db::repos::memory` y confirmar GREEN.
 
 ## 10. Limpieza de código muerto (REFACTOR)
 
-- [ ] 10.1 Retirar `session_summary` de `BuiltContext` y de los dos puntos de inyección `[Session summary]` en `agent.rs`; eliminar los `session_summary: None` de las ramas de `build()`. Ejecutar `cargo test --lib orchestrator` y confirmar GREEN.
-- [ ] 10.2 Eliminar la rama `[tags]` de `format_memory` y el resto del camino JSON + coseno en Rust (`cosine_similarity` y el parseo de `embedding`), si ya no tiene otros usos. Ejecutar `cargo test --lib orchestrator::context_builder && cargo test --lib db::repos::memory` y confirmar GREEN.
-- [ ] 10.3 Ejecutar `cargo fmt --check`, `cargo clippy -- -D warnings` y `cargo test`; confirmar todo verde.
-- [ ] 10.4 Ejecutar `cd frontend && npx tsc --noEmit && npm run build`; confirmar verde.
+- [x] 10.1 Retirar `session_summary` de `BuiltContext` y de los dos puntos de inyección `[Session summary]` en `agent.rs`; eliminar los `session_summary: None` de las ramas de `build()`. Ejecutar `cargo test --lib orchestrator` y confirmar GREEN.
+- [x] 10.2 Eliminar la rama `[tags]` de `format_memory` y el resto del camino JSON + coseno en Rust (`cosine_similarity` y el parseo de `embedding`), si ya no tiene otros usos. Ejecutar `cargo test --lib orchestrator::context_builder && cargo test --lib db::repos::memory` y confirmar GREEN.
+- [x] 10.3 Ejecutar `cargo fmt --check`, `cargo clippy -- -D warnings` y `cargo test`; confirmar todo verde.
+- [x] 10.4 Ejecutar `cd frontend && npx tsc --noEmit && npm run build`; confirmar verde.
 
 ## 11. Reconstrucción del índice desde la fuente (sin backfill)
 
-- [ ] 11.1 Implementar el reseteo de la fuente: `UPDATE messages SET is_indexed = 0, summary_ref = NULL` y vaciado de `memory` y `vec_memory`. Los mensajes son el original y las fichas son datos derivados: es más robusto re-archivar que re-embeder contenido ya resumido por un LLM. Verificar en un test de integración que tras el reseteo el worker vuelve a archivar. Ejecutar `cargo test --test migrations` y confirmar GREEN.
+- [x] 11.1 Implementar el reseteo de la fuente: `UPDATE messages SET is_indexed = 0, summary_ref = NULL` y vaciado de `memory` y `vec_memory`. Los mensajes son el original y las fichas son datos derivados: es más robusto re-archivar que re-embeder contenido ya resumido por un LLM. Verificar en un test de integración que tras el reseteo el worker vuelve a archivar. Ejecutar `cargo test --test migrations` y confirmar GREEN.
 - [ ] 11.2 Ejecutar la reconstrucción sobre la BD de trabajo: en local `cargo run --bin valet-reindex` y esperar a que el `EpisodicMemoryWorker` rearchive todo con el backend `vec0`. Verificar el conteo final: `SELECT COUNT(*) FROM memory` y `SELECT COUNT(*) FROM vec_memory` alineados por id.
+  > **Nota**: verificado sobre una **copia** de la BD real (la migración entró, el worker re-archivó los 44 mensajes en 2 fichas y los conteos quedaron alineados por id), no sobre producción. La reconstrucción real sigue pendiente sobre la BD de producción hasta construir y desplegar la imagen nueva.
 - [ ] 11.3 Confirmar que no queda ningún embedding inbuscable (imposible por el esquema `vec0`) y que no existe ningún vector huérfano de otra dimensión.
+  > **Nota**: verificado sobre la **copia** de la BD real, no sobre producción. Pendiente sobre producción hasta el despliegue de la imagen nueva.
 
 ## 12. Verificación final
 
-- [ ] 12.1 Ejecutar `just check-spec` y confirmar que el change proposal está activo y aprobado.
-- [ ] 12.2 Ejecutar `openspec validate episodic-memory-injection --strict`; confirmar válido.
-- [ ] 12.3 Ejecutar `git status --porcelain`; confirmar que solo aparece el directorio `openspec/changes/episodic-memory-injection/` (y los ficheros de código del change, si ya se ha implementado).
-- [ ] 12.4 Ejecutar `grep -rn -i "ANN" openspec/changes/episodic-memory-injection/ | grep -vi -e "no es" -e "Sin ANN" -e "ni un indice" -e "no lo es" -e "falso"`; confirmar que no devuelve ninguna afirmación de que sqlite-vec sea ANN.
+- [x] 12.1 Ejecutar `just check-spec` y confirmar que el change proposal está activo y aprobado.
+- [x] 12.2 Ejecutar `openspec validate episodic-memory-injection --strict`; confirmar válido.
+- [x] 12.3 Ejecutar `git status --porcelain`; confirmar que solo aparece el directorio `openspec/changes/episodic-memory-injection/` (y los ficheros de código del change, si ya se ha implementado).
+- [x] 12.4 Ejecutar `grep -rn -i "ANN" openspec/changes/episodic-memory-injection/ | grep -vi -e "no es" -e "Sin ANN" -e "ni un indice" -e "no lo es" -e "falso"`; confirmar que no devuelve ninguna afirmación de que sqlite-vec sea ANN.
