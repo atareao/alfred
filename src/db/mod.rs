@@ -45,6 +45,11 @@ pub async fn init_db(db_path: &str) -> Result<DbPool, Box<dyn std::error::Error>
         .run(&pool)
         .await?;
 
+    // Fail-fast (D10): the dimension declared by `vec_memory` must line up with
+    // EMBEDDING_DIMENSION, otherwise refuse to start rather than search a
+    // misaligned index silently.
+    vec_extension::verify_embedding_dimension(&pool).await?;
+
     // Seed default tools
     ToolsRepo::seed_defaults(&pool).await?;
 

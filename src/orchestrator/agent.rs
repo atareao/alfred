@@ -1809,8 +1809,16 @@ mod tests {
         }
     }
 
-    /// Fixed embedding provider (dimension 3), matching the seeded vector.
+    /// Fixed embedding provider (dimension 1024, as `vec0` declares),
+    /// matching the seeded vector.
     struct FixedEmbedProvider;
+
+    /// Pad a leading slice to the 1024 dimensions the `vec0` table declares.
+    fn v1024(leading: &[f32]) -> Vec<f32> {
+        let mut v = leading.to_vec();
+        v.resize(1024, 0.0);
+        v
+    }
 
     #[async_trait::async_trait]
     impl crate::embeddings::EmbeddingProvider for FixedEmbedProvider {
@@ -1818,11 +1826,16 @@ mod tests {
             &self,
             _input: &str,
         ) -> Result<Vec<f32>, crate::embeddings::provider::EmbeddingError> {
-            Ok(vec![0.1, 0.2, 0.3])
+            Ok(v1024(&[0.1, 0.2, 0.3]))
         }
     }
 
-    /// Seed one `memory` card plus its JSON-text `vec_memory` row.
+    /// Seed one `memory` card plus its `vec_memory` row.
+    ///
+    /// CHANGED ON PURPOSE (invariant exception 2): `vec_memory` now stores
+    /// binary `vec0` vectors of the declared 1024 dimensions, so the row is
+    /// written through `vec_f32(?)` instead of as JSON text. The
+    /// characterization assertions are untouched.
     async fn seed_one_memory(pool: &SqlitePool) {
         let mem = crate::db::repos::memory::MemoryRepo::create(
             pool,
@@ -1832,8 +1845,8 @@ mod tests {
         )
         .await
         .expect("create memory should succeed");
-        let json = serde_json::to_string(&[0.1f32, 0.2, 0.3]).expect("serialize embedding");
-        sqlx::query("INSERT INTO vec_memory (id, embedding) VALUES (?1, ?2)")
+        let json = serde_json::to_string(&v1024(&[0.1, 0.2, 0.3])).expect("serialize embedding");
+        sqlx::query("INSERT INTO vec_memory (id, embedding) VALUES (?1, vec_f32(?2))")
             .bind(&mem.id)
             .bind(&json)
             .execute(pool)

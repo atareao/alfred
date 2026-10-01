@@ -148,6 +148,13 @@ impl MemoryRepo {
     ///   are included.
     ///
     /// Results are ordered by descending similarity (highest score first).
+    ///
+    /// **Provisional.** This is the *smallest* adaptation of the previous
+    /// JSON + cosine-in-Rust implementation to the new binary `vec0` storage,
+    /// deliberately preserving its observable behaviour (same `limit = 10`,
+    /// same token budget, no similarity threshold, no temporal decay). Block 5
+    /// rewrites this whole method around `MATCH … AND k = …`, the similarity
+    /// threshold and the decay. Do not build anything on top of it.
     pub async fn search_by_vector(
         pool: &SqlitePool,
         query_embedding: &[f32],
@@ -161,66 +168,68 @@ impl MemoryRepo {
 
         let actual_limit = limit.clamp(1, 100);
 
-        // Load all embeddings from vec_memory
-        let rows = sqlx::query("SELECT id, embedding FROM vec_memory WHERE embedding IS NOT NULL")
-            .fetch_all(pool)
-            .await?;
+        // The dimension declared by `vec0` is only in `sqlite_master.sql`
+        // (`PRAGMA table_info` reports an empty type for the vector column).
+        // A query whose dimension differs would make the KNN query error out.
+        let declared = sqlx::query_scalar::<_, String>(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='vec_memory'",
+        )
+        .fetch_optional(pool)
+        .await?
+        .and_then(|sql| crate::db::vec_extension::declared_dimension_from_sql(&sql));
 
-        let mut candidates: Vec<(String, f64)> = Vec::new();
-        for row in rows {
-            let id: String = row.get(0);
-            let emb_str: String = row.get(1);
-            if let Ok(emb) = serde_json::from_str::<Vec<f32>>(&emb_str) {
-                if emb.len() != query_embedding.len() {
-                    tracing::warn!(
-                        query_dim = query_embedding.len(),
-                        stored_dim = emb.len(),
-                        "search_by_vector: skipping embedding with mismatched dimension"
-                    );
-                    continue;
-                }
-                let score = cosine_similarity(query_embedding, &emb);
-                candidates.push((id, score));
+        if let Some(declared) = declared {
+            if query_embedding.len() != declared {
+                tracing::warn!(
+                    query_dim = query_embedding.len(),
+                    declared_dim = declared,
+                    "search_by_vector: query embedding dimension does not match vec0"
+                );
+                return Ok(Vec::new());
             }
         }
 
-        // Sort by descending similarity
-        candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        candidates.truncate(actual_limit as usize);
+        let query_json =
+            serde_json::to_string(query_embedding).map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
 
-        // Fetch Memory objects for the candidate IDs and apply budget_tokens filter.
-        // Iterate in similarity order; skip items whose tokens_count would exceed
-        // the remaining budget.
+        // KNN over the `vec0` index, joined back to the source-of-truth
+        // `memory` table by id, ordered by ascending cosine distance (which is
+        // descending similarity).
+        let rows = sqlx::query(
+            "SELECT m.id, m.content, m.tokens_count, m.created_at, m.metadata \
+             FROM memory m JOIN vec_memory v ON m.id = v.id \
+             WHERE v.embedding MATCH vec_f32(?1) AND k = ?2 \
+             ORDER BY v.distance",
+        )
+        .bind(&query_json)
+        .bind(actual_limit)
+        .fetch_all(pool)
+        .await?;
+
+        // Apply the token budget with the existing `continue` semantics (the
+        // `break` fix belongs to block 5).
         let mut results: Vec<Memory> = Vec::new();
         let mut running_tokens: usize = 0;
-        for (id, _score) in candidates {
-            if let Some(mem) = Self::find_by_id(pool, &id).await? {
-                if running_tokens + mem.tokens_count > budget_tokens {
-                    continue;
-                }
-                running_tokens += mem.tokens_count;
-                results.push(mem);
+        for r in rows {
+            let metadata_str: String = r.get(4);
+            let metadata: serde_json::Value =
+                serde_json::from_str(&metadata_str).unwrap_or(serde_json::json!({}));
+            let mem = Memory {
+                id: r.get(0),
+                content: r.get(1),
+                tokens_count: r.get::<i64, _>(2) as usize,
+                created_at: r.get(3),
+                metadata,
+            };
+            if running_tokens + mem.tokens_count > budget_tokens {
+                continue;
             }
+            running_tokens += mem.tokens_count;
+            results.push(mem);
         }
 
         Ok(results)
     }
-}
-
-/// Compute cosine similarity between two vectors.
-///
-/// Returns 0.0 if either vector is empty or their lengths differ.
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
-    if a.len() != b.len() || a.is_empty() {
-        return 0.0;
-    }
-    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm_a == 0.0 || norm_b == 0.0 {
-        return 0.0;
-    }
-    (dot / (norm_a * norm_b)) as f64
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -373,11 +382,29 @@ mod tests {
     }
 
     // ─── search_by_vector ────────────────────────────────────────────────────
+    //
+    // EXCEPTION 2 TO THE TEST INVARIANT: these tests used to store the
+    // embedding as JSON text in a regular `vec_memory` table. That storage is
+    // gone (`vec_memory` is now a `vec0` virtual table holding binary
+    // vectors), so the helper was changed on purpose to write through
+    // `vec_f32(?)` and to pad vectors to the declared 1024 dimensions. The
+    // assertions themselves are unchanged.
+
+    /// Pad a leading slice to the 1024 dimensions `vec0` requires.
+    fn v1024(leading: &[f32]) -> Vec<f32> {
+        let mut v = leading.to_vec();
+        v.resize(1024, 0.0);
+        v
+    }
 
     /// Helper: insert an embedding row directly into `vec_memory`.
+    ///
+    /// CHANGED ON PURPOSE (invariant exception 2): written through
+    /// `vec_f32(?)` with the declared 1024 dimensions, instead of a raw JSON
+    /// string in the old regular table.
     async fn insert_embedding(pool: &SqlitePool, id: &str, embedding: &[f32]) {
         let json = serde_json::to_string(embedding).expect("failed to serialize embedding");
-        sqlx::query("INSERT INTO vec_memory (id, embedding) VALUES (?1, ?2)")
+        sqlx::query("INSERT INTO vec_memory (id, embedding) VALUES (?1, vec_f32(?2))")
             .bind(id)
             .bind(&json)
             .execute(pool)
@@ -398,11 +425,11 @@ mod tests {
             .unwrap();
 
         // Embeddings: mem_a → [1,0,0],  mem_b → [0,0,1]
-        insert_embedding(&pool, &mem_a.id, &[1.0, 0.0, 0.0]).await;
-        insert_embedding(&pool, &mem_b.id, &[0.0, 0.0, 1.0]).await;
+        insert_embedding(&pool, &mem_a.id, &v1024(&[1.0, 0.0, 0.0])).await;
+        insert_embedding(&pool, &mem_b.id, &v1024(&[0.0, 0.0, 1.0])).await;
 
         // Query close to [1,0,0] → mem_a should be most similar
-        let results = MemoryRepo::search_by_vector(&pool, &[0.9, 0.1, 0.0], 10, 5000)
+        let results = MemoryRepo::search_by_vector(&pool, &v1024(&[0.9, 0.1, 0.0]), 10, 5000)
             .await
             .expect("search_by_vector should succeed");
 
@@ -421,10 +448,10 @@ mod tests {
         let mem = MemoryRepo::create(&pool, "Expensive memory", 100, &serde_json::json!({}))
             .await
             .unwrap();
-        insert_embedding(&pool, &mem.id, &[1.0, 0.0, 0.0]).await;
+        insert_embedding(&pool, &mem.id, &v1024(&[1.0, 0.0, 0.0])).await;
 
         // Budget of 50 is less than tokens_count=100 → nothing returned
-        let results = MemoryRepo::search_by_vector(&pool, &[0.9, 0.1, 0.0], 10, 50)
+        let results = MemoryRepo::search_by_vector(&pool, &v1024(&[0.9, 0.1, 0.0]), 10, 50)
             .await
             .expect("search_by_vector should succeed");
 
@@ -443,7 +470,7 @@ mod tests {
         let mem = MemoryRepo::create(&pool, "Some memory", 10, &serde_json::json!({}))
             .await
             .unwrap();
-        insert_embedding(&pool, &mem.id, &[0.5, 0.5]).await;
+        insert_embedding(&pool, &mem.id, &v1024(&[0.5, 0.5])).await;
 
         let results = MemoryRepo::search_by_vector(&pool, &[], 10, 5000)
             .await
@@ -457,8 +484,14 @@ mod tests {
         );
     }
 
-    /// An embedding whose dimension differs from the query must be discarded
-    /// (not silently scored as 0.0), so it never appears in the results.
+    /// A query embedding whose dimension does not match the one declared by
+    /// `vec0` must yield no results (not a panic): the mismatch can no longer
+    /// be *stored* — `vec0` rejects it structurally — so the only remaining
+    /// mismatch is on the query side.
+    ///
+    /// CHANGED ON PURPOSE (invariant exception 2): previously the *stored*
+    /// embedding had a mismatched dimension; that row can no longer exist.
+    /// The assertion (no results) is unchanged.
     #[tokio::test]
     async fn test_search_by_vector_skips_mismatched_dimension() {
         let pool = setup_pool().await;
@@ -466,17 +499,17 @@ mod tests {
         let mem = MemoryRepo::create(&pool, "Wrong dimension", 10, &serde_json::json!({}))
             .await
             .unwrap();
-        // Stored embedding has dimension 2.
-        insert_embedding(&pool, &mem.id, &[1.0, 0.0]).await;
+        // Stored embedding is a valid 1024-dim vector.
+        insert_embedding(&pool, &mem.id, &v1024(&[1.0, 0.0])).await;
 
-        // Query has dimension 3.
+        // Query has dimension 3, which does not match the declared 1024.
         let results = MemoryRepo::search_by_vector(&pool, &[1.0, 0.0, 0.0], 10, 5000)
             .await
             .expect("search_by_vector should succeed");
 
         assert!(
             results.is_empty(),
-            "an embedding with a mismatched dimension must be discarded"
+            "a query embedding with a mismatched dimension must return no results"
         );
     }
 
@@ -488,9 +521,9 @@ mod tests {
         let mem = MemoryRepo::create(&pool, "Right dimension", 10, &serde_json::json!({}))
             .await
             .unwrap();
-        insert_embedding(&pool, &mem.id, &[1.0, 0.0, 0.0]).await;
+        insert_embedding(&pool, &mem.id, &v1024(&[1.0, 0.0, 0.0])).await;
 
-        let results = MemoryRepo::search_by_vector(&pool, &[1.0, 0.0, 0.0], 10, 5000)
+        let results = MemoryRepo::search_by_vector(&pool, &v1024(&[1.0, 0.0, 0.0]), 10, 5000)
             .await
             .expect("search_by_vector should succeed");
 
@@ -500,5 +533,37 @@ mod tests {
             "an embedding with a matching dimension should be scored and returned"
         );
         assert_eq!(results[0].id, mem.id);
+    }
+
+    /// 3.4 — the JOIN by id returns the `memory` fields alongside the `vec0`
+    /// distance, which is what makes `memory` the source of truth and
+    /// `vec_memory` just the vector index.
+    #[tokio::test]
+    async fn test_join_returns_memory_fields_and_distance() {
+        let pool = setup_pool().await;
+
+        let mem = MemoryRepo::create(&pool, "Joined content", 42, &serde_json::json!({}))
+            .await
+            .unwrap();
+        insert_embedding(&pool, &mem.id, &v1024(&[1.0, 0.0, 0.0])).await;
+
+        let query = serde_json::to_string(&v1024(&[1.0, 0.0, 0.0])).unwrap();
+        let row = sqlx::query(
+            "SELECT m.id, m.content, m.tokens_count, v.distance \
+             FROM memory m JOIN vec_memory v ON m.id = v.id \
+             WHERE v.embedding MATCH vec_f32(?1) AND k = ?2 ORDER BY v.distance",
+        )
+        .bind(&query)
+        .bind(10i64)
+        .fetch_one(&pool)
+        .await
+        .expect("the JOIN by id must succeed (no `no column named id` error)");
+
+        assert_eq!(row.get::<String, _>(0), mem.id);
+        assert_eq!(row.get::<String, _>(1), "Joined content");
+        assert_eq!(row.get::<i64, _>(2), 42);
+        // An identical vector has cosine distance 0.
+        let distance: f64 = row.get(3);
+        assert!(distance.abs() < 1e-6, "identical vector → distance 0");
     }
 }

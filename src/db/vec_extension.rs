@@ -35,6 +35,27 @@ type AutoExtensionEntry = unsafe extern "C" fn(
 /// Guards the one-time registration of the extension.
 static REGISTER_EXTENSION: Once = Once::new();
 
+/// Register the extension at process load time, before `main` (and therefore
+/// before any connection is opened).
+///
+/// `sqlite3_auto_extension` only affects connections opened *after* it runs, so
+/// registering it from `init_db` is enough for production but not for the test
+/// helpers that open a pool and then run the migrator directly. Running it from
+/// an ELF `.init_array` constructor makes the registration happen before any
+/// code — and thus any connection — in the process, covering both.
+///
+/// `register_vec_extension` is idempotent, so this is a no-op if something else
+/// already registered it.
+#[cfg(target_os = "linux")]
+#[used]
+#[link_section = ".init_array"]
+static REGISTER_VEC_EXTENSION_ON_LOAD: extern "C" fn() = {
+    extern "C" fn init() {
+        register_vec_extension();
+    }
+    init
+};
+
 /// Register the `sqlite-vec` extension for every connection this process opens.
 ///
 /// Safe to call from anywhere and any number of times: the first call performs
@@ -84,6 +105,89 @@ pub enum VecExtensionError {
          version string starting with 'v'"
     )]
     UnexpectedVersion(String),
+}
+
+/// Error returned when the declared dimension of `vec_memory` cannot be read
+/// or does not line up with the configured embedding dimension.
+#[derive(Debug, thiserror::Error)]
+pub enum EmbeddingDimensionError {
+    /// `sqlite_master` could not be queried.
+    #[error("could not read the vec_memory schema to check its embedding dimension: {0}")]
+    SchemaRead(#[source] sqlx::Error),
+
+    /// `vec_memory` is not present in `sqlite_master` (migration not applied?).
+    #[error("table vec_memory was not found; run the migrations before checking its dimension")]
+    Missing,
+
+    /// The stored DDL does not contain a parseable `float[N]` declaration.
+    #[error("could not parse the embedding dimension from the vec_memory DDL: {0:?}")]
+    Unparseable(String),
+
+    /// The declared dimension and `EMBEDDING_DIMENSION` disagree. `vec0` has no
+    /// `ALTER` for the vector dimension, so the index must be rebuilt.
+    #[error(
+        "vec_memory declares `embedding float[{declared}]` but EMBEDDING_DIMENSION={expected}: \
+         the vector index is out of date and must be rebuilt (drop vec_memory, recreate it \
+         with the new dimension, and re-index every memory card)"
+    )]
+    Mismatch { declared: usize, expected: usize },
+}
+
+/// Parse the `float[N]` dimension out of a `vec0` table DDL string.
+///
+/// `PRAGMA table_info(vec_memory)` reports an **empty** type for the vector
+/// column, so the declared dimension is only available in `sqlite_master.sql`.
+pub fn declared_dimension_from_sql(sql: &str) -> Option<usize> {
+    let start = sql.find("float[")? + "float[".len();
+    let rest = &sql[start..];
+    let end = rest.find(']')?;
+    rest[..end].trim().parse::<usize>().ok()
+}
+
+/// Read the dimension declared by the `vec_memory` virtual table.
+pub async fn declared_embedding_dimension(
+    pool: &SqlitePool,
+) -> Result<usize, EmbeddingDimensionError> {
+    let sql: Option<String> = sqlx::query_scalar(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='vec_memory'",
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(EmbeddingDimensionError::SchemaRead)?;
+
+    let sql = sql.ok_or(EmbeddingDimensionError::Missing)?;
+    declared_dimension_from_sql(&sql).ok_or(EmbeddingDimensionError::Unparseable(sql))
+}
+
+/// Compare the declared dimension with the configured one.
+///
+/// `expected` is `EMBEDDING_DIMENSION` when it is set and parseable; a `None`
+/// means the operator has not pinned a dimension, so there is nothing to
+/// contradict and the declared one is accepted as-is.
+pub fn check_embedding_dimension(
+    declared: usize,
+    expected: Option<usize>,
+) -> Result<(), EmbeddingDimensionError> {
+    match expected {
+        Some(expected) if expected != declared => {
+            Err(EmbeddingDimensionError::Mismatch { declared, expected })
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Fail-fast start-up check (D10): verify that the dimension declared by
+/// `vec_memory` matches `EMBEDDING_DIMENSION`, so a future embedding-model
+/// change cannot silently leave the table misaligned.
+pub async fn verify_embedding_dimension(
+    pool: &SqlitePool,
+) -> Result<usize, EmbeddingDimensionError> {
+    let declared = declared_embedding_dimension(pool).await?;
+    let expected = std::env::var("EMBEDDING_DIMENSION")
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok());
+    check_embedding_dimension(declared, expected)?;
+    Ok(declared)
 }
 
 /// Run the start-up probe against an injectable source.
@@ -225,5 +329,62 @@ mod tests {
             result,
             Err(VecExtensionError::UnexpectedVersion(_))
         ));
+    }
+
+    // ─── 3.2 — declared embedding dimension check (D10) ─────────────────────
+
+    /// The `float[N]` dimension is parsed out of the DDL (PRAGMA does not
+    /// expose it for `vec0`).
+    #[test]
+    fn declared_dimension_is_parsed_from_sql() {
+        let sql = "CREATE VIRTUAL TABLE vec_memory USING vec0(\n    \
+                   id TEXT PRIMARY KEY,\n    \
+                   embedding float[1024] distance_metric=cosine\n)";
+        assert_eq!(declared_dimension_from_sql(sql), Some(1024));
+
+        let other = "CREATE VIRTUAL TABLE v USING vec0(embedding float[1536])";
+        assert_eq!(declared_dimension_from_sql(other), Some(1536));
+
+        assert_eq!(declared_dimension_from_sql("CREATE TABLE t(x TEXT)"), None);
+    }
+
+    /// A declared dimension that matches the configured one is accepted.
+    #[test]
+    fn check_embedding_dimension_aligned_is_ok() {
+        assert!(check_embedding_dimension(1024, Some(1024)).is_ok());
+        // Nothing configured → nothing to contradict.
+        assert!(check_embedding_dimension(1024, None).is_ok());
+    }
+
+    /// A declared dimension that disagrees with the configured one fails with a
+    /// message that tells the operator to rebuild the index.
+    #[test]
+    fn check_embedding_dimension_mismatch_fails() {
+        let err = check_embedding_dimension(1024, Some(1536)).unwrap_err();
+        assert!(matches!(
+            err,
+            EmbeddingDimensionError::Mismatch {
+                declared: 1024,
+                expected: 1536
+            }
+        ));
+        let message = err.to_string();
+        assert!(
+            message.contains("rebuilt"),
+            "mismatch message should tell the operator to rebuild, got: {message}"
+        );
+    }
+
+    /// End to end against a migrated database: the declared dimension is 1024.
+    #[tokio::test]
+    async fn declared_dimension_of_migrated_db_is_1024() {
+        register_vec_extension();
+        let pool = fresh_pool().await;
+        crate::db::schema::run_migrations(&pool).await.unwrap();
+
+        let declared = declared_embedding_dimension(&pool)
+            .await
+            .expect("declared dimension should be readable");
+        assert_eq!(declared, 1024);
     }
 }

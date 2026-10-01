@@ -6,12 +6,47 @@ use sqlx::SqlitePool;
 /// the path relative to `CARGO_MANIFEST_DIR` (embedded at compile time) to
 /// work reliably regardless of the process's current working directory.
 pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    ensure_vec0_on_pool(pool).await?;
+
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let migrations_path = manifest.join("migrations");
     sqlx::migrate::Migrator::new(migrations_path)
         .await?
         .run(pool)
         .await?;
+    Ok(())
+}
+
+/// Make sure the `sqlite-vec` `vec0` module is available on `pool` before the
+/// migration that creates the `vec_memory` virtual table runs.
+///
+/// `sqlite3_auto_extension` only affects connections opened *after* it is
+/// called. [`register_vec_extension`] is idempotent (fenced by a [`Once`]), but
+/// a caller may have opened its pool *before* reaching here — as the test
+/// helpers do. In that case the pooled connection lacks `vec0`, so we register
+/// the extension and detach one stale connection to force the pool to open a
+/// fresh one that inherits it.
+///
+/// [`register_vec_extension`]: crate::db::vec_extension::register_vec_extension
+/// [`Once`]: std::sync::Once
+async fn ensure_vec0_on_pool(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    crate::db::vec_extension::register_vec_extension();
+
+    // If the extension is already usable on a pooled connection there is
+    // nothing to do (this is the production path: `init_db` registers before
+    // opening the pool, and this is a no-op).
+    if sqlx::query_scalar::<_, String>("SELECT vec_version()")
+        .fetch_one(pool)
+        .await
+        .is_ok()
+    {
+        return Ok(());
+    }
+
+    // The pooled connection(s) predate the registration. Detach one so the
+    // pool reopens a connection, which then picks up the auto-extension.
+    let conn = pool.acquire().await?;
+    drop(conn.detach());
     Ok(())
 }
 
@@ -431,6 +466,69 @@ mod tests {
         assert!(
             has_vec,
             "vec_memory table should survive idempotent migration"
+        );
+    }
+
+    // ─── 3.1 / 3.3: the vec0 virtual table ───────────────────────────────────
+
+    /// 3.1 — `vec_memory` is a `vec0` virtual table exposing `id` and
+    /// `embedding`, with the cosine metric.
+    #[tokio::test]
+    async fn test_vec_memory_is_virtual_vec0_with_id_and_embedding() {
+        let pool = setup().await;
+
+        let sql: String = sqlx::query_scalar(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='vec_memory'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert!(
+            sql.to_uppercase().contains("CREATE VIRTUAL TABLE") && sql.contains("vec0"),
+            "vec_memory must be a vec0 virtual table, got: {sql}"
+        );
+        assert!(sql.contains("id"), "vec_memory must declare `id`");
+        assert!(
+            sql.contains("embedding"),
+            "vec_memory must declare `embedding`"
+        );
+        assert!(
+            sql.contains("distance_metric=cosine"),
+            "vec_memory must declare the cosine metric, got: {sql}"
+        );
+
+        let columns: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM pragma_table_info('vec_memory')")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert!(
+            columns.contains(&"id".to_string()),
+            "vec_memory must expose the `id` column"
+        );
+        assert!(
+            columns.contains(&"embedding".to_string()),
+            "vec_memory must expose the `embedding` column"
+        );
+    }
+
+    /// 3.3 — `vec0` rejects a vector whose dimension differs from the one the
+    /// table declares, so embedding-dimension drift is impossible structurally.
+    #[tokio::test]
+    async fn test_vec0_rejects_wrong_dimension_vector() {
+        let pool = setup().await;
+
+        let err = sqlx::query("INSERT INTO vec_memory (id, embedding) VALUES ('x', vec_f32(?1))")
+            .bind("[1.0, 2.0]")
+            .execute(&pool)
+            .await
+            .unwrap_err();
+
+        let message = err.to_string();
+        assert!(
+            message.to_lowercase().contains("dimension"),
+            "vec0 must reject a vector of the wrong dimension, got: {message}"
         );
     }
 }

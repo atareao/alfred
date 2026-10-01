@@ -145,12 +145,19 @@ mod tests {
 
     // ─── Mock embedding provider ─────────────────────────────────────────
 
+    /// Pad a leading slice to the 1024 dimensions the `vec0` table declares.
+    fn v1024(leading: &[f32]) -> Vec<f32> {
+        let mut v = leading.to_vec();
+        v.resize(1024, 0.0);
+        v
+    }
+
     struct MockEmbedProvider;
 
     #[async_trait]
     impl EmbeddingProvider for MockEmbedProvider {
         async fn embed(&self, _input: &str) -> Result<Vec<f32>, EmbeddingError> {
-            Ok(vec![0.1, 0.2, 0.3])
+            Ok(v1024(&[0.1, 0.2, 0.3]))
         }
     }
 
@@ -244,9 +251,13 @@ mod tests {
     }
 
     /// Insert an embedding row directly into `vec_memory` for tests.
+    ///
+    /// CHANGED ON PURPOSE (invariant exception 2): stored through
+    /// `vec_f32(?)` with the declared 1024 dimensions, instead of raw JSON text
+    /// in the old regular table.
     async fn insert_embedding(pool: &SqlitePool, id: &str, embedding: &[f32]) {
         let json = serde_json::to_string(embedding).expect("failed to serialize embedding");
-        sqlx::query("INSERT INTO vec_memory (id, embedding) VALUES (?1, ?2)")
+        sqlx::query("INSERT INTO vec_memory (id, embedding) VALUES (?1, vec_f32(?2))")
             .bind(id)
             .bind(&json)
             .execute(pool)
@@ -265,7 +276,7 @@ mod tests {
             .expect("create memory should succeed");
 
         // Embedding matches the mock provider's output dimension (3).
-        insert_embedding(&pool, &mem.id, &[0.1, 0.2, 0.3]).await;
+        insert_embedding(&pool, &mem.id, &v1024(&[0.1, 0.2, 0.3])).await;
 
         let builder = ContextBuilder {
             pool: Some(pool),
@@ -318,7 +329,7 @@ mod tests {
             .expect("create memory should succeed");
 
         // Embedding matches the mock provider's output dimension (3).
-        insert_embedding(&pool, &mem.id, &[0.1, 0.2, 0.3]).await;
+        insert_embedding(&pool, &mem.id, &v1024(&[0.1, 0.2, 0.3])).await;
 
         ContextBuilder {
             pool: Some(pool),
