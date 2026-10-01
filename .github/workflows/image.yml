@@ -60,8 +60,31 @@ jobs:
             if [ "${http_code}" = "200" ] \
               && printf '%s' "${body}" | jq -e --arg v "${expected_version}" \
                    '.status == "ok" and .db == "connected" and .version == $v' > /dev/null 2>&1; then
-              echo "Smoke test passed: status ok, db connected, version ${expected_version}"
-              exit 0
+              echo "Initial health check passed; verifying the container survives past the drain budget..."
+
+              # The drain budget is 5s (SHUTDOWN_DRAIN_TIMEOUT in src/main.rs), so a
+              # 10s wait gives a comfortable margin: a server whose drain clock
+              # wrongly runs during normal service dies well before this sleep ends.
+              sleep 10
+
+              # Two independent checks after the wait: the container must still be
+              # running, and the endpoint must still answer with the same contract.
+              running="$(docker inspect -f '{{.State.Running}}' valet-ci 2>/dev/null || true)"
+              http_code="$(curl -s -o /tmp/valet-health.json -w '%{http_code}' http://127.0.0.1:3000/api/health || true)"
+              body="$(cat /tmp/valet-health.json 2>/dev/null || true)"
+              echo "Survival check: running=${running} HTTP ${http_code} - ${body}"
+
+              if [ "${running}" = "true" ] \
+                && [ "${http_code}" = "200" ] \
+                && printf '%s' "${body}" | jq -e --arg v "${expected_version}" \
+                     '.status == "ok" and .db == "connected" and .version == $v' > /dev/null 2>&1; then
+                echo "Smoke test passed: container survived past the drain budget, status ok, db connected, version ${expected_version}"
+                exit 0
+              fi
+
+              echo "::error::The container self-terminated after startup: it did not survive the shutdown drain budget (the drain clock must not run while the server is serving normally)"
+              docker logs valet-ci || true
+              exit 1
             fi
             sleep 2
           done
