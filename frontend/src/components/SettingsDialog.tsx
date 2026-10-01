@@ -6,7 +6,7 @@ import {
   Input,
   InputNumber,
   Button,
-  message,
+  App as AntdApp,
   Space,
   Spin,
 } from "antd";
@@ -56,6 +56,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
   visible,
   onClose,
 }) => {
+  const { message: messageApi } = AntdApp.useApp();
   const { profile, updateProfile } = useProfileContext();
   const {
     settings,
@@ -107,10 +108,10 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
         name: values.name,
         avatar_url: (values.avatar_url ?? "").trim(),
       });
-      message.success("Perfil actualizado");
+      messageApi.success("Perfil actualizado");
       onClose();
     } catch {
-      message.error("Error al actualizar perfil");
+      messageApi.error("Error al actualizar perfil");
     } finally {
       setProfileSaving(false);
     }
@@ -137,10 +138,10 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
         google_places_api_key: values.google_places_api_key ?? settings?.google_places_api_key ?? "",
         brave_search_api_key: values.brave_search_api_key ?? settings?.brave_search_api_key ?? "",
       });
-      message.success("Ajustes guardados");
+      messageApi.success("Ajustes guardados");
       onClose();
     } catch {
-      message.error("Error al guardar ajustes");
+      messageApi.error("Error al guardar ajustes");
     }
   };
 
@@ -156,9 +157,9 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
         google_places_api_key: "",
         brave_search_api_key: "",
       });
-      message.success("Valores por defecto restaurados");
+      messageApi.success("Valores por defecto restaurados");
     } catch {
-      message.error("Error al restaurar valores");
+      messageApi.error("Error al restaurar valores");
     } finally {
       setResetting(false);
     }

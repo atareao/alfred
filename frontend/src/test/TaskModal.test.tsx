@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { App as AntdApp } from "antd";
-import dayjs from "dayjs";
 
 // ---------------------------------------------------------------------------
 // Ant Design matchMedia mock (jsdom does not implement window.matchMedia).
@@ -29,14 +28,14 @@ const { mockCreate, mockUpdate } = vi.hoisted(() => ({
   mockUpdate: vi.fn(),
 }));
 
-vi.mock("../hooks/useEvents", () => ({
-  useCreateEvent: vi.fn(() => ({ create: mockCreate, loading: false })),
-  useUpdateEvent: vi.fn(() => ({ update: mockUpdate, loading: false })),
+vi.mock("../hooks/useTasks", () => ({
+  useCreateTask: vi.fn(() => ({ create: mockCreate, loading: false })),
+  useUpdateTask: vi.fn(() => ({ update: mockUpdate, loading: false })),
 }));
 
-import { EventModal } from "../components/EventModal";
+import { TaskModal } from "../components/TaskModal";
 
-describe("EventModal", () => {
+describe("TaskModal", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -51,20 +50,44 @@ describe("EventModal", () => {
 
     render(
       <AntdApp>
-        <EventModal
+        <TaskModal
           open
-          event={null}
-          defaultDate={dayjs()}
+          task={null}
+          defaultStatus="inbox"
           onClose={vi.fn()}
           onSaved={vi.fn()}
         />
       </AntdApp>,
     );
 
-    await user.type(screen.getByLabelText("Title"), "Reunión");
+    await user.type(screen.getByLabelText("Content"), "Una tarea");
     await user.click(screen.getByRole("button", { name: "OK" }));
 
     // El aviso de error sale por el contexto de antd.
     expect(await screen.findByText("boom")).toBeInTheDocument();
+  });
+
+  it("avisa el éxito por el contexto al crear una tarea", async () => {
+    const user = userEvent.setup();
+    const onSaved = vi.fn();
+    mockCreate.mockResolvedValue({});
+
+    render(
+      <AntdApp>
+        <TaskModal
+          open
+          task={null}
+          defaultStatus="inbox"
+          onClose={vi.fn()}
+          onSaved={onSaved}
+        />
+      </AntdApp>,
+    );
+
+    await user.type(screen.getByLabelText("Content"), "Una tarea");
+    await user.click(screen.getByRole("button", { name: "OK" }));
+
+    expect(await screen.findByText("Task created")).toBeInTheDocument();
+    expect(onSaved).toHaveBeenCalled();
   });
 });

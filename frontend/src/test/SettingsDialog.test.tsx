@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, within, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { message } from "antd";
+import { App as AntdApp } from "antd";
+import type { ReactElement, ReactNode } from "react";
 
 // ---------------------------------------------------------------------------
 // Ant Design matchMedia mock
@@ -62,33 +63,33 @@ vi.mock("../hooks/useSettings", () => ({
 import { SettingsDialog } from "../components/SettingsDialog";
 import { ProfileProvider } from "../contexts/ProfileProvider";
 
-// El retorno de `message.success` es un `MessageType` (callable), así que un
-// único `as` basta: el literal no es asignable a `MessageType` sin él.
-const noopMessage = (() => {}) as ReturnType<typeof message.success>;
+// antd `App.useApp()` exige un `<App>` ancestro. Sin él el contexto por defecto
+// son objetos vacíos: `messageApi.success` sería `undefined` y lanzaría un
+// TypeError (fallo ruidoso, no un fallback silencioso a la API estática).
+// Todo montaje va envuelto para ejercitar el camino contextual.
+const AppWrapper = ({ children }: { children: ReactNode }) => (
+  <AntdApp>{children}</AntdApp>
+);
+
+const renderDialog = (ui: ReactElement) => render(ui, { wrapper: AppWrapper });
 
 describe("SettingsDialog", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    // El `message` estático de antd programa un setTimeout de 3 s por aviso que
-    // sobrevive al desmontaje de jsdom: en CI provoca
-    // "ReferenceError: window is not defined" con todos los tests en verde.
-    // Neutralizarlo evita crear el aviso (y por tanto el temporizador).
-    vi.spyOn(message, "success").mockImplementation(() => noopMessage);
-    vi.spyOn(message, "error").mockImplementation(() => noopMessage);
   });
 
   it("is not visible when visible=false", () => {
-    render(<ProfileProvider><SettingsDialog visible={false} onClose={vi.fn()} /></ProfileProvider>);
+    renderDialog(<ProfileProvider><SettingsDialog visible={false} onClose={vi.fn()} /></ProfileProvider>);
     expect(screen.queryByText("⚙️ Settings")).not.toBeInTheDocument();
   });
 
   it("renders modal with correct title when visible", () => {
-    render(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
     expect(screen.getByText("⚙️ Settings")).toBeInTheDocument();
   });
 
   it("renders Perfil tab by default with name and avatar fields", () => {
-    render(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
     expect(screen.getByText("Perfil")).toBeInTheDocument();
     expect(screen.getByLabelText("Nombre")).toBeInTheDocument();
     expect(screen.getByLabelText("Avatar URL")).toBeInTheDocument();
@@ -97,7 +98,7 @@ describe("SettingsDialog", () => {
   it("saves profile when submitting Perfil tab", async () => {
     const user = userEvent.setup();
     mockUpdateProfile.mockResolvedValue(undefined);
-    render(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
     const nameInput = screen.getByLabelText("Nombre");
     await user.clear(nameInput);
@@ -110,23 +111,27 @@ describe("SettingsDialog", () => {
         expect.objectContaining({ name: "Juan" }),
       );
     });
+
+    // REFACTOR (tarea 2.3): el aviso se asevera sobre el DOM — `<App>` lo
+    // renderiza dentro del contenedor de RTL.
+    expect(await screen.findByText("Perfil actualizado")).toBeInTheDocument();
   });
 
   it("shows error message when profile save fails", async () => {
     const user = userEvent.setup();
     mockUpdateProfile.mockRejectedValue(new Error("fail"));
-    render(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
     await user.click(screen.getByRole("button", { name: /guardar/i }));
 
     await waitFor(() => {
-      expect(message.error).toHaveBeenCalledWith("Error al actualizar perfil");
+      expect(screen.getByText("Error al actualizar perfil")).toBeInTheDocument();
     });
   });
 
   it("renders Interfaz tab with font size, context window, and page size", async () => {
     const user = userEvent.setup();
-    render(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
     // Click on Interfaz tab
     await user.click(screen.getByText("Interfaz"));
@@ -138,7 +143,7 @@ describe("SettingsDialog", () => {
 
   it("renders Prompts tab with System, Archivist and Collapse sub-tabs", async () => {
     const user = userEvent.setup();
-    render(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
     await user.click(screen.getByText("Prompts"));
 
@@ -149,7 +154,7 @@ describe("SettingsDialog", () => {
 
   it("shows system_prompt when opening the System sub-tab", async () => {
     const user = userEvent.setup();
-    render(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
     await user.click(screen.getByText("Prompts"));
     await user.click(screen.getByText("System"));
@@ -159,7 +164,7 @@ describe("SettingsDialog", () => {
 
   it("shows archivist_prompt when opening the Archivist sub-tab", async () => {
     const user = userEvent.setup();
-    render(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
     await user.click(screen.getByText("Prompts"));
     await user.click(screen.getByText("Archivist"));
@@ -171,7 +176,7 @@ describe("SettingsDialog", () => {
 
   it("shows collapse_prompt when opening the Collapse sub-tab", async () => {
     const user = userEvent.setup();
-    render(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
     await user.click(screen.getByText("Prompts"));
     await user.click(screen.getByText("Collapse"));
@@ -184,7 +189,7 @@ describe("SettingsDialog", () => {
   it("saves the three prompts together via updateSettings", async () => {
     const user = userEvent.setup();
     mockUpdateSettings.mockResolvedValue(undefined);
-    render(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
     await user.click(screen.getByText("Prompts"));
 
@@ -212,12 +217,14 @@ describe("SettingsDialog", () => {
         }),
       );
     });
+
+    expect(await screen.findByText("Ajustes guardados")).toBeInTheDocument();
   });
 
   it("keeps the loaded prompts when saving from the Interfaz tab", async () => {
     const user = userEvent.setup();
     mockUpdateSettings.mockResolvedValue(undefined);
-    render(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
     await user.click(screen.getByText("Interfaz"));
 
@@ -243,7 +250,7 @@ describe("SettingsDialog", () => {
   it("keeps interface settings when saving from the Prompts tab", async () => {
     const user = userEvent.setup();
     mockUpdateSettings.mockResolvedValue(undefined);
-    render(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
     await user.click(screen.getByText("Prompts"));
 
@@ -268,7 +275,7 @@ describe("SettingsDialog", () => {
   it("editing only the Archivist prompt keeps the other prompts unchanged", async () => {
     const user = userEvent.setup();
     mockUpdateSettings.mockResolvedValue(undefined);
-    render(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
     await user.click(screen.getByText("Prompts"));
     await user.click(screen.getByText("Archivist"));
@@ -293,7 +300,7 @@ describe("SettingsDialog", () => {
 
   it("renders API Keys tab with three password fields", async () => {
     const user = userEvent.setup();
-    render(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
     await user.click(screen.getByText("API Keys"));
 
@@ -305,7 +312,7 @@ describe("SettingsDialog", () => {
   it("calls resetToDefaults when clicking restore button", async () => {
     const user = userEvent.setup();
     mockResetToDefaults.mockResolvedValue(undefined);
-    render(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
     await user.click(screen.getByText("Interfaz"));
 
@@ -314,11 +321,47 @@ describe("SettingsDialog", () => {
     await waitFor(() => {
       expect(mockResetToDefaults).toHaveBeenCalled();
     });
+
+    expect(
+      await screen.findByText("Valores por defecto restaurados"),
+    ).toBeInTheDocument();
+  });
+
+  it("shows error message when settings save fails", async () => {
+    const user = userEvent.setup();
+    mockUpdateSettings.mockRejectedValue(new Error("boom"));
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByText("Interfaz"));
+
+    await user.click(screen.getByRole("button", { name: /guardar/i }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("Error al guardar ajustes"),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it("shows error message when resetToDefaults fails", async () => {
+    const user = userEvent.setup();
+    mockResetToDefaults.mockRejectedValue(new Error("boom"));
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByText("Interfaz"));
+
+    await user.click(screen.getByRole("button", { name: /restaurar/i }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("Error al restaurar valores"),
+      ).toBeInTheDocument();
+    });
   });
 
   it("calls onClose when modal is cancelled", async () => {
     const onClose = vi.fn();
-    render(<ProfileProvider><SettingsDialog visible={true} onClose={onClose} /></ProfileProvider>);
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={onClose} /></ProfileProvider>);
 
     // For antd Modal, the close button has aria-label "Close"
     const closeButton = screen.getByLabelText("Close");
@@ -336,7 +379,7 @@ describe("SettingsDialog", () => {
   it("muestra error de validación y NO guarda con un esquema no permitido", async () => {
     const user = userEvent.setup();
     mockUpdateProfile.mockResolvedValue(undefined);
-    render(
+    renderDialog(
       <ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>,
     );
 
@@ -357,7 +400,7 @@ describe("SettingsDialog", () => {
   it("guarda una URL https válida sin error de validación", async () => {
     const user = userEvent.setup();
     mockUpdateProfile.mockResolvedValue(undefined);
-    render(
+    renderDialog(
       <ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>,
     );
 
@@ -378,7 +421,7 @@ describe("SettingsDialog", () => {
   it("acepta Avatar URL vacío y guarda sin error de validación", async () => {
     const user = userEvent.setup();
     mockUpdateProfile.mockResolvedValue(undefined);
-    render(
+    renderDialog(
       <ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>,
     );
 
@@ -396,7 +439,7 @@ describe("SettingsDialog", () => {
   it("acepta una ruta relativa en Avatar URL y la guarda", async () => {
     const user = userEvent.setup();
     mockUpdateProfile.mockResolvedValue(undefined);
-    render(
+    renderDialog(
       <ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>,
     );
 
@@ -417,7 +460,7 @@ describe("SettingsDialog", () => {
   it("persiste el Avatar URL recortado de espacios", async () => {
     const user = userEvent.setup();
     mockUpdateProfile.mockResolvedValue(undefined);
-    render(
+    renderDialog(
       <ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>,
     );
 
@@ -437,7 +480,7 @@ describe("SettingsDialog", () => {
   it("rechaza una URL relativa al protocolo", async () => {
     const user = userEvent.setup();
     mockUpdateProfile.mockResolvedValue(undefined);
-    render(
+    renderDialog(
       <ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>,
     );
 
@@ -458,7 +501,7 @@ describe("SettingsDialog", () => {
   it("rechaza un valor con un tabulador embebido", async () => {
     const user = userEvent.setup();
     mockUpdateProfile.mockResolvedValue(undefined);
-    render(
+    renderDialog(
       <ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>,
     );
 
@@ -484,7 +527,7 @@ describe("SettingsDialog", () => {
   ])("rechaza el esquema/valor no permitido %s", async (value) => {
     const user = userEvent.setup();
     mockUpdateProfile.mockResolvedValue(undefined);
-    render(
+    renderDialog(
       <ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>,
     );
 
