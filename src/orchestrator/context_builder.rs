@@ -283,4 +283,140 @@ mod tests {
             "rag_memories should contain the formatted `[tags] content` memory"
         );
     }
+
+    // ─── Characterization: the strategy governs memory (task 1.2) ──────────
+    //
+    // These tests pin down CURRENT behaviour, which the
+    // `episodic-memory-injection` change will deliberately replace: today the
+    // `ContextStrategy` decides whether episodic memory is retrieved at all.
+    // `SlidingWindow` and `Historical` hard-code `rag_memories: vec![]` inside
+    // `ContextBuilder::build`, so with an *identical* builder (same pool, same
+    // provider) and *identical* rows in `memory` + `vec_memory`, only `RAG`
+    // returns the card. The tests below prove exactly that difference.
+    //
+    // ─── The three and only exceptions to the invariant (task 1.3) ──────────
+    //
+    // These are the ONLY test assertions allowed to change on purpose:
+    //   1. `test_rag_with_pool_and_provider_returns_formatted_memories`, which
+    //      pins the `[{tags}] {content}` format.
+    //   2. Any test (here and in `db::repos::memory`) that assumes
+    //      `vec_memory.embedding` stores JSON text.
+    //   3. `test_doc_override` and `test_classify_with_doc` in
+    //      `context_classifier`, which disappear along with `!doc`.
+    // Any OTHER test that breaks when implementing the change is a regression,
+    // not an update.
+
+    /// Build a `ContextBuilder` wired with a pool + provider and seed exactly
+    /// one memory card (with tags) plus its `vec_memory` embedding row. The
+    /// same builder + state is then reused across all three strategies.
+    async fn builder_with_one_stored_memory() -> ContextBuilder {
+        let pool = setup_pool().await;
+
+        let metadata = serde_json::json!({"tags": ["rust", "backend"]});
+        let mem = MemoryRepo::create(&pool, "User likes Rust", 10, &metadata)
+            .await
+            .expect("create memory should succeed");
+
+        // Embedding matches the mock provider's output dimension (3).
+        insert_embedding(&pool, &mem.id, &[0.1, 0.2, 0.3]).await;
+
+        ContextBuilder {
+            pool: Some(pool),
+            provider: Some(Arc::new(MockEmbedProvider)),
+            rag_budget_tokens: 2000,
+        }
+    }
+
+    /// CURRENT: `SlidingWindow` never retrieves episodic memory, even though
+    /// the builder has a pool, a provider and a matching stored memory.
+    #[tokio::test]
+    async fn characterization_sliding_window_hardcodes_empty_memories() {
+        let builder = builder_with_one_stored_memory().await;
+        let ctx = builder
+            .build(
+                ContextStrategy::SlidingWindow,
+                "profile-1",
+                "what does the user like",
+            )
+            .await
+            .expect("build should succeed");
+        assert!(
+            ctx.rag_memories.is_empty(),
+            "CURRENT behaviour: SlidingWindow hard-codes rag_memories to empty \
+             even with pool, provider and a matching memory present"
+        );
+    }
+
+    /// CURRENT: `Historical` never retrieves episodic memory, same as above.
+    #[tokio::test]
+    async fn characterization_historical_hardcodes_empty_memories() {
+        let builder = builder_with_one_stored_memory().await;
+        let ctx = builder
+            .build(
+                ContextStrategy::Historical,
+                "profile-1",
+                "what does the user like",
+            )
+            .await
+            .expect("build should succeed");
+        assert!(
+            ctx.rag_memories.is_empty(),
+            "CURRENT behaviour: Historical hard-codes rag_memories to empty \
+             even with pool, provider and a matching memory present"
+        );
+    }
+
+    /// CURRENT: with the *same* builder and the *same* stored rows, only `RAG`
+    /// returns the memory. This is the invariant the change will break.
+    #[tokio::test]
+    async fn characterization_only_rag_returns_the_stored_memory() {
+        let builder = builder_with_one_stored_memory().await;
+        let ctx = builder
+            .build(
+                ContextStrategy::RAG,
+                "profile-1",
+                "what does the user like",
+            )
+            .await
+            .expect("build should succeed");
+        assert_eq!(
+            ctx.rag_memories,
+            vec!["[rust, backend] User likes Rust".to_string()],
+            "CURRENT behaviour: RAG is the only strategy that retrieves memory"
+        );
+    }
+
+    /// `BuiltContext::system_prompt` is **vestigial** in production: `agent.rs`
+    /// ignores it and reads the real prompt from `settings.system_prompt`. This
+    /// test only records the dead values so their removal is visible; it does
+    /// not assert anything about what the LLM receives.
+    #[tokio::test]
+    async fn characterization_built_context_system_prompt_is_vestigial() {
+        let builder = builder_with_one_stored_memory().await;
+
+        let sliding = builder
+            .build(ContextStrategy::SlidingWindow, "profile-1", "hi")
+            .await
+            .expect("build should succeed");
+        let historical = builder
+            .build(ContextStrategy::Historical, "profile-1", "hi")
+            .await
+            .expect("build should succeed");
+        let rag = builder
+            .build(ContextStrategy::RAG, "profile-1", "hi")
+            .await
+            .expect("build should succeed");
+
+        // NOTE: `agent.rs` never sends these strings to the LLM — it reads
+        // `settings.system_prompt` instead. Kept only to document the field.
+        assert_eq!(
+            sliding.system_prompt,
+            "You are Valet, a helpful AI assistant."
+        );
+        assert_eq!(
+            historical.system_prompt,
+            "You are Valet, analyzing historical data."
+        );
+        assert_eq!(rag.system_prompt, "You are Valet, using RAG context.");
+    }
 }

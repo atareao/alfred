@@ -1744,6 +1744,291 @@ mod tests {
         Ok(())
     }
 
+    // ─── Characterization: memory injection into the LLM request (task 1.2) ──
+    //
+    // These tests pin down CURRENT behaviour: episodic memory is injected as a
+    // `system` message prefixed with the literal `"[Memory context] "`, and it
+    // only ever appears on the `RAG` path (`!doc ...`), because only that
+    // strategy produces memories inside `ContextBuilder`. On the common
+    // `SlidingWindow` path no `[Memory context]` reaches the LLM today.
+    //
+    // The `episodic-memory-injection` change will deliberately break the
+    // SlidingWindow half of this contract (memory becomes strategy-independent)
+    // and replace the literal with a composed `<episodic_memory>` block. See
+    // the invariant exceptions documented in `context_builder`'s tests.
+
+    /// Mock LLM that captures the full message list of the *first* request.
+    struct FullRequestCaptureLLM {
+        captured: Arc<Mutex<Option<Vec<ChatMessage>>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl LLMProvider for FullRequestCaptureLLM {
+        async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, LLMError> {
+            {
+                let mut slot = self.captured.lock().unwrap();
+                if slot.is_none() {
+                    *slot = Some(request.messages.clone());
+                }
+            }
+            Ok(ChatResponse {
+                message: ChatMessage {
+                    role: "assistant".into(),
+                    content: "OK.".into(),
+                    tool_calls: None,
+                    tool_result: None,
+                    tool_call_id: None,
+                },
+                usage: None,
+            })
+        }
+
+        async fn chat_stream(
+            &self,
+            request: ChatRequest,
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, LLMError>> + Send>>, LLMError>
+        {
+            {
+                let mut slot = self.captured.lock().unwrap();
+                if slot.is_none() {
+                    *slot = Some(request.messages.clone());
+                }
+            }
+            let events: Vec<Result<StreamEvent, LLMError>> =
+                vec![Ok(StreamEvent::Done(ChatResponse {
+                    message: ChatMessage {
+                        role: "assistant".into(),
+                        content: "OK.".into(),
+                        tool_calls: None,
+                        tool_result: None,
+                        tool_call_id: None,
+                    },
+                    usage: None,
+                }))];
+            Ok(Box::pin(futures::stream::iter(events)))
+        }
+    }
+
+    /// Fixed embedding provider (dimension 3), matching the seeded vector.
+    struct FixedEmbedProvider;
+
+    #[async_trait::async_trait]
+    impl crate::embeddings::EmbeddingProvider for FixedEmbedProvider {
+        async fn embed(
+            &self,
+            _input: &str,
+        ) -> Result<Vec<f32>, crate::embeddings::provider::EmbeddingError> {
+            Ok(vec![0.1, 0.2, 0.3])
+        }
+    }
+
+    /// Seed one `memory` card plus its JSON-text `vec_memory` row.
+    async fn seed_one_memory(pool: &SqlitePool) {
+        let mem = crate::db::repos::memory::MemoryRepo::create(
+            pool,
+            "User likes Rust",
+            10,
+            &serde_json::json!({"tags": ["rust", "backend"]}),
+        )
+        .await
+        .expect("create memory should succeed");
+        let json = serde_json::to_string(&[0.1f32, 0.2, 0.3]).expect("serialize embedding");
+        sqlx::query("INSERT INTO vec_memory (id, embedding) VALUES (?1, ?2)")
+            .bind(&mem.id)
+            .bind(&json)
+            .execute(pool)
+            .await
+            .expect("insert vec_memory row");
+    }
+
+    /// Builder wired with pool + provider and one seeded memory, so the RAG
+    /// path can actually retrieve something.
+    fn memory_context_builder(pool: SqlitePool) -> ContextBuilder {
+        ContextBuilder {
+            pool: Some(pool),
+            provider: Some(Arc::new(FixedEmbedProvider)),
+            rag_budget_tokens: 2000,
+        }
+    }
+
+    /// Orchestrator with a full-request capturer and no reflection, so the
+    /// first (only) main LLM call is the one observed.
+    async fn build_orchestrator_with_full_capture(
+        pool: SqlitePool,
+        captured: Arc<Mutex<Option<Vec<ChatMessage>>>>,
+        context_builder: ContextBuilder,
+    ) -> Orchestrator {
+        let llm = Arc::new(FullRequestCaptureLLM { captured });
+        let registry = Arc::new(crate::tools::registry::ToolRegistry::new());
+        let guardrails = Arc::new(crate::orchestrator::guardrails::Guardrails::new(
+            registry.clone(),
+        ));
+        let config = OrchestratorConfig {
+            enable_reflection: false,
+            ..Default::default()
+        };
+        Orchestrator::new(
+            llm,
+            registry,
+            guardrails,
+            Arc::new(context_builder),
+            config,
+            pool,
+            None,
+            None,
+            Arc::new(RwLock::new(None)),
+        )
+    }
+
+    /// CURRENT: on the RAG path (`!doc`), the LLM request carries a `system`
+    /// message prefixed with `"[Memory context] "`.
+    #[tokio::test]
+    async fn characterization_rag_injects_memory_context_in_process_message(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+        seed_one_memory(&pool).await;
+
+        let captured: Arc<Mutex<Option<Vec<ChatMessage>>>> = Arc::new(Mutex::new(None));
+        let orchestrator = build_orchestrator_with_full_capture(
+            pool.clone(),
+            captured.clone(),
+            memory_context_builder(pool.clone()),
+        )
+        .await;
+
+        orchestrator
+            .process_message("profile-1", "!doc what does the user like")
+            .await?;
+
+        let messages = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("LLM must have been called once");
+        let injected = messages
+            .iter()
+            .filter(|m| m.role == "system" && m.content.starts_with("[Memory context] "))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            injected.len(),
+            1,
+            "CURRENT behaviour: RAG injects exactly one `[Memory context] ` system message"
+        );
+        assert!(
+            injected[0].content.contains("User likes Rust"),
+            "the injected memory should carry the stored content, got: {:?}",
+            injected[0].content
+        );
+        Ok(())
+    }
+
+    /// CURRENT: the same holds for the streaming path (`process_message_stream`).
+    #[tokio::test]
+    async fn characterization_rag_injects_memory_context_in_stream(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+        seed_one_memory(&pool).await;
+
+        let captured: Arc<Mutex<Option<Vec<ChatMessage>>>> = Arc::new(Mutex::new(None));
+        let orchestrator = build_orchestrator_with_full_capture(
+            pool.clone(),
+            captured.clone(),
+            memory_context_builder(pool.clone()),
+        )
+        .await;
+
+        let (tx, mut rx) = mpsc::channel(100);
+        orchestrator
+            .process_message_stream("profile-1", "!doc what does the user like", None, tx)
+            .await?;
+        while rx.recv().await.is_some() {}
+
+        let messages = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("LLM must have been called once");
+        let injected = messages
+            .iter()
+            .filter(|m| m.role == "system" && m.content.starts_with("[Memory context] "))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            injected.len(),
+            1,
+            "CURRENT behaviour: streaming RAG injects one `[Memory context] ` system message"
+        );
+        assert!(injected[0].content.contains("User likes Rust"));
+        Ok(())
+    }
+
+    /// CURRENT: the common `SlidingWindow` path receives **no** memory, even
+    /// though the builder holds a pool, a provider and a matching memory.
+    /// This is exactly what the change will alter.
+    #[tokio::test]
+    async fn characterization_sliding_window_does_not_inject_memory_in_process_message(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+        seed_one_memory(&pool).await;
+
+        let captured: Arc<Mutex<Option<Vec<ChatMessage>>>> = Arc::new(Mutex::new(None));
+        let orchestrator = build_orchestrator_with_full_capture(
+            pool.clone(),
+            captured.clone(),
+            memory_context_builder(pool.clone()),
+        )
+        .await;
+
+        orchestrator.process_message("profile-1", "Hola").await?;
+
+        let messages = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("LLM must have been called once");
+        assert!(
+            !messages
+                .iter()
+                .any(|m| m.content.contains("[Memory context]")),
+            "CURRENT behaviour: SlidingWindow injects no memory (this will change)"
+        );
+        Ok(())
+    }
+
+    /// CURRENT: same for the streaming path on `SlidingWindow`.
+    #[tokio::test]
+    async fn characterization_sliding_window_does_not_inject_memory_in_stream(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+        seed_one_memory(&pool).await;
+
+        let captured: Arc<Mutex<Option<Vec<ChatMessage>>>> = Arc::new(Mutex::new(None));
+        let orchestrator = build_orchestrator_with_full_capture(
+            pool.clone(),
+            captured.clone(),
+            memory_context_builder(pool.clone()),
+        )
+        .await;
+
+        let (tx, mut rx) = mpsc::channel(100);
+        orchestrator
+            .process_message_stream("profile-1", "Hola", None, tx)
+            .await?;
+        while rx.recv().await.is_some() {}
+
+        let messages = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("LLM must have been called once");
+        assert!(
+            !messages
+                .iter()
+                .any(|m| m.content.contains("[Memory context]")),
+            "CURRENT behaviour: streaming SlidingWindow injects no memory (this will change)"
+        );
+        Ok(())
+    }
+
     #[test]
     fn test_agent_error_display_llm() {
         let err = AgentError::LLMError("rate limited".into());
