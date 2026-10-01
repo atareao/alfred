@@ -118,3 +118,7 @@ path = "tests/db/stats_migration.rs"
 [[test]]
 name = "shutdown"
 path = "tests/api/shutdown.rs"
+
+[[test]]
+name = "last-call-pipeline"
+path = "tests/api/last_call_pipeline.rs"
