@@ -204,6 +204,41 @@ pub struct BrowserContext {
 /// Maximum number of times the same tool+operation can be called in one ReAct loop.
 const MAX_TOOL_RETRIES: usize = 5;
 
+/// Title of the code-composed episodic-memory section injected as a `system`
+/// message (block 8.3). The block is composed here, never from a placeholder in
+/// the editable `settings.system_prompt` (design D2).
+const EPISODIC_MEMORY_SECTION_TITLE: &str = "# CONTEXTO DE MEMORIA EPISÓDICA (CAPA B)";
+
+/// Explicit instruction that the recovered cards are background, not the turn
+/// currently being answered. Without it the model can reply to a memory as if
+/// it were the user's current message.
+const EPISODIC_MEMORY_INSTRUCTION: &str = "Las fichas siguientes son antecedentes recuperados de conversaciones anteriores. NO forman parte del turno actual del usuario; úsalas solo como contexto para entender sus preferencias e historia.";
+
+/// Compose the episodic-memory block from the already-formatted cards, or
+/// `None` when there is nothing to inject.
+///
+/// Shared by `process_message` and `process_message_stream` so both paths emit
+/// the **identical** block (same format, same position). Returns `None` for an
+/// empty slice, so no filler text (e.g. "no hay antecedentes") is ever
+/// injected. The block is composed in code (design D2).
+fn compose_episodic_memory_block(memories: &[String]) -> Option<String> {
+    if memories.is_empty() {
+        return None;
+    }
+    let mut block = String::with_capacity(256);
+    block.push_str(EPISODIC_MEMORY_SECTION_TITLE);
+    block.push('\n');
+    block.push_str(EPISODIC_MEMORY_INSTRUCTION);
+    block.push_str("\n\n<episodic_memory>\n");
+    for memory in memories {
+        block.push_str("- ");
+        block.push_str(memory);
+        block.push('\n');
+    }
+    block.push_str("</episodic_memory>");
+    Some(block)
+}
+
 // ---------------------------------------------------------------------------
 // Orchestrator — ReAct loop
 // ---------------------------------------------------------------------------
@@ -336,11 +371,13 @@ impl Orchestrator {
             tool_call_id: None,
         });
 
-        // Inject RAG memories as context if available
-        for memory in &ctx.rag_memories {
+        // Inject the composed episodic-memory block (block 8.3–8.5). Composed in
+        // code and placed before the history below, so the recovered
+        // antecedents are never read as the current turn.
+        if let Some(block) = compose_episodic_memory_block(&ctx.rag_memories) {
             messages.push(ChatMessage {
                 role: "system".into(),
-                content: format!("[Memory context] {}", memory),
+                content: block,
                 tool_calls: None,
                 tool_result: None,
                 tool_call_id: None,
@@ -736,10 +773,12 @@ impl Orchestrator {
             tool_call_id: None,
         });
 
-        for memory in &ctx.rag_memories {
+        // Inject the composed episodic-memory block (block 8.3–8.5). Identical
+        // to `process_message` because both call `compose_episodic_memory_block`.
+        if let Some(block) = compose_episodic_memory_block(&ctx.rag_memories) {
             messages.push(ChatMessage {
                 role: "system".into(),
-                content: format!("[Memory context] {}", memory),
+                content: block,
                 tool_calls: None,
                 tool_result: None,
                 tool_call_id: None,
@@ -1744,18 +1783,210 @@ mod tests {
         Ok(())
     }
 
-    // ─── Characterization: memory injection into the LLM request (task 1.2) ──
+    // ─── Block 8: automatic memory injection into the LLM request ───────────
     //
-    // These tests pin down CURRENT behaviour: episodic memory is injected as a
-    // `system` message prefixed with the literal `"[Memory context] "`, and it
-    // only ever appears on the `RAG` path (`!doc ...`), because only that
-    // strategy produces memories inside `ContextBuilder`. On the common
-    // `SlidingWindow` path no `[Memory context]` reaches the LLM today.
+    // The block-1 characterization tests pinned the OLD behaviour: memory was
+    // injected as a `system` message prefixed with the literal
+    // `"[Memory context] "` and ONLY on the `RAG` path (`!doc ...`). Block 8
+    // deliberately breaks both halves of that contract:
+    //   * memory is now retrieved for every strategy (block 8.6), so the
+    //     `SlidingWindow` path (`Hola`, no override) receives memory too, and
+    //   * the literal is replaced by a code-composed `<episodic_memory>` block
+    //     inside `# CONTEXTO DE MEMORIA EPISÓDICA (CAPA B)` (blocks 8.3–8.5).
     //
-    // The `episodic-memory-injection` change will deliberately break the
-    // SlidingWindow half of this contract (memory becomes strategy-independent)
-    // and replace the literal with a composed `<episodic_memory>` block. See
-    // the invariant exceptions documented in `context_builder`'s tests.
+    // The four obsolete tests (`characterization_rag_injects_memory_context_in_*`
+    // and `characterization_sliding_window_does_not_inject_memory_in_*`) were
+    // replaced by the tests below: their assertions (`[Memory context]` prefix
+    // present on RAG / memory absent on SlidingWindow) are exactly what this
+    // block changes, so they are obsolete by construction.
+
+    /// Extract the episodic-memory block (`system` message carrying the
+    /// `<episodic_memory>` tags) from a captured request, if any.
+    fn extract_episodic_block(messages: &[ChatMessage]) -> Option<String> {
+        messages
+            .iter()
+            .find(|m| m.role == "system" && m.content.contains("<episodic_memory>"))
+            .map(|m| m.content.clone())
+    }
+
+    /// 8.3/8.4 — in `process_message`, the injected block carries the section
+    /// title, the `<episodic_memory>` tags, the "these are antecedents, not the
+    /// current turn" instruction and the card content; the old `[Memory
+    /// context]` literal is gone. Uses the `RAG` path (`!doc`) to prove it
+    /// still works there.
+    #[tokio::test]
+    async fn injects_episodic_memory_block_in_process_message(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+        seed_one_memory(&pool).await;
+
+        let captured: Arc<Mutex<Option<Vec<ChatMessage>>>> = Arc::new(Mutex::new(None));
+        let orchestrator = build_orchestrator_with_full_capture(
+            pool.clone(),
+            captured.clone(),
+            memory_context_builder(pool.clone()),
+        )
+        .await;
+
+        orchestrator
+            .process_message("profile-1", "!doc what does the user like")
+            .await?;
+
+        let messages = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("LLM must have been called once");
+        let block = extract_episodic_block(&messages).expect("episodic block must be injected");
+        assert!(
+            block.contains("# CONTEXTO DE MEMORIA EPISÓDICA (CAPA B)"),
+            "block must carry the section title, got {block:?}"
+        );
+        assert!(block.contains("<episodic_memory>"));
+        assert!(block.contains("</episodic_memory>"));
+        assert!(
+            block.contains("NO forman parte del turno actual"),
+            "block must instruct that the cards are antecedents, got {block:?}"
+        );
+        assert!(block.contains("User likes Rust"));
+        assert!(
+            !messages
+                .iter()
+                .any(|m| m.content.contains("[Memory context]")),
+            "the old `[Memory context]` literal must be gone (8.4)"
+        );
+        Ok(())
+    }
+
+    /// 8.4 — the same holds for the streaming path, and it must be the SAME
+    /// block (identical format) as `process_message` produces.
+    #[tokio::test]
+    async fn injects_episodic_memory_block_in_stream() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+        seed_one_memory(&pool).await;
+
+        let captured: Arc<Mutex<Option<Vec<ChatMessage>>>> = Arc::new(Mutex::new(None));
+        let orchestrator = build_orchestrator_with_full_capture(
+            pool.clone(),
+            captured.clone(),
+            memory_context_builder(pool.clone()),
+        )
+        .await;
+
+        let (tx, mut rx) = mpsc::channel(100);
+        orchestrator
+            .process_message_stream("profile-1", "!doc what does the user like", None, tx)
+            .await?;
+        while rx.recv().await.is_some() {}
+
+        let messages = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("LLM must have been called once");
+        let block = extract_episodic_block(&messages).expect("episodic block must be injected");
+        assert!(block.contains("# CONTEXTO DE MEMORIA EPISÓDICA (CAPA B)"));
+        assert!(block.contains("<episodic_memory>"));
+        assert!(block.contains("</episodic_memory>"));
+        assert!(block.contains("User likes Rust"));
+        assert!(
+            !messages
+                .iter()
+                .any(|m| m.content.contains("[Memory context]")),
+            "the old `[Memory context]` literal must be gone (8.4)"
+        );
+        Ok(())
+    }
+
+    /// 8.4 — both entry points compose the block identically, because they
+    /// share `compose_episodic_memory_block` (same format, same position).
+    #[tokio::test]
+    async fn episodic_memory_block_is_identical_in_both_paths(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+        seed_one_memory(&pool).await;
+
+        let captured_sync: Arc<Mutex<Option<Vec<ChatMessage>>>> = Arc::new(Mutex::new(None));
+        let sync_orchestrator = build_orchestrator_with_full_capture(
+            pool.clone(),
+            captured_sync.clone(),
+            memory_context_builder(pool.clone()),
+        )
+        .await;
+        sync_orchestrator
+            .process_message("profile-1", "Hola")
+            .await?;
+
+        let captured_stream: Arc<Mutex<Option<Vec<ChatMessage>>>> = Arc::new(Mutex::new(None));
+        let stream_orchestrator = build_orchestrator_with_full_capture(
+            pool.clone(),
+            captured_stream.clone(),
+            memory_context_builder(pool.clone()),
+        )
+        .await;
+        let (tx, mut rx) = mpsc::channel(100);
+        stream_orchestrator
+            .process_message_stream("profile-1", "Hola", None, tx)
+            .await?;
+        while rx.recv().await.is_some() {}
+
+        let sync_msgs = captured_sync.lock().unwrap().clone().unwrap();
+        let stream_msgs = captured_stream.lock().unwrap().clone().unwrap();
+        let sync_block = extract_episodic_block(&sync_msgs).expect("sync block");
+        let stream_block = extract_episodic_block(&stream_msgs).expect("stream block");
+        assert_eq!(
+            sync_block, stream_block,
+            "process_message and process_message_stream must compose the identical block"
+        );
+        Ok(())
+    }
+
+    /// 8.5 — the `<episodic_memory>` block appears BEFORE the first message of
+    /// the conversation history, so the reminder is never read as the current
+    /// turn. Plain `Hola` (`SlidingWindow`, no override) also proves that the
+    /// common path receives memory.
+    #[tokio::test]
+    async fn episodic_memory_block_precedes_history() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+        seed_one_memory(&pool).await;
+        // A previous turn, loaded into the request by `list_by_token_budget`.
+        crate::db::repos::messages::MessagesRepo::create(
+            &pool,
+            "user",
+            "previous turn",
+            None,
+            None,
+            None,
+            None,
+            100_000,
+            None,
+        )
+        .await?;
+
+        let captured: Arc<Mutex<Option<Vec<ChatMessage>>>> = Arc::new(Mutex::new(None));
+        let orchestrator = build_orchestrator_with_full_capture(
+            pool.clone(),
+            captured.clone(),
+            memory_context_builder(pool.clone()),
+        )
+        .await;
+        orchestrator.process_message("profile-1", "Hola").await?;
+
+        let messages = captured.lock().unwrap().clone().unwrap();
+        let block_idx = messages
+            .iter()
+            .position(|m| m.content.contains("<episodic_memory>"))
+            .expect("episodic block must be present");
+        let history_idx = messages
+            .iter()
+            .position(|m| m.content == "previous turn")
+            .expect("conversation history must be present");
+        assert!(
+            block_idx < history_idx,
+            "the episodic block (idx {block_idx}) must precede the history (idx {history_idx})"
+        );
+        Ok(())
+    }
 
     /// Mock LLM that captures the full message list of the *first* request.
     struct FullRequestCaptureLLM {
@@ -1891,155 +2122,6 @@ mod tests {
             None,
             Arc::new(RwLock::new(None)),
         )
-    }
-
-    /// CURRENT: on the RAG path (`!doc`), the LLM request carries a `system`
-    /// message prefixed with `"[Memory context] "`.
-    #[tokio::test]
-    async fn characterization_rag_injects_memory_context_in_process_message(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let pool = setup_test_db().await;
-        seed_one_memory(&pool).await;
-
-        let captured: Arc<Mutex<Option<Vec<ChatMessage>>>> = Arc::new(Mutex::new(None));
-        let orchestrator = build_orchestrator_with_full_capture(
-            pool.clone(),
-            captured.clone(),
-            memory_context_builder(pool.clone()),
-        )
-        .await;
-
-        orchestrator
-            .process_message("profile-1", "!doc what does the user like")
-            .await?;
-
-        let messages = captured
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("LLM must have been called once");
-        let injected = messages
-            .iter()
-            .filter(|m| m.role == "system" && m.content.starts_with("[Memory context] "))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            injected.len(),
-            1,
-            "CURRENT behaviour: RAG injects exactly one `[Memory context] ` system message"
-        );
-        assert!(
-            injected[0].content.contains("User likes Rust"),
-            "the injected memory should carry the stored content, got: {:?}",
-            injected[0].content
-        );
-        Ok(())
-    }
-
-    /// CURRENT: the same holds for the streaming path (`process_message_stream`).
-    #[tokio::test]
-    async fn characterization_rag_injects_memory_context_in_stream(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let pool = setup_test_db().await;
-        seed_one_memory(&pool).await;
-
-        let captured: Arc<Mutex<Option<Vec<ChatMessage>>>> = Arc::new(Mutex::new(None));
-        let orchestrator = build_orchestrator_with_full_capture(
-            pool.clone(),
-            captured.clone(),
-            memory_context_builder(pool.clone()),
-        )
-        .await;
-
-        let (tx, mut rx) = mpsc::channel(100);
-        orchestrator
-            .process_message_stream("profile-1", "!doc what does the user like", None, tx)
-            .await?;
-        while rx.recv().await.is_some() {}
-
-        let messages = captured
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("LLM must have been called once");
-        let injected = messages
-            .iter()
-            .filter(|m| m.role == "system" && m.content.starts_with("[Memory context] "))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            injected.len(),
-            1,
-            "CURRENT behaviour: streaming RAG injects one `[Memory context] ` system message"
-        );
-        assert!(injected[0].content.contains("User likes Rust"));
-        Ok(())
-    }
-
-    /// CURRENT: the common `SlidingWindow` path receives **no** memory, even
-    /// though the builder holds a pool, a provider and a matching memory.
-    /// This is exactly what the change will alter.
-    #[tokio::test]
-    async fn characterization_sliding_window_does_not_inject_memory_in_process_message(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let pool = setup_test_db().await;
-        seed_one_memory(&pool).await;
-
-        let captured: Arc<Mutex<Option<Vec<ChatMessage>>>> = Arc::new(Mutex::new(None));
-        let orchestrator = build_orchestrator_with_full_capture(
-            pool.clone(),
-            captured.clone(),
-            memory_context_builder(pool.clone()),
-        )
-        .await;
-
-        orchestrator.process_message("profile-1", "Hola").await?;
-
-        let messages = captured
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("LLM must have been called once");
-        assert!(
-            !messages
-                .iter()
-                .any(|m| m.content.contains("[Memory context]")),
-            "CURRENT behaviour: SlidingWindow injects no memory (this will change)"
-        );
-        Ok(())
-    }
-
-    /// CURRENT: same for the streaming path on `SlidingWindow`.
-    #[tokio::test]
-    async fn characterization_sliding_window_does_not_inject_memory_in_stream(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let pool = setup_test_db().await;
-        seed_one_memory(&pool).await;
-
-        let captured: Arc<Mutex<Option<Vec<ChatMessage>>>> = Arc::new(Mutex::new(None));
-        let orchestrator = build_orchestrator_with_full_capture(
-            pool.clone(),
-            captured.clone(),
-            memory_context_builder(pool.clone()),
-        )
-        .await;
-
-        let (tx, mut rx) = mpsc::channel(100);
-        orchestrator
-            .process_message_stream("profile-1", "Hola", None, tx)
-            .await?;
-        while rx.recv().await.is_some() {}
-
-        let messages = captured
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("LLM must have been called once");
-        assert!(
-            !messages
-                .iter()
-                .any(|m| m.content.contains("[Memory context]")),
-            "CURRENT behaviour: streaming SlidingWindow injects no memory (this will change)"
-        );
-        Ok(())
     }
 
     #[test]

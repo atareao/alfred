@@ -51,32 +51,36 @@ impl ContextBuilder {
         _profile_id: &str,
         user_message: &str,
     ) -> Result<BuiltContext, ContextError> {
+        // Episodic memory is retrieved for **every** message, independently of
+        // the context strategy (spec «La estrategia de contexto SHALL NOT
+        // gobernar la memoria episódica»). The strategy only shapes the system
+        // prompt and the token estimate now; it no longer enables or disables
+        // retrieval.
+        let rag_memories = self.build_rag_memories(user_message).await;
+        let memory_len: usize = rag_memories.iter().map(|m| m.len()).sum();
+
         match strategy {
             ContextStrategy::SlidingWindow => Ok(BuiltContext {
                 system_prompt: "You are Valet, a helpful AI assistant.".into(),
                 messages: vec![],
-                token_estimate: 500,
-                rag_memories: vec![],
+                token_estimate: 500 + memory_len,
+                rag_memories,
                 session_summary: None,
             }),
             ContextStrategy::Historical => Ok(BuiltContext {
                 system_prompt: "You are Valet, analyzing historical data.".into(),
                 messages: vec![],
-                token_estimate: 5000,
-                rag_memories: vec![],
+                token_estimate: 5000 + memory_len,
+                rag_memories,
                 session_summary: None,
             }),
-            ContextStrategy::RAG => {
-                let rag_memories = self.build_rag_memories(user_message).await;
-                let token_estimate = rag_memories.iter().map(|m| m.len()).sum::<usize>() + 500;
-                Ok(BuiltContext {
-                    system_prompt: "You are Valet, using RAG context.".into(),
-                    messages: vec![],
-                    token_estimate,
-                    rag_memories,
-                    session_summary: None,
-                })
-            }
+            ContextStrategy::RAG => Ok(BuiltContext {
+                system_prompt: "You are Valet, using RAG context.".into(),
+                messages: vec![],
+                token_estimate: 500 + memory_len,
+                rag_memories,
+                session_summary: None,
+            }),
         }
     }
 
@@ -143,20 +147,17 @@ async fn read_rag_budget_tokens(pool: &SqlitePool) -> Option<usize> {
         .and_then(|v| v.trim().parse::<usize>().ok())
 }
 
-/// Format a `Memory` card into the `[{tags}] {content}` display string.
+/// Format a `Memory` card for the injected block (design D8, task 8.1).
+///
+/// Carries the card's temporal anchor (`created_at`) so the model can tell a
+/// recent antecedent from an old one — that is the information the card really
+/// needs. Deliberately omits the old `[{tags}]` prefix: `EpisodicMemoryWorker`
+/// never writes a `tags` key into `metadata` (production: 7 cards, 0 with
+/// `tags`), so that prefix always rendered as a constant empty `[]` that cost
+/// tokens without informing anything. See the spec requirement «El formato de
+/// ficha SHALL NOT depender de metadata ausente».
 fn format_memory(m: &Memory) -> String {
-    let tags = m
-        .metadata
-        .get("tags")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        })
-        .unwrap_or_default();
-    format!("[{tags}] {}", m.content)
+    format!("[{}] {}", m.created_at, m.content)
 }
 
 #[cfg(test)]
@@ -300,11 +301,52 @@ mod tests {
             .expect("failed to insert vec_memory row");
     }
 
+    /// 8.1 — a card with no `tags` in `metadata` must not render empty `[]`
+    /// brackets. Instead it carries its temporal anchor (`created_at`), which is
+    /// the information the model actually needs to place the antecedent in time.
+    #[test]
+    fn format_memory_omits_tags_and_anchors_created_at() {
+        let m = Memory {
+            id: "m1".into(),
+            content: "User likes Rust".into(),
+            tokens_count: 10,
+            created_at: "2026-09-29T10:00:00+00:00".into(),
+            metadata: serde_json::json!({
+                "source": "episodic_worker",
+                "primary_message_ids": ["a", "b"],
+            }),
+        };
+
+        let formatted = format_memory(&m);
+
+        assert!(
+            !formatted.contains("[]"),
+            "a card without `tags` must not produce empty `[]` brackets, got {formatted:?}"
+        );
+        assert!(
+            !formatted.contains("[tags]"),
+            "the `[tags]` prefix must be gone, got {formatted:?}"
+        );
+        assert!(
+            formatted.contains("User likes Rust"),
+            "the card content must be preserved, got {formatted:?}"
+        );
+        assert!(
+            formatted.contains(&m.created_at),
+            "the card must carry its temporal anchor (`created_at`), got {formatted:?}"
+        );
+    }
+
+    /// 8.2 — EXCEPTION 1 of the test invariant: the only formatting assertion
+    /// that changes on purpose. It used to pin `[{tags}] {content}`; the
+    /// `[tags]` prefix is removed (task 8.1) and replaced by the temporal
+    /// anchor, so this assertion now pins `[{created_at}] {content}`.
     #[tokio::test]
     async fn test_rag_with_pool_and_provider_returns_formatted_memories() {
         let pool = setup_pool().await;
 
-        // A real memory card with tags.
+        // A real memory card. It deliberately still carries `tags` in metadata
+        // to prove the format ignores them now.
         let metadata = serde_json::json!({"tags": ["rust", "backend"]});
         let mem = MemoryRepo::create(&pool, "User likes Rust", 10, &metadata)
             .await
@@ -324,27 +366,34 @@ mod tests {
             .expect("build should succeed with pool + provider");
 
         assert_eq!(
-            ctx.rag_memories,
-            vec!["[rust, backend] User likes Rust".to_string()],
-            "rag_memories should contain the formatted `[tags] content` memory"
+            ctx.rag_memories.len(),
+            1,
+            "exactly one stored card is retrieved"
+        );
+        assert_eq!(
+            ctx.rag_memories[0],
+            format!("[{}] User likes Rust", mem.created_at),
+            "rag_memories should contain the `[created_at] content` memory"
         );
     }
 
     // ─── Characterization: the strategy governs memory (task 1.2) ──────────
     //
-    // These tests pin down CURRENT behaviour, which the
-    // `episodic-memory-injection` change will deliberately replace: today the
-    // `ContextStrategy` decides whether episodic memory is retrieved at all.
-    // `SlidingWindow` and `Historical` hard-code `rag_memories: vec![]` inside
-    // `ContextBuilder::build`, so with an *identical* builder (same pool, same
-    // provider) and *identical* rows in `memory` + `vec_memory`, only `RAG`
-    // returns the card. The tests below prove exactly that difference.
+    // These tests used to pin down the OLD behaviour: the `ContextStrategy`
+    // decided whether episodic memory was retrieved at all. `SlidingWindow` and
+    // `Historical` hard-coded `rag_memories: vec![]`, so only `RAG` returned the
+    // card. Block 8 deliberately breaks that premise (spec «La estrategia de
+    // contexto SHALL NOT gobernar la memoria episódica»): retrieval is now
+    // orthogonal to the strategy, so the three tests below were UPDATED to
+    // assert the new contract. Their old assertions (`is_empty()` for
+    // SlidingWindow/Historical and the `[{tags}]` format for RAG) are precisely
+    // the measure of this change.
     //
     // ─── The three and only exceptions to the invariant (task 1.3) ──────────
     //
     // These are the ONLY test assertions allowed to change on purpose:
     //   1. `test_rag_with_pool_and_provider_returns_formatted_memories`, which
-    //      pins the `[{tags}] {content}` format.
+    //      pinned the `[{tags}] {content}` format (task 8.2).
     //   2. Any test (here and in `db::repos::memory`) that assumes
     //      `vec_memory.embedding` stores JSON text.
     //   3. `test_doc_override` and `test_classify_with_doc` in
@@ -373,12 +422,13 @@ mod tests {
         }
     }
 
-    /// CURRENT: `SlidingWindow` never retrieves episodic memory, even though
-    /// the builder has a pool, a provider and a matching stored memory.
+    /// 8.6 — `SlidingWindow` now retrieves episodic memory too. With a pool, a
+    /// provider and a matching stored card, the result is NOT empty and equals
+    /// what `RAG` returns for the same builder and state.
     #[tokio::test]
-    async fn characterization_sliding_window_hardcodes_empty_memories() {
+    async fn sliding_window_retrieves_the_same_memory_as_rag() {
         let builder = builder_with_one_stored_memory().await;
-        let ctx = builder
+        let sliding = builder
             .build(
                 ContextStrategy::SlidingWindow,
                 "profile-1",
@@ -386,18 +436,26 @@ mod tests {
             )
             .await
             .expect("build should succeed");
+        let rag = builder
+            .build(ContextStrategy::RAG, "profile-1", "what does the user like")
+            .await
+            .expect("build should succeed");
+
         assert!(
-            ctx.rag_memories.is_empty(),
-            "CURRENT behaviour: SlidingWindow hard-codes rag_memories to empty \
-             even with pool, provider and a matching memory present"
+            !sliding.rag_memories.is_empty(),
+            "SlidingWindow must now retrieve the stored memory"
+        );
+        assert_eq!(
+            sliding.rag_memories, rag.rag_memories,
+            "SlidingWindow and RAG must retrieve the same memory"
         );
     }
 
-    /// CURRENT: `Historical` never retrieves episodic memory, same as above.
+    /// 8.6 — `Historical` now retrieves episodic memory too, identically to RAG.
     #[tokio::test]
-    async fn characterization_historical_hardcodes_empty_memories() {
+    async fn historical_retrieves_the_same_memory_as_rag() {
         let builder = builder_with_one_stored_memory().await;
-        let ctx = builder
+        let historical = builder
             .build(
                 ContextStrategy::Historical,
                 "profile-1",
@@ -405,26 +463,67 @@ mod tests {
             )
             .await
             .expect("build should succeed");
+        let rag = builder
+            .build(ContextStrategy::RAG, "profile-1", "what does the user like")
+            .await
+            .expect("build should succeed");
+
         assert!(
-            ctx.rag_memories.is_empty(),
-            "CURRENT behaviour: Historical hard-codes rag_memories to empty \
-             even with pool, provider and a matching memory present"
+            !historical.rag_memories.is_empty(),
+            "Historical must now retrieve the stored memory"
+        );
+        assert_eq!(
+            historical.rag_memories, rag.rag_memories,
+            "Historical and RAG must retrieve the same memory"
         );
     }
 
-    /// CURRENT: with the *same* builder and the *same* stored rows, only `RAG`
-    /// returns the memory. This is the invariant the change will break.
+    /// 8.7 — a plain message classified as `Override::None` / `SlidingWindow`
+    /// receives memory when a card clears the threshold. This ties the
+    /// classifier to the orthogonal retrieval: "no override" no longer means
+    /// "no memory".
     #[tokio::test]
-    async fn characterization_only_rag_returns_the_stored_memory() {
+    async fn none_override_sliding_window_message_receives_memory() {
+        use crate::orchestrator::context_classifier::{ContextClassifier, Override};
+
+        let builder = builder_with_one_stored_memory().await;
+        let classifier = ContextClassifier::new();
+        let classification = classifier.classify("Añade leche a la compra");
+        assert_eq!(classification.override_cmd, Override::None);
+        assert_eq!(classification.strategy, ContextStrategy::SlidingWindow);
+
+        let ctx = builder
+            .build(
+                classification.strategy,
+                "profile-1",
+                "Añade leche a la compra",
+            )
+            .await
+            .expect("build should succeed");
+
+        assert!(
+            !ctx.rag_memories.is_empty(),
+            "a None/SlidingWindow message must receive memory when a card clears the threshold"
+        );
+    }
+
+    /// UPDATED (was `characterization_only_rag_returns_the_stored_memory`):
+    /// the old assertion pinned the `[{tags}] {content}` format (now obsolete,
+    /// task 8.2) and the "only RAG retrieves" premise (now obsolete, task 8.6).
+    /// It is kept to prove that RAG keeps working and returns the card in the
+    /// new `[{created_at}] {content}` format.
+    #[tokio::test]
+    async fn rag_retrieves_the_stored_memory() {
         let builder = builder_with_one_stored_memory().await;
         let ctx = builder
             .build(ContextStrategy::RAG, "profile-1", "what does the user like")
             .await
             .expect("build should succeed");
-        assert_eq!(
-            ctx.rag_memories,
-            vec!["[rust, backend] User likes Rust".to_string()],
-            "CURRENT behaviour: RAG is the only strategy that retrieves memory"
+        assert_eq!(ctx.rag_memories.len(), 1);
+        assert!(
+            ctx.rag_memories[0].ends_with("User likes Rust"),
+            "RAG must still return the stored memory, got {:?}",
+            ctx.rag_memories
         );
     }
 
