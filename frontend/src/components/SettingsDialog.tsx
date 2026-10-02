@@ -50,6 +50,10 @@ export interface SettingsFormValues {
   openweather_api_key: string;
   google_places_api_key: string;
   brave_search_api_key: string;
+  MEMORY_HALF_LIFE_DAYS: number;
+  SIMILARITY_THRESHOLD: number;
+  RAG_BUDGET_TOKENS: number;
+  MEMORY_KNN_CANDIDATES: number;
 }
 
 export const SettingsDialog: React.FC<SettingsDialogProps> = ({
@@ -84,6 +88,16 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
         openweather_api_key: settings.openweather_api_key || "",
         google_places_api_key: settings.google_places_api_key || "",
         brave_search_api_key: settings.brave_search_api_key || "",
+        MEMORY_HALF_LIFE_DAYS: parseFloat(
+          settings.MEMORY_HALF_LIFE_DAYS || "90",
+        ),
+        SIMILARITY_THRESHOLD: parseFloat(
+          settings.SIMILARITY_THRESHOLD || "0.5",
+        ),
+        RAG_BUDGET_TOKENS: parseInt(settings.RAG_BUDGET_TOKENS || "800"),
+        MEMORY_KNN_CANDIDATES: parseInt(
+          settings.MEMORY_KNN_CANDIDATES || "20",
+        ),
       });
     }
   }, [settings, visible, settingsForm]);
@@ -137,6 +151,22 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
         openweather_api_key: values.openweather_api_key ?? settings?.openweather_api_key ?? "",
         google_places_api_key: values.google_places_api_key ?? settings?.google_places_api_key ?? "",
         brave_search_api_key: values.brave_search_api_key ?? settings?.brave_search_api_key ?? "",
+        MEMORY_HALF_LIFE_DAYS: (
+          values.MEMORY_HALF_LIFE_DAYS ??
+          parseFloat(settings?.MEMORY_HALF_LIFE_DAYS || "90")
+        ).toString(),
+        SIMILARITY_THRESHOLD: (
+          values.SIMILARITY_THRESHOLD ??
+          parseFloat(settings?.SIMILARITY_THRESHOLD || "0.5")
+        ).toString(),
+        RAG_BUDGET_TOKENS: (
+          values.RAG_BUDGET_TOKENS ??
+          parseInt(settings?.RAG_BUDGET_TOKENS || "800")
+        ).toString(),
+        MEMORY_KNN_CANDIDATES: (
+          values.MEMORY_KNN_CANDIDATES ??
+          parseInt(settings?.MEMORY_KNN_CANDIDATES || "20")
+        ).toString(),
       });
       messageApi.success("Ajustes guardados");
       onClose();
@@ -376,6 +406,47 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                   name="brave_search_api_key"
                 >
                   <Input.Password placeholder="Dejar vacío para usar variable de entorno" />
+                </Form.Item>
+                <Button type="primary" htmlType="submit" loading={saving}>
+                  Guardar
+                </Button>
+              </Form>
+            ),
+          },
+          {
+            key: "memory",
+            label: "Memoria",
+            children: settingsLoading ? (
+              renderSettingsLoading()
+            ) : (
+              <Form
+                form={settingsForm}
+                layout="vertical"
+                onFinish={handleSettingsSubmit}
+              >
+                <Form.Item
+                  label="MEMORY_HALF_LIFE_DAYS"
+                  name="MEMORY_HALF_LIFE_DAYS"
+                >
+                  <InputNumber min={1} max={3650} step={1} style={{ width: "100%" }} />
+                </Form.Item>
+                <Form.Item
+                  label="SIMILARITY_THRESHOLD"
+                  name="SIMILARITY_THRESHOLD"
+                >
+                  <InputNumber min={0} max={1} step={0.05} style={{ width: "100%" }} />
+                </Form.Item>
+                <Form.Item
+                  label="RAG_BUDGET_TOKENS"
+                  name="RAG_BUDGET_TOKENS"
+                >
+                  <InputNumber min={0} max={100000} step={100} style={{ width: "100%" }} />
+                </Form.Item>
+                <Form.Item
+                  label="MEMORY_KNN_CANDIDATES"
+                  name="MEMORY_KNN_CANDIDATES"
+                >
+                  <InputNumber min={1} max={1000} step={1} style={{ width: "100%" }} />
                 </Form.Item>
                 <Button type="primary" htmlType="submit" loading={saving}>
                   Guardar

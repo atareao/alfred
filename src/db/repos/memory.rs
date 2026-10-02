@@ -1,6 +1,7 @@
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 use uuid::Uuid;
 
+use crate::db::repos::settings::SettingsRepo;
 use crate::models::Memory;
 
 /// Repository for the episodic `memory` + `vec_memory` tables.
@@ -141,86 +142,142 @@ impl MemoryRepo {
 
     /// Search memory cards by cosine similarity of their embeddings.
     ///
-    /// * `query_embedding` — the vector to search with (cosine distance).
-    /// * `limit` — maximum number of results (clamped to [1, 100]).
-    /// * `budget_tokens` — maximum cumulative `tokens_count` across returned
-    ///   items. Once the running sum exceeds this budget, no further items
-    ///   are included.
+    /// This is the **retrieval** half of the episodic-memory pipeline. It reads
+    /// the three retrieval knobs from `settings` on **every** call (so editing
+    /// them takes effect without a restart) and runs the documented pipeline:
     ///
-    /// Results are ordered by descending similarity (highest score first).
+    /// 1. `vec0` KNN: `MATCH … AND k = MEMORY_KNN_CANDIDATES ORDER BY distance`
+    /// 2. `similitud = 1 - distance` (cosine metric: identical → 0, orthogonal → 1)
+    /// 3. drop `similitud < SIMILARITY_THRESHOLD` — applied to the **similarity**,
+    ///    never to the decayed score, so an old but highly similar card stays
+    ///    reachable (D3)
+    /// 4. `final = similitud × exp(-ln2 × días / MEMORY_HALF_LIFE_DAYS)` — in
+    ///    Rust via `f64::exp()`, because the SQLite `sqlx` links has no math
+    ///    functions (D4)
+    /// 5. order by `final` descending
+    ///
+    /// The token budget (`RAG_BUDGET_TOKENS`) is **not** applied here: it
+    /// concerns the size of the prompt, not retrieval, and lives in
+    /// `ContextBuilder` (see the `episodic-memory-injection` design).
+    ///
+    /// `MEMORY_KNN_CANDIDATES` bounds the *candidates*, not the result: because
+    /// the KNN is ordered by ascending distance and the threshold keeps a
+    /// prefix, one candidate above the threshold is enough for a non-empty
+    /// result (D5).
     pub async fn search_by_vector(
         pool: &SqlitePool,
         query_embedding: &[f32],
-        limit: i64,
-        budget_tokens: usize,
     ) -> Result<Vec<Memory>, sqlx::Error> {
         // Degenerate case: empty query → no results
         if query_embedding.is_empty() {
             return Ok(Vec::new());
         }
 
-        let actual_limit = limit.clamp(1, 100);
+        let knn_candidates = read_usize_setting(pool, "MEMORY_KNN_CANDIDATES", 20).await?;
+        let similarity_threshold = read_f64_setting(pool, "SIMILARITY_THRESHOLD", 0.5).await?;
+        let half_life_days = read_f64_setting(pool, "MEMORY_HALF_LIFE_DAYS", 90.0).await?;
 
-        // Load all embeddings from vec_memory
-        let rows = sqlx::query("SELECT id, embedding FROM vec_memory WHERE embedding IS NOT NULL")
-            .fetch_all(pool)
-            .await?;
+        let query_json =
+            serde_json::to_string(query_embedding).map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
 
-        let mut candidates: Vec<(String, f64)> = Vec::new();
-        for row in rows {
-            let id: String = row.get(0);
-            let emb_str: String = row.get(1);
-            if let Ok(emb) = serde_json::from_str::<Vec<f32>>(&emb_str) {
-                if emb.len() != query_embedding.len() {
-                    tracing::warn!(
-                        query_dim = query_embedding.len(),
-                        stored_dim = emb.len(),
-                        "search_by_vector: skipping embedding with mismatched dimension"
-                    );
-                    continue;
-                }
-                let score = cosine_similarity(query_embedding, &emb);
-                candidates.push((id, score));
+        // KNN over the `vec0` index, joined back to the source-of-truth
+        // `memory` table by id, ordered by ascending cosine distance (which is
+        // descending similarity).
+        let rows = sqlx::query(
+            "SELECT m.id, m.content, m.tokens_count, m.created_at, m.metadata, v.distance \
+             FROM memory m JOIN vec_memory v ON m.id = v.id \
+             WHERE v.embedding MATCH vec_f32(?1) AND k = ?2 \
+             ORDER BY v.distance",
+        )
+        .bind(&query_json)
+        .bind(knn_candidates as i64)
+        .fetch_all(pool)
+        .await?;
+
+        let now = chrono::Utc::now();
+        let mut scored: Vec<(f64, Memory)> = Vec::with_capacity(rows.len());
+        for r in rows {
+            // `distance_metric=cosine` ⇒ `distance = 1 - similarity`.
+            let distance: f64 = r.get(5);
+            let similarity = 1.0 - distance;
+
+            // Step 3 (D3): the threshold is applied to the SIMILARITY, never to
+            // the decayed score. The KNN already ordered the candidates by
+            // ascending distance (descending similarity), so once one falls
+            // below the threshold every later candidate does too and we can
+            // stop: the surviving set is a prefix.
+            if similarity < similarity_threshold {
+                break;
             }
+
+            let metadata_str: String = r.get(4);
+            let metadata: serde_json::Value =
+                serde_json::from_str(&metadata_str).unwrap_or(serde_json::json!({}));
+            let created_at: String = r.get(3);
+
+            // Steps 4–5 (D4): exponential half-life decay, computed in Rust.
+            // A non-positive or non-finite half-life disables decay rather than
+            // producing nonsensical scores.
+            let decay = if half_life_days > 0.0 && half_life_days.is_finite() {
+                (-std::f64::consts::LN_2 * days_since(&created_at, &now) / half_life_days).exp()
+            } else {
+                1.0
+            };
+            let final_score = similarity * decay;
+
+            scored.push((
+                final_score,
+                Memory {
+                    id: r.get(0),
+                    content: r.get(1),
+                    tokens_count: r.get::<i64, _>(2) as usize,
+                    created_at,
+                    metadata,
+                },
+            ));
         }
 
-        // Sort by descending similarity
-        candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        candidates.truncate(actual_limit as usize);
+        // Step 6: order by relevance descending.
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
-        // Fetch Memory objects for the candidate IDs and apply budget_tokens filter.
-        // Iterate in similarity order; skip items whose tokens_count would exceed
-        // the remaining budget.
-        let mut results: Vec<Memory> = Vec::new();
-        let mut running_tokens: usize = 0;
-        for (id, _score) in candidates {
-            if let Some(mem) = Self::find_by_id(pool, &id).await? {
-                if running_tokens + mem.tokens_count > budget_tokens {
-                    continue;
-                }
-                running_tokens += mem.tokens_count;
-                results.push(mem);
-            }
-        }
-
-        Ok(results)
+        Ok(scored.into_iter().map(|(_, m)| m).collect())
     }
 }
 
-/// Compute cosine similarity between two vectors.
+/// Read an `f64` knob from `settings`, falling back to `default` when the key
+/// is missing or its value cannot be parsed.
+async fn read_f64_setting(pool: &SqlitePool, key: &str, default: f64) -> Result<f64, sqlx::Error> {
+    Ok(SettingsRepo::get(pool, key)
+        .await?
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .unwrap_or(default))
+}
+
+/// Read a non-negative integer knob from `settings`, falling back to `default`
+/// when the key is missing or its value cannot be parsed.
+async fn read_usize_setting(
+    pool: &SqlitePool,
+    key: &str,
+    default: usize,
+) -> Result<usize, sqlx::Error> {
+    Ok(SettingsRepo::get(pool, key)
+        .await?
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .unwrap_or(default))
+}
+
+/// Age of a card in days, from its `created_at` (RFC 3339, as written by
+/// [`MemoryRepo::create`], always in UTC).
 ///
-/// Returns 0.0 if either vector is empty or their lengths differ.
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
-    if a.len() != b.len() || a.is_empty() {
-        return 0.0;
+/// A timestamp in the future (clock skew, hand-edited data) yields `0.0`
+/// rather than a negative age, so it simply does not decay; an unreadable
+/// `created_at` also yields `0.0` (treated as "no decay" rather than dropped,
+/// since the card's similarity already passed the threshold).
+fn days_since(created_at: &str, now: &chrono::DateTime<chrono::Utc>) -> f64 {
+    match chrono::DateTime::parse_from_rfc3339(created_at) {
+        Ok(dt) => ((now.timestamp() - dt.timestamp()) as f64 / 86_400.0).max(0.0),
+        Err(_) => 0.0,
     }
-    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm_a == 0.0 || norm_b == 0.0 {
-        return 0.0;
-    }
-    (dot / (norm_a * norm_b)) as f64
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -373,16 +430,82 @@ mod tests {
     }
 
     // ─── search_by_vector ────────────────────────────────────────────────────
+    //
+    // EXCEPTION 2 TO THE TEST INVARIANT: these tests used to store the
+    // embedding as JSON text in a regular `vec_memory` table. That storage is
+    // gone (`vec_memory` is now a `vec0` virtual table holding binary
+    // vectors), so the helper was changed on purpose to write through
+    // `vec_f32(?)` and to pad vectors to the declared 1024 dimensions. The
+    // assertions themselves are unchanged.
+
+    /// Pad a leading slice to the 1024 dimensions `vec0` requires.
+    fn v1024(leading: &[f32]) -> Vec<f32> {
+        let mut v = leading.to_vec();
+        v.resize(1024, 0.0);
+        v
+    }
 
     /// Helper: insert an embedding row directly into `vec_memory`.
+    ///
+    /// CHANGED ON PURPOSE (invariant exception 2): written through
+    /// `vec_f32(?)` with the declared 1024 dimensions, instead of a raw JSON
+    /// string in the old regular table.
     async fn insert_embedding(pool: &SqlitePool, id: &str, embedding: &[f32]) {
         let json = serde_json::to_string(embedding).expect("failed to serialize embedding");
-        sqlx::query("INSERT INTO vec_memory (id, embedding) VALUES (?1, ?2)")
+        sqlx::query("INSERT INTO vec_memory (id, embedding) VALUES (?1, vec_f32(?2))")
             .bind(id)
             .bind(&json)
             .execute(pool)
             .await
             .expect("failed to insert vec_memory row");
+    }
+
+    /// Helper: insert a `memory` row with an explicit `created_at`, so tests
+    /// can control the temporal decay (the repository's `create` always stamps
+    /// `now`).
+    async fn insert_memory_at(
+        pool: &SqlitePool,
+        id: &str,
+        content: &str,
+        tokens_count: usize,
+        created_at: &str,
+    ) {
+        sqlx::query(
+            "INSERT INTO memory (id, content, tokens_count, created_at, metadata) \
+             VALUES (?1, ?2, ?3, ?4, '{}')",
+        )
+        .bind(id)
+        .bind(content)
+        .bind(tokens_count as i64)
+        .bind(created_at)
+        .execute(pool)
+        .await
+        .expect("failed to insert memory row");
+    }
+
+    /// Helper: read a numeric setting (panics if missing/unparseable).
+    async fn setting_f64(pool: &SqlitePool, key: &str) -> f64 {
+        sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?1")
+            .bind(key)
+            .fetch_one(pool)
+            .await
+            .unwrap_or_else(|e| panic!("setting '{key}' missing: {e}"))
+            .parse::<f64>()
+            .unwrap_or_else(|e| panic!("setting '{key}' not a float: {e}"))
+    }
+
+    /// Helper: upsert a setting value.
+    async fn set_setting(pool: &SqlitePool, key: &str, value: &str) {
+        crate::db::repos::settings::SettingsRepo::set(pool, key, value)
+            .await
+            .expect("failed to set setting");
+    }
+
+    /// A unit vector at cosine similarity `s` to `(1, 0, …, 0)`, padded to
+    /// the `vec0` table's 1024 dimensions.
+    fn unit_vector_at_cosine(s: f32) -> Vec<f32> {
+        let orthogonal = (1.0 - s * s).max(0.0).sqrt();
+        v1024(&[s, orthogonal, 0.0])
     }
 
     #[tokio::test]
@@ -398,11 +521,11 @@ mod tests {
             .unwrap();
 
         // Embeddings: mem_a → [1,0,0],  mem_b → [0,0,1]
-        insert_embedding(&pool, &mem_a.id, &[1.0, 0.0, 0.0]).await;
-        insert_embedding(&pool, &mem_b.id, &[0.0, 0.0, 1.0]).await;
+        insert_embedding(&pool, &mem_a.id, &v1024(&[1.0, 0.0, 0.0])).await;
+        insert_embedding(&pool, &mem_b.id, &v1024(&[0.0, 0.0, 1.0])).await;
 
         // Query close to [1,0,0] → mem_a should be most similar
-        let results = MemoryRepo::search_by_vector(&pool, &[0.9, 0.1, 0.0], 10, 5000)
+        let results = MemoryRepo::search_by_vector(&pool, &v1024(&[0.9, 0.1, 0.0]))
             .await
             .expect("search_by_vector should succeed");
 
@@ -413,24 +536,177 @@ mod tests {
         );
     }
 
+    /// 5.2 — a candidate whose similarity is above `SIMILARITY_THRESHOLD` is
+    /// returned. An identical vector has cosine distance 0 ⇒ similarity 1.0.
     #[tokio::test]
-    async fn test_search_by_vector_budget_tokens_excludes_expensive() {
+    async fn test_search_by_vector_includes_similarity_above_threshold() {
         let pool = setup_pool().await;
 
-        // One memory with tokens_count=100
-        let mem = MemoryRepo::create(&pool, "Expensive memory", 100, &serde_json::json!({}))
+        let mem = MemoryRepo::create(&pool, "Identical", 10, &serde_json::json!({}))
             .await
             .unwrap();
-        insert_embedding(&pool, &mem.id, &[1.0, 0.0, 0.0]).await;
+        insert_embedding(&pool, &mem.id, &v1024(&[1.0, 0.0, 0.0])).await;
 
-        // Budget of 50 is less than tokens_count=100 → nothing returned
-        let results = MemoryRepo::search_by_vector(&pool, &[0.9, 0.1, 0.0], 10, 50)
+        // Default threshold is 0.5 (seeded by migration); similarity is 1.0.
+        assert_eq!(setting_f64(&pool, "SIMILARITY_THRESHOLD").await, 0.5);
+
+        let results = MemoryRepo::search_by_vector(&pool, &v1024(&[1.0, 0.0, 0.0]))
             .await
-            .expect("search_by_vector should succeed");
+            .expect("search should succeed");
+
+        assert_eq!(results.len(), 1, "similarity 1.0 ≥ 0.5 must be returned");
+        assert_eq!(results[0].id, mem.id);
+    }
+
+    /// 5.2 — a candidate whose similarity is below the threshold is discarded.
+    /// Cosine distance 0.8 ⇒ similarity 0.2 < 0.5.
+    #[tokio::test]
+    async fn test_search_by_vector_discards_similarity_below_threshold() {
+        let pool = setup_pool().await;
+
+        let mem = MemoryRepo::create(&pool, "Orthogonal-ish", 10, &serde_json::json!({}))
+            .await
+            .unwrap();
+        insert_embedding(&pool, &mem.id, &v1024(&[1.0, 0.0, 0.0])).await;
+
+        // Query at cosine similarity 0.2 (distance 0.8).
+        let results = MemoryRepo::search_by_vector(&pool, &unit_vector_at_cosine(0.2))
+            .await
+            .expect("search should succeed");
 
         assert!(
             results.is_empty(),
-            "budget_tokens=50 should exclude a memory with tokens_count=100"
+            "similarity 0.2 < threshold 0.5 must be discarded"
+        );
+    }
+
+    /// 5.2 — a high threshold leaves the result empty even for a card that
+    /// would pass the default.
+    #[tokio::test]
+    async fn test_search_by_vector_high_threshold_returns_empty() {
+        let pool = setup_pool().await;
+
+        let mem = MemoryRepo::create(&pool, "Fairly similar", 10, &serde_json::json!({}))
+            .await
+            .unwrap();
+        insert_embedding(&pool, &mem.id, &v1024(&[1.0, 0.0, 0.0])).await;
+
+        let query = unit_vector_at_cosine(0.7); // similarity 0.7
+
+        // With the default threshold the card is returned...
+        let before = MemoryRepo::search_by_vector(&pool, &query)
+            .await
+            .expect("search should succeed");
+        assert_eq!(before.len(), 1, "similarity 0.7 ≥ 0.5 is returned");
+
+        // ...but raising the threshold above it empties the result.
+        set_setting(&pool, "SIMILARITY_THRESHOLD", "0.95").await;
+        let after = MemoryRepo::search_by_vector(&pool, &query)
+            .await
+            .expect("search should succeed");
+        assert!(
+            after.is_empty(),
+            "similarity 0.7 < threshold 0.95 must be discarded"
+        );
+    }
+
+    /// 5.3 (D3) — the threshold is applied to the SIMILARITY, not to the decayed
+    /// score: an old card whose similarity is above the threshold stays in the
+    /// result even though its `final` is far below a recent card's. The decay
+    /// changes the ORDER, not the membership.
+    #[tokio::test]
+    async fn test_decay_reorders_but_does_not_drop_old_cards() {
+        let pool = setup_pool().await;
+
+        // A recent card with a modest similarity.
+        let recent = MemoryRepo::create(&pool, "Recent", 10, &serde_json::json!({}))
+            .await
+            .unwrap();
+        insert_embedding(&pool, &recent.id, &unit_vector_at_cosine(0.7)).await;
+
+        // An old card (5 years) with a HIGHER similarity: its decayed score is
+        // tiny, but its similarity (0.99) is well above the threshold.
+        let old_created = (chrono::Utc::now() - chrono::Duration::days(5 * 365)).to_rfc3339();
+        insert_memory_at(&pool, "old-card", "Old but relevant", 10, &old_created).await;
+        insert_embedding(&pool, "old-card", &unit_vector_at_cosine(0.99)).await;
+
+        let query = unit_vector_at_cosine(0.7);
+        let results = MemoryRepo::search_by_vector(&pool, &query)
+            .await
+            .expect("search should succeed");
+
+        assert_eq!(
+            results.len(),
+            2,
+            "the old card must survive: the threshold filters by similarity, not by decayed score"
+        );
+        assert_eq!(
+            results[0].id, recent.id,
+            "the recent card ranks first because the old card's decayed score is smaller"
+        );
+        assert_eq!(
+            results[1].id, "old-card",
+            "the old card is present, just ordered last"
+        );
+    }
+
+    /// 5.5 (D5) — `MEMORY_KNN_CANDIDATES` bounds the candidates but cannot
+    /// empty the result while a candidate above the threshold exists.
+    #[tokio::test]
+    async fn test_knn_candidates_bounds_without_emptying() {
+        let pool = setup_pool().await;
+
+        // Three cards, all above the threshold, at decreasing similarity.
+        for (id, sim) in [("c1", 0.9f32), ("c2", 0.8), ("c3", 0.7)] {
+            insert_memory_at(&pool, id, id, 10, &chrono::Utc::now().to_rfc3339()).await;
+            insert_embedding(&pool, id, &unit_vector_at_cosine(sim)).await;
+        }
+
+        // With k = 1 only the closest candidate is pulled, but the result is
+        // NOT empty (the first candidate clears the threshold).
+        set_setting(&pool, "MEMORY_KNN_CANDIDATES", "1").await;
+        let one = MemoryRepo::search_by_vector(&pool, &v1024(&[1.0, 0.0, 0.0]))
+            .await
+            .expect("search should succeed");
+        assert_eq!(one.len(), 1, "k = 1 must yield exactly one candidate");
+        assert_eq!(one[0].id, "c1", "the closest candidate wins");
+
+        // Raising k admits more candidates.
+        set_setting(&pool, "MEMORY_KNN_CANDIDATES", "2").await;
+        let two = MemoryRepo::search_by_vector(&pool, &v1024(&[1.0, 0.0, 0.0]))
+            .await
+            .expect("search should succeed");
+        assert_eq!(two.len(), 2, "k = 2 must yield two candidates");
+    }
+
+    /// 6.2 (D7) — the knobs are read on every query, so changing
+    /// `SIMILARITY_THRESHOLD` takes effect without a restart.
+    #[tokio::test]
+    async fn test_similarity_threshold_change_takes_effect_without_restart() {
+        let pool = setup_pool().await;
+
+        let mem = MemoryRepo::create(&pool, "Borderline", 10, &serde_json::json!({}))
+            .await
+            .unwrap();
+        insert_embedding(&pool, &mem.id, &v1024(&[1.0, 0.0, 0.0])).await;
+
+        let query = unit_vector_at_cosine(0.6); // similarity 0.6
+
+        // Threshold 0.5 → the card is returned.
+        set_setting(&pool, "SIMILARITY_THRESHOLD", "0.5").await;
+        let first = MemoryRepo::search_by_vector(&pool, &query)
+            .await
+            .expect("search should succeed");
+        assert_eq!(first.len(), 1);
+
+        // Threshold 0.8, same pool, no restart → the card is filtered out.
+        set_setting(&pool, "SIMILARITY_THRESHOLD", "0.8").await;
+        let second = MemoryRepo::search_by_vector(&pool, &query)
+            .await
+            .expect("search should succeed");
+        assert!(
+            second.is_empty(),
+            "the new threshold must take effect on the next query"
         );
     }
 
@@ -443,9 +719,9 @@ mod tests {
         let mem = MemoryRepo::create(&pool, "Some memory", 10, &serde_json::json!({}))
             .await
             .unwrap();
-        insert_embedding(&pool, &mem.id, &[0.5, 0.5]).await;
+        insert_embedding(&pool, &mem.id, &v1024(&[0.5, 0.5])).await;
 
-        let results = MemoryRepo::search_by_vector(&pool, &[], 10, 5000)
+        let results = MemoryRepo::search_by_vector(&pool, &[])
             .await
             .expect("search_by_vector should handle empty query gracefully");
 
@@ -457,29 +733,6 @@ mod tests {
         );
     }
 
-    /// An embedding whose dimension differs from the query must be discarded
-    /// (not silently scored as 0.0), so it never appears in the results.
-    #[tokio::test]
-    async fn test_search_by_vector_skips_mismatched_dimension() {
-        let pool = setup_pool().await;
-
-        let mem = MemoryRepo::create(&pool, "Wrong dimension", 10, &serde_json::json!({}))
-            .await
-            .unwrap();
-        // Stored embedding has dimension 2.
-        insert_embedding(&pool, &mem.id, &[1.0, 0.0]).await;
-
-        // Query has dimension 3.
-        let results = MemoryRepo::search_by_vector(&pool, &[1.0, 0.0, 0.0], 10, 5000)
-            .await
-            .expect("search_by_vector should succeed");
-
-        assert!(
-            results.is_empty(),
-            "an embedding with a mismatched dimension must be discarded"
-        );
-    }
-
     /// A matching dimension is scored normally and returned.
     #[tokio::test]
     async fn test_search_by_vector_matching_dimension_is_scored() {
@@ -488,11 +741,11 @@ mod tests {
         let mem = MemoryRepo::create(&pool, "Right dimension", 10, &serde_json::json!({}))
             .await
             .unwrap();
-        insert_embedding(&pool, &mem.id, &[1.0, 0.0, 0.0]).await;
+        insert_embedding(&pool, &mem.id, &v1024(&[1.0, 0.0, 0.0])).await;
 
-        let results = MemoryRepo::search_by_vector(&pool, &[1.0, 0.0, 0.0], 10, 5000)
+        let results = MemoryRepo::search_by_vector(&pool, &v1024(&[1.0, 0.0, 0.0]))
             .await
-            .expect("search_by_vector should succeed");
+            .expect("search should succeed");
 
         assert_eq!(
             results.len(),
@@ -500,5 +753,65 @@ mod tests {
             "an embedding with a matching dimension should be scored and returned"
         );
         assert_eq!(results[0].id, mem.id);
+    }
+
+    /// 3.4 — the JOIN by id returns the `memory` fields alongside the `vec0`
+    /// distance, which is what makes `memory` the source of truth and
+    /// `vec_memory` just the vector index.
+    #[tokio::test]
+    async fn test_join_returns_memory_fields_and_distance() {
+        let pool = setup_pool().await;
+
+        let mem = MemoryRepo::create(&pool, "Joined content", 42, &serde_json::json!({}))
+            .await
+            .unwrap();
+        insert_embedding(&pool, &mem.id, &v1024(&[1.0, 0.0, 0.0])).await;
+
+        let query = serde_json::to_string(&v1024(&[1.0, 0.0, 0.0])).unwrap();
+        let row = sqlx::query(
+            "SELECT m.id, m.content, m.tokens_count, v.distance \
+             FROM memory m JOIN vec_memory v ON m.id = v.id \
+             WHERE v.embedding MATCH vec_f32(?1) AND k = ?2 ORDER BY v.distance",
+        )
+        .bind(&query)
+        .bind(10i64)
+        .fetch_one(&pool)
+        .await
+        .expect("the JOIN by id must succeed (no `no column named id` error)");
+
+        assert_eq!(row.get::<String, _>(0), mem.id);
+        assert_eq!(row.get::<String, _>(1), "Joined content");
+        assert_eq!(row.get::<i64, _>(2), 42);
+        // An identical vector has cosine distance 0.
+        let distance: f64 = row.get(3);
+        assert!(distance.abs() < 1e-6, "identical vector → distance 0");
+    }
+
+    /// A query embedding whose dimension does not match the one declared by
+    /// `vec0` makes the KNN query fail. This is the last surviving dimension
+    /// mismatch: storage is now impossible (`vec0` rejects it structurally),
+    /// and the query side surfaces `vec0`'s own error. The caller
+    /// (`ContextBuilder`) turns a search error into an empty result with a
+    /// warning, so nothing panics.
+    ///
+    /// CHANGED ON PURPOSE (invariant exception 2): the old implementation
+    /// guarded this case explicitly with a `tracing::warn!`; that guard is
+    /// retired with the requirement (block 5.1) and the error now propagates.
+    #[tokio::test]
+    async fn test_search_by_vector_mismatched_query_dimension_errors() {
+        let pool = setup_pool().await;
+
+        let mem = MemoryRepo::create(&pool, "Wrong dimension", 10, &serde_json::json!({}))
+            .await
+            .unwrap();
+        insert_embedding(&pool, &mem.id, &v1024(&[1.0, 0.0])).await;
+
+        // Query has dimension 3, which does not match the declared 1024.
+        let result = MemoryRepo::search_by_vector(&pool, &[1.0, 0.0, 0.0]).await;
+
+        assert!(
+            result.is_err(),
+            "a query embedding with a mismatched dimension must surface vec0's error, got {result:?}"
+        );
     }
 }

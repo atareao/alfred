@@ -61,17 +61,28 @@ pub async fn reindex_all(
 
     // Apply every upsert inside a single transaction: either all of them land,
     // or none does, so `vec_memory` is never left half-updated.
+    //
+    // `vec0` does not implement `ON CONFLICT`/UPSERT (`UPSERT not implemented
+    // for virtual table`), so replace by id with an `UPDATE`, falling back to an
+    // `INSERT` when the row does not exist yet.
     let mut tx = pool.begin().await.map_err(storage_error)?;
     for (id, serialized) in &upserts {
-        sqlx::query(
-            "INSERT INTO vec_memory (id, embedding) VALUES (?1, ?2) \
-             ON CONFLICT(id) DO UPDATE SET embedding = excluded.embedding",
-        )
-        .bind(id)
-        .bind(serialized)
-        .execute(&mut *tx)
-        .await
-        .map_err(storage_error)?;
+        let updated = sqlx::query("UPDATE vec_memory SET embedding = vec_f32(?1) WHERE id = ?2")
+            .bind(serialized)
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(storage_error)?
+            .rows_affected();
+
+        if updated == 0 {
+            sqlx::query("INSERT INTO vec_memory (id, embedding) VALUES (?1, vec_f32(?2))")
+                .bind(id)
+                .bind(serialized)
+                .execute(&mut *tx)
+                .await
+                .map_err(storage_error)?;
+        }
     }
     tx.commit().await.map_err(storage_error)?;
 
@@ -79,6 +90,70 @@ pub async fn reindex_all(
         total,
         updated,
         failed,
+    })
+}
+
+/// Outcome of a source reset ([`reset_memory_source`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResetReport {
+    /// Messages whose `is_indexed` flag was cleared (and `summary_ref` nulled).
+    pub messages_reset: u64,
+    /// Rows removed from the `memory` (source-of-truth) table.
+    pub memories_deleted: u64,
+    /// Vectors removed from the `vec_memory` index.
+    pub vectors_deleted: u64,
+}
+
+/// Reset the *source* from which the episodic index is rebuilt.
+///
+/// Messages are the original data; the `memory` cards are derived data. The
+/// robust rebuild is therefore to re-archive from the messages rather than to
+/// re-embed the existing cards: re-embedding would feed already-summarised text
+/// — and any mistake in a previous LLM summary — back into the index. So this
+/// drops the derived data and un-indexes the messages, letting the
+/// `EpisodicMemoryWorker` re-archive from scratch:
+///
+/// 1. `UPDATE messages SET is_indexed = 0, summary_ref = NULL` — every message
+///    becomes unindexed again.
+/// 2. `DELETE FROM memory` — drop the derived cards.
+/// 3. `DELETE FROM vec_memory` — drop the vector index.
+///
+/// # FTS / triggers
+///
+/// The `memory` table has **no** FTS index and **no** triggers: the legacy
+/// `memories_fts` virtual table and its `memories_fts_{ai,ad,au}` triggers
+/// belonged to the old `memories` table and were dropped together with it by
+/// migration `20260926000003_episodic_memory.sql`. The only FTS triggers left
+/// in the schema hang off `messages` and `notes`, so deleting `memory` cannot
+/// leave an FTS index stale. Step 1's `UPDATE` on `messages` fires the
+/// `messages_fts_au` AFTER UPDATE trigger, which keeps `messages_fts` in sync.
+///
+/// All three statements run in a single transaction, so the source and the
+/// index are never observed half-reset.
+pub async fn reset_memory_source(pool: &SqlitePool) -> Result<ResetReport, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+
+    let messages_reset = sqlx::query("UPDATE messages SET is_indexed = 0, summary_ref = NULL")
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+
+    let memories_deleted = sqlx::query("DELETE FROM memory")
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+
+    let vectors_deleted = sqlx::query("DELETE FROM vec_memory")
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+
+    tx.commit().await?;
+
+    Ok(ResetReport {
+        messages_reset,
+        memories_deleted,
+        vectors_deleted,
     })
 }
 
@@ -98,6 +173,13 @@ mod tests {
     struct MockProvider {
         vector: Vec<f32>,
         fail_on: Option<String>,
+    }
+
+    /// Pad a leading slice to the 1024 dimensions the `vec0` table declares.
+    fn v1024(leading: &[f32]) -> Vec<f32> {
+        let mut v = leading.to_vec();
+        v.resize(1024, 0.0);
+        v
     }
 
     #[async_trait]
@@ -142,7 +224,7 @@ mod tests {
         insert_memory(&pool, "m3", "three").await;
 
         let provider = MockProvider {
-            vector: vec![0.1, 0.2, 0.3],
+            vector: v1024(&[0.1, 0.2, 0.3]),
             fail_on: None,
         };
         let report = reindex_all(&pool, &provider, None).await.unwrap();
@@ -170,7 +252,7 @@ mod tests {
         insert_memory(&pool, "m2", "two").await;
 
         let provider = MockProvider {
-            vector: vec![1.0, 0.0],
+            vector: v1024(&[1.0, 0.0]),
             fail_on: None,
         };
         reindex_all(&pool, &provider, None).await.unwrap();
@@ -192,7 +274,7 @@ mod tests {
         insert_memory(&pool, "m3", "good2").await;
 
         let provider = MockProvider {
-            vector: vec![0.5],
+            vector: v1024(&[0.5]),
             fail_on: Some("bad".into()),
         };
         let report = reindex_all(&pool, &provider, None).await.unwrap();
@@ -215,7 +297,7 @@ mod tests {
         insert_memory(&pool, "m1", "one").await;
 
         let provider = MockProvider {
-            vector: vec![0.1, 0.2, 0.3],
+            vector: v1024(&[0.1, 0.2, 0.3]),
             fail_on: None,
         };
         let result = reindex_all(&pool, &provider, Some(1536)).await;
@@ -224,29 +306,39 @@ mod tests {
 
     /// A dimension mismatch must abort before writing anything: an existing
     /// `vec_memory` row is left untouched.
+    ///
+    /// CHANGED ON PURPOSE (invariant exception 2): the row is now seeded
+    /// through `vec_f32(?)` (a valid 1024-dim vector) and compared by bytes,
+    /// because `vec0` stores binary vectors instead of JSON text. The
+    /// assertion (unchanged contents on abort) is the same.
     #[tokio::test]
     async fn test_reindex_all_dimension_mismatch_does_not_modify_vec_memory() {
         let pool = setup().await;
         insert_memory(&pool, "m1", "one").await;
-        sqlx::query("INSERT INTO vec_memory (id, embedding) VALUES ('m1', '[9.0]')")
+
+        let original = v1024(&[9.0]);
+        let original_json = serde_json::to_string(&original).unwrap();
+        sqlx::query("INSERT INTO vec_memory (id, embedding) VALUES ('m1', vec_f32(?1))")
+            .bind(&original_json)
             .execute(&pool)
             .await
             .unwrap();
 
         let provider = MockProvider {
-            vector: vec![0.1, 0.2, 0.3],
+            vector: v1024(&[0.1, 0.2, 0.3]),
             fail_on: None,
         };
         let result = reindex_all(&pool, &provider, Some(1536)).await;
         assert!(matches!(result, Err(EmbeddingError::Api(_))));
 
-        let existing: String =
+        let existing: Vec<u8> =
             sqlx::query_scalar("SELECT embedding FROM vec_memory WHERE id = 'm1'")
                 .fetch_one(&pool)
                 .await
                 .unwrap();
+        let expected: Vec<u8> = original.iter().flat_map(|f| f.to_le_bytes()).collect();
         assert_eq!(
-            existing, "[9.0]",
+            existing, expected,
             "vec_memory must not be modified on abort"
         );
     }

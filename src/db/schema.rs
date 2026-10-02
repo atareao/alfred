@@ -6,12 +6,47 @@ use sqlx::SqlitePool;
 /// the path relative to `CARGO_MANIFEST_DIR` (embedded at compile time) to
 /// work reliably regardless of the process's current working directory.
 pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    ensure_vec0_on_pool(pool).await?;
+
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let migrations_path = manifest.join("migrations");
     sqlx::migrate::Migrator::new(migrations_path)
         .await?
         .run(pool)
         .await?;
+    Ok(())
+}
+
+/// Make sure the `sqlite-vec` `vec0` module is available on `pool` before the
+/// migration that creates the `vec_memory` virtual table runs.
+///
+/// `sqlite3_auto_extension` only affects connections opened *after* it is
+/// called. [`register_vec_extension`] is idempotent (fenced by a [`Once`]), but
+/// a caller may have opened its pool *before* reaching here — as the test
+/// helpers do. In that case the pooled connection lacks `vec0`, so we register
+/// the extension and detach one stale connection to force the pool to open a
+/// fresh one that inherits it.
+///
+/// [`register_vec_extension`]: crate::db::vec_extension::register_vec_extension
+/// [`Once`]: std::sync::Once
+async fn ensure_vec0_on_pool(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    crate::db::vec_extension::register_vec_extension();
+
+    // If the extension is already usable on a pooled connection there is
+    // nothing to do (this is the production path: `init_db` registers before
+    // opening the pool, and this is a no-op).
+    if sqlx::query_scalar::<_, String>("SELECT vec_version()")
+        .fetch_one(pool)
+        .await
+        .is_ok()
+    {
+        return Ok(());
+    }
+
+    // The pooled connection(s) predate the registration. Detach one so the
+    // pool reopens a connection, which then picks up the auto-extension.
+    let conn = pool.acquire().await?;
+    drop(conn.detach());
     Ok(())
 }
 
@@ -431,6 +466,138 @@ mod tests {
         assert!(
             has_vec,
             "vec_memory table should survive idempotent migration"
+        );
+    }
+
+    // ─── 3.1 / 3.3: the vec0 virtual table ───────────────────────────────────
+
+    /// 3.1 — `vec_memory` is a `vec0` virtual table exposing `id` and
+    /// `embedding`, with the cosine metric.
+    #[tokio::test]
+    async fn test_vec_memory_is_virtual_vec0_with_id_and_embedding() {
+        let pool = setup().await;
+
+        let sql: String = sqlx::query_scalar(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='vec_memory'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert!(
+            sql.to_uppercase().contains("CREATE VIRTUAL TABLE") && sql.contains("vec0"),
+            "vec_memory must be a vec0 virtual table, got: {sql}"
+        );
+        assert!(sql.contains("id"), "vec_memory must declare `id`");
+        assert!(
+            sql.contains("embedding"),
+            "vec_memory must declare `embedding`"
+        );
+        assert!(
+            sql.contains("distance_metric=cosine"),
+            "vec_memory must declare the cosine metric, got: {sql}"
+        );
+
+        let columns: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM pragma_table_info('vec_memory')")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert!(
+            columns.contains(&"id".to_string()),
+            "vec_memory must expose the `id` column"
+        );
+        assert!(
+            columns.contains(&"embedding".to_string()),
+            "vec_memory must expose the `embedding` column"
+        );
+    }
+
+    /// 3.3 — `vec0` rejects a vector whose dimension differs from the one the
+    /// table declares, so embedding-dimension drift is impossible structurally.
+    #[tokio::test]
+    async fn test_vec0_rejects_wrong_dimension_vector() {
+        let pool = setup().await;
+
+        let err = sqlx::query("INSERT INTO vec_memory (id, embedding) VALUES ('x', vec_f32(?1))")
+            .bind("[1.0, 2.0]")
+            .execute(&pool)
+            .await
+            .unwrap_err();
+
+        let message = err.to_string();
+        assert!(
+            message.to_lowercase().contains("dimension"),
+            "vec0 must reject a vector of the wrong dimension, got: {message}"
+        );
+    }
+
+    // ─── 6.1: the four episodic-memory knobs in `settings` ───────────────────
+
+    /// Read the memory-settings migration SQL from disk.
+    fn memory_settings_migration_sql() -> String {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("migrations/20261001000002_memory_settings.sql");
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()))
+    }
+
+    async fn settings_value(pool: &SqlitePool, key: &str) -> String {
+        sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?1")
+            .bind(key)
+            .fetch_one(pool)
+            .await
+            .unwrap_or_else(|e| panic!("setting '{key}' should exist: {e}"))
+    }
+
+    /// A freshly migrated database carries the four knobs with their defaults.
+    #[tokio::test]
+    async fn test_memory_settings_seeded_with_defaults() {
+        let pool = setup().await;
+
+        assert_eq!(settings_value(&pool, "MEMORY_HALF_LIFE_DAYS").await, "90");
+        assert_eq!(settings_value(&pool, "SIMILARITY_THRESHOLD").await, "0.5");
+        assert_eq!(settings_value(&pool, "RAG_BUDGET_TOKENS").await, "800");
+        assert_eq!(settings_value(&pool, "MEMORY_KNN_CANDIDATES").await, "20");
+    }
+
+    /// A non-empty pre-existing value is respected by the seeding migration
+    /// (same "only overwrite empty/NULL" idiom as the prompts migration).
+    #[tokio::test]
+    async fn test_memory_settings_respects_existing_value() {
+        let pool = setup().await;
+
+        sqlx::query("UPDATE settings SET value = '1200' WHERE key = 'RAG_BUDGET_TOKENS'")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // Re-run the seeding body (the migration itself is already recorded).
+        let sql = memory_settings_migration_sql();
+        sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            settings_value(&pool, "RAG_BUDGET_TOKENS").await,
+            "1200",
+            "a non-empty custom value must be preserved by the migration"
+        );
+
+        // An empty value, on the other hand, is backfilled with the default.
+        sqlx::query("UPDATE settings SET value = '' WHERE key = 'RAG_BUDGET_TOKENS'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            settings_value(&pool, "RAG_BUDGET_TOKENS").await,
+            "800",
+            "an empty value must be backfilled with the default"
         );
     }
 }

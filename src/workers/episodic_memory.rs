@@ -675,7 +675,7 @@ impl EpisodicMemoryWorker {
 
         let memory = MemoryRepo::create_in_tx(&mut tx, &ficha, tokens_count, &metadata).await?;
 
-        sqlx::query("INSERT INTO vec_memory (id, embedding) VALUES (?1, ?2)")
+        sqlx::query("INSERT INTO vec_memory (id, embedding) VALUES (?1, vec_f32(?2))")
             .bind(&memory.id)
             .bind(&embedding_json)
             .execute(&mut *tx)
@@ -798,7 +798,7 @@ mod tests {
         fn new() -> Self {
             Self {
                 embed_calls: Arc::new(Mutex::new(Vec::new())),
-                embed_response: vec![0.1, 0.2, 0.3],
+                embed_response: v1024(&[0.1, 0.2, 0.3]),
                 embed_error: false,
             }
         }
@@ -806,6 +806,13 @@ mod tests {
         fn wrap(self) -> Arc<dyn EmbeddingProvider> {
             Arc::new(self)
         }
+    }
+
+    /// Pad a leading slice to the 1024 dimensions the `vec0` table declares.
+    fn v1024(leading: &[f32]) -> Vec<f32> {
+        let mut v = leading.to_vec();
+        v.resize(1024, 0.0);
+        v
     }
 
     /// Convenience: a fresh mock embedding provider that succeeds.
@@ -1400,15 +1407,23 @@ mod tests {
             "Should have one vec_memory row"
         );
 
-        // Verify embedding content
-        let emb_row: String = sqlx::query_scalar("SELECT embedding FROM vec_memory LIMIT 1")
+        // Verify embedding content.
+        //
+        // CHANGED ON PURPOSE (invariant exception 2): `vec0` stores the vector
+        // as a binary BLOB, not JSON text, so it is read back as bytes and the
+        // first f32 is decoded little-endian. The assertion is the same.
+        let emb_bytes: Vec<u8> = sqlx::query_scalar("SELECT embedding FROM vec_memory LIMIT 1")
             .fetch_one(&db)
             .await
             .unwrap();
-        let emb: Vec<f64> = serde_json::from_str(&emb_row).unwrap();
-        assert!(!emb.is_empty(), "Embedding vector should not be empty");
+        assert_eq!(
+            emb_bytes.len(),
+            1024 * 4,
+            "Embedding vector should be 1024 f32s (4096 bytes)"
+        );
+        let first = f32::from_le_bytes(emb_bytes[0..4].try_into().unwrap());
         assert!(
-            (emb[0] - 0.1).abs() < 0.01,
+            (first - 0.1).abs() < 0.01,
             "First embedding component should be 0.1"
         );
 
