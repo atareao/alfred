@@ -217,8 +217,8 @@ const EPISODIC_MEMORY_INSTRUCTION: &str = "Las fichas siguientes son antecedente
 /// Compose the episodic-memory block from the already-formatted cards, or
 /// `None` when there is nothing to inject.
 ///
-/// Shared by `process_message` and `process_message_stream` so both paths emit
-/// the **identical** block (same format, same position). Returns `None` for an
+/// Used by `process_message_stream` so the streaming path emits the
+/// **identical** block (same format, same position). Returns `None` for an
 /// empty slice, so no filler text (e.g. "no hay antecedentes") is ever
 /// injected. The block is composed in code (design D2).
 fn compose_episodic_memory_block(memories: &[String]) -> Option<String> {
@@ -320,346 +320,45 @@ impl Orchestrator {
         *self.last_api_call.write().unwrap() = Some(last);
     }
 
-    /// Non-streaming entry point: runs the full ReAct loop and returns the
-    /// final response together with any tool calls and reflection metadata.
-    pub async fn process_message(
-        &self,
-        profile_id: &str,
-        user_message: &str,
-    ) -> Result<AgentResponse, AgentError> {
-        let mut iterations = 0usize;
-        let mut all_tool_calls: Vec<ToolCallInfo> = Vec::new();
-        let mut messages: Vec<ChatMessage> = Vec::new();
-        let mut tool_call_counts: std::collections::HashMap<String, usize> =
-            std::collections::HashMap::new();
-
-        // 1. Classify intent
-        let classification = self.classifier.classify(user_message);
-
-        // 2. Build context (system prompt, optional RAG memories, etc.)
-        let ctx = self
-            .context_builder
-            .build(classification.strategy.clone(), profile_id, user_message)
-            .await?;
-
-        // Read settings from DB (max_window_tokens, system_prompt)
-        let max_window_tokens =
-            crate::db::repos::settings::SettingsRepo::get(&self.db, "max_window_tokens")
-                .await?
-                .and_then(|v| v.parse::<usize>().ok())
-                .unwrap_or(10000);
-
-        // The system prompt is stored in the `settings` table (seeded by
-        // migration). If it is missing or empty, fall back to a minimal prompt.
-        let system_prompt =
-            match crate::db::repos::settings::SettingsRepo::get(&self.db, "system_prompt").await? {
-                Some(p) if !p.trim().is_empty() => p,
-                _ => {
-                    tracing::warn!(
-                        "settings.system_prompt is missing or empty; using minimal fallback"
-                    );
-                    DEFAULT_SYSTEM_PROMPT_FALLBACK.to_string()
-                }
-            };
-
-        // Inject system prompt
-        messages.push(ChatMessage {
-            role: "system".into(),
-            content: system_prompt,
-            tool_calls: None,
-            tool_result: None,
-            tool_call_id: None,
-        });
-
-        // Inject the composed episodic-memory block (block 8.3–8.5). Composed in
-        // code and placed before the history below, so the recovered
-        // antecedents are never read as the current turn.
-        if let Some(block) = compose_episodic_memory_block(&ctx.rag_memories) {
-            messages.push(ChatMessage {
-                role: "system".into(),
-                content: block,
-                tool_calls: None,
-                tool_result: None,
-                tool_call_id: None,
-            });
-        }
-
-        // Load conversation history from DB using token budget
-        {
-            let history = crate::db::repos::messages::MessagesRepo::list_by_token_budget(
-                &self.db,
-                max_window_tokens,
-            )
-            .await?;
-            for msg in &history {
-                let tool_calls: Option<Vec<ToolCall>> = msg
-                    .tool_calls
-                    .as_ref()
-                    .and_then(|v| serde_json::from_value(v.clone()).ok());
-
-                messages.push(ChatMessage {
-                    role: msg.role.clone(),
-                    content: msg.content.clone(),
-                    tool_calls,
-                    tool_result: msg.tool_results.clone(),
-                    tool_call_id: None,
-                });
-            }
-        }
-
-        // 3. Add the user message
-        messages.push(ChatMessage {
-            role: "user".into(),
-            content: user_message.to_string(),
-            tool_calls: None,
-            tool_result: None,
-            tool_call_id: None,
-        });
-
-        // 4. ReAct loop
-        loop {
-            if iterations >= self.config.max_iterations {
-                return Err(AgentError::MaxIterationsExceeded);
-            }
-
-            let request = ChatRequest {
-                model: self.config.model.clone(),
-                messages: messages.clone(),
-                tools: Some(self.registry.definitions()),
-                temperature: None,
-                max_tokens: Some(self.config.max_tokens_per_turn),
-                stream: false,
-            };
-
-            let request_body_str = serde_json::to_string(&request).unwrap_or_default();
-            let start = std::time::Instant::now();
-            let response = match self.llm.chat(request).await {
-                Ok(r) => r,
-                Err(e) => {
-                    let duration_ms = start.elapsed().as_millis() as i64;
-                    let _ = StatsRepo::record_request(
-                        &self.db,
-                        &Uuid::new_v4().to_string(),
-                        &self.config.model,
-                        Some(profile_id),
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0.0,
-                        Some(duration_ms),
-                        "error",
-                        Some(&e.to_string()),
-                        None,
-                        None,
-                    )
-                    .await;
-                    self.save_last_call(
-                        &self.config.model,
-                        None,
-                        None,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0.0,
-                        Some(duration_ms),
-                        "error",
-                        Some(&e.to_string()),
-                        None,
-                    );
-                    return Err(e.into());
-                }
-            };
-            let duration_ms = start.elapsed().as_millis() as i64;
-
-            let prompt_tokens = response
-                .usage
-                .as_ref()
-                .map(|u| u.prompt_tokens as i64)
-                .unwrap_or(0);
-            let completion_tokens = response
-                .usage
-                .as_ref()
-                .map(|u| u.completion_tokens as i64)
-                .unwrap_or(0);
-            let total_tokens = prompt_tokens + completion_tokens;
-
-            let _ = StatsRepo::record_request(
-                &self.db,
-                &Uuid::new_v4().to_string(),
-                &self.config.model,
-                Some(profile_id),
-                prompt_tokens,
-                completion_tokens,
-                total_tokens,
-                response
-                    .usage
-                    .as_ref()
-                    .map(|u| u.cached_tokens as i64)
-                    .unwrap_or(0),
-                response
-                    .usage
-                    .as_ref()
-                    .map(|u| u.reasoning_tokens as i64)
-                    .unwrap_or(0),
-                response.usage.as_ref().map(|u| u.cost).unwrap_or(0.0),
-                Some(duration_ms),
-                "success",
-                None,
-                None,
-                None,
-            )
-            .await;
-            self.save_last_call(
-                &self.config.model,
-                Some(&request_body_str),
-                Some(&serde_json::to_string(&response).unwrap_or_default()),
-                prompt_tokens as u32,
-                completion_tokens as u32,
-                total_tokens as u32,
-                response
-                    .usage
-                    .as_ref()
-                    .map(|u| u.cached_tokens)
-                    .unwrap_or(0),
-                response
-                    .usage
-                    .as_ref()
-                    .map(|u| u.reasoning_tokens)
-                    .unwrap_or(0),
-                response.usage.as_ref().map(|u| u.cost).unwrap_or(0.0),
-                Some(duration_ms),
-                "success",
-                None,
-                None,
-            );
-
-            iterations += 1;
-
-            // Check for tool calls in the LLM response
-            let has_tool_calls = response
-                .message
-                .tool_calls
-                .as_ref()
-                .map(|calls| !calls.is_empty())
-                .unwrap_or(false);
-
-            if has_tool_calls {
-                let tool_calls = response.message.tool_calls.clone().unwrap();
-
-                // Push assistant message with tool calls
-                messages.push(ChatMessage {
-                    role: "assistant".into(),
-                    content: response.message.content.clone(),
-                    tool_calls: Some(tool_calls.clone()),
-                    tool_result: None,
-                    tool_call_id: None,
-                });
-
-                // Execute each tool call
-                for tc in &tool_calls {
-                    // Guardrails check
-                    let guardrail = self
-                        .guardrails
-                        .check(&tc.name, &tc.arguments)
-                        .map_err(|e| AgentError::GuardrailError(e.to_string()))?;
-
-                    match guardrail {
-                        GuardrailResult::Allowed { .. } => {
-                            // Check per-tool retry limit (max 3 calls per tool per ReAct loop)
-                            let op = tc.arguments.get("operation").and_then(|v| v.as_str());
-                            let op_key = match op {
-                                Some(op_val) => format!("{}::{}", tc.name, op_val),
-                                None => tc.name.clone(),
-                            };
-                            let tool_count = tool_call_counts.entry(op_key).or_insert(0);
-                            *tool_count += 1;
-                            if *tool_count > MAX_TOOL_RETRIES {
-                                let display_name = match op {
-                                    Some(op_val) => format!("{}::{}", tc.name, op_val),
-                                    None => tc.name.clone(),
-                                };
-                                let msg = format!(
-                                    "Tool '{}' has been called 3 times. No more retries allowed. Inform the user and suggest alternatives.",
-                                    display_name
-                                );
-                                messages.push(ChatMessage {
-                                    role: "tool".into(),
-                                    content: msg,
-                                    tool_calls: None,
-                                    tool_result: None,
-                                    tool_call_id: Some(tc.id.clone()),
-                                });
-                                continue;
-                            }
-
-                            // Inject profile_id from authenticated session
-                            let mut args = tc.arguments.clone();
-                            if let Some(obj) = args.as_object_mut() {
-                                obj.insert("profile_id".into(), serde_json::json!(profile_id));
-                            }
-
-                            // Execute the tool
-                            let tool_result = self.registry.execute(&tc.name, args).await?;
-
-                            let result_value = tool_result.data;
-
-                            // Track for the final response
-                            all_tool_calls.push(ToolCallInfo {
-                                name: tc.name.clone(),
-                                arguments: tc.arguments.clone(),
-                                result: Some(result_value.clone()),
-                            });
-
-                            // Push tool result message for the LLM
-                            messages.push(ChatMessage {
-                                role: "tool".into(),
-                                content: serde_json::to_string(&result_value).unwrap_or_default(),
-                                tool_calls: None,
-                                tool_result: Some(result_value),
-                                tool_call_id: Some(tc.id.clone()),
-                            });
-                        }
-                        GuardrailResult::RequiresApproval { request_id } => {
-                            return Err(AgentError::GuardrailError(format!(
-                                "Tool '{}' requires explicit approval (request_id: {})",
-                                tc.name, request_id
-                            )));
-                        }
-                    }
-                }
-
-                // Continue the loop so the LLM can produce the final answer
-                // (or call more tools).
-                continue;
-            }
-
-            // No tool calls → this is the final answer
-            let message = response.message.content;
-
-            // Optional reflection
-            let reflection: Option<Reflection> = if self.config.enable_reflection {
-                let analyzer =
-                    ReflectionAnalyzer::new(self.llm.clone(), self.last_api_call.clone());
-                Some(
-                    analyzer
-                        .analyze(&messages, &message, &self.db, profile_id)
-                        .await?,
-                )
-            } else {
-                None
-            };
-
-            return Ok(AgentResponse {
-                message,
-                tool_calls: all_tool_calls,
-                reflection,
-                iterations,
-            });
-        }
+    /// Record a failed streaming LLM call for observability: one `llm_requests`
+    /// row and the in-memory last-call snapshot, both with status `"error"`.
+    ///
+    /// This only records the failure; it does not swallow it. The caller is
+    /// still responsible for propagating the original error with `return Err`.
+    async fn record_stream_failure(&self, profile_id: &str, duration_ms: i64, error_message: &str) {
+        let _ = StatsRepo::record_request(
+            &self.db,
+            &Uuid::new_v4().to_string(),
+            &self.config.model,
+            Some(profile_id),
+            0,
+            0,
+            0,
+            0,
+            0,
+            0.0,
+            Some(duration_ms),
+            "error",
+            Some(error_message),
+            None,
+            None,
+        )
+        .await;
+        self.save_last_call(
+            &self.config.model,
+            None,
+            None,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0.0,
+            Some(duration_ms),
+            "error",
+            Some(error_message),
+            None,
+        );
     }
 
     /// Resolve the user's current location name from settings or reverse geocoding.
@@ -762,8 +461,8 @@ impl Orchestrator {
             tool_call_id: None,
         });
 
-        // Inject the composed episodic-memory block (block 8.3–8.5). Identical
-        // to `process_message` because both call `compose_episodic_memory_block`.
+        // Inject the composed episodic-memory block (block 8.3–8.5). Composed
+        // in code by `compose_episodic_memory_block`.
         if let Some(block) = compose_episodic_memory_block(&ctx.rag_memories) {
             messages.push(ChatMessage {
                 role: "system".into(),
@@ -900,7 +599,16 @@ impl Orchestrator {
             };
 
             let request_body_str = serde_json::to_string(&request).unwrap_or_default();
-            let mut stream = self.llm.chat_stream(request).await?;
+            let call_start = std::time::Instant::now();
+            let mut stream = match self.llm.chat_stream(request).await {
+                Ok(s) => s,
+                Err(e) => {
+                    let duration_ms = call_start.elapsed().as_millis() as i64;
+                    self.record_stream_failure(profile_id, duration_ms, &e.to_string())
+                        .await;
+                    return Err(e.into());
+                }
+            };
             let stream_start = std::time::Instant::now();
 
             iterations += 1;
@@ -914,7 +622,16 @@ impl Orchestrator {
             );
 
             while let Some(event) = stream.next().await {
-                let event = event.map_err(|e| AgentError::LLMError(e.to_string()))?;
+                let event = match event {
+                    Ok(event) => event,
+                    Err(e) => {
+                        let duration_ms = stream_start.elapsed().as_millis() as i64;
+                        let error_message = e.to_string();
+                        self.record_stream_failure(profile_id, duration_ms, &error_message)
+                            .await;
+                        return Err(AgentError::LLMError(error_message));
+                    }
+                };
                 match event {
                     StreamEvent::Chunk(text) => {
                         content_buffer.push_str(&text);
@@ -1739,29 +1456,6 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn test_process_message_uses_system_prompt_from_db(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let pool = setup_test_db().await;
-        crate::db::repos::settings::SettingsRepo::set(&pool, "system_prompt", "Prompt de prueba")
-            .await?;
-
-        let captured: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-        // Disable reflection so only the main ReAct call captures the prompt.
-        let orchestrator =
-            build_orchestrator_with_capture(pool.clone(), captured.clone(), false).await;
-
-        orchestrator.process_message("profile-1", "Hola").await?;
-
-        assert_eq!(
-            captured.lock().unwrap().as_deref(),
-            Some("Prompt de prueba"),
-            "process_message must use settings.system_prompt when present"
-        );
-
-        Ok(())
-    }
-
     // ─── Block 8: automatic memory injection into the LLM request ───────────
     //
     // The block-1 characterization tests pinned the OLD behaviour: memory was
@@ -1788,58 +1482,8 @@ mod tests {
             .map(|m| m.content.clone())
     }
 
-    /// 8.3/8.4 — in `process_message`, the injected block carries the section
-    /// title, the `<episodic_memory>` tags, the "these are antecedents, not the
-    /// current turn" instruction and the card content; the old `[Memory
-    /// context]` literal is gone. Driven through a plain message: since block
-    /// 8.6 memory is retrieved regardless of the strategy, and block 9.1 removed
-    /// the old `RAG` override path entirely.
-    #[tokio::test]
-    async fn injects_episodic_memory_block_in_process_message(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let pool = setup_test_db().await;
-        seed_one_memory(&pool).await;
-
-        let captured: Arc<Mutex<Option<Vec<ChatMessage>>>> = Arc::new(Mutex::new(None));
-        let orchestrator = build_orchestrator_with_full_capture(
-            pool.clone(),
-            captured.clone(),
-            memory_context_builder(pool.clone()),
-        )
-        .await;
-
-        orchestrator
-            .process_message("profile-1", "what does the user like")
-            .await?;
-
-        let messages = captured
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("LLM must have been called once");
-        let block = extract_episodic_block(&messages).expect("episodic block must be injected");
-        assert!(
-            block.contains("# CONTEXTO DE MEMORIA EPISÓDICA (CAPA B)"),
-            "block must carry the section title, got {block:?}"
-        );
-        assert!(block.contains("<episodic_memory>"));
-        assert!(block.contains("</episodic_memory>"));
-        assert!(
-            block.contains("NO forman parte del turno actual"),
-            "block must instruct that the cards are antecedents, got {block:?}"
-        );
-        assert!(block.contains("User likes Rust"));
-        assert!(
-            !messages
-                .iter()
-                .any(|m| m.content.contains("[Memory context]")),
-            "the old `[Memory context]` literal must be gone (8.4)"
-        );
-        Ok(())
-    }
-
     /// 8.4 — the same holds for the streaming path, and it must be the SAME
-    /// block (identical format) as `process_message` produces.
+    /// block (identical format) that `compose_episodic_memory_block` produces.
     #[tokio::test]
     async fn injects_episodic_memory_block_in_stream() -> Result<(), Box<dyn std::error::Error>> {
         let pool = setup_test_db().await;
@@ -1878,49 +1522,6 @@ mod tests {
         Ok(())
     }
 
-    /// 8.4 — both entry points compose the block identically, because they
-    /// share `compose_episodic_memory_block` (same format, same position).
-    #[tokio::test]
-    async fn episodic_memory_block_is_identical_in_both_paths(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let pool = setup_test_db().await;
-        seed_one_memory(&pool).await;
-
-        let captured_sync: Arc<Mutex<Option<Vec<ChatMessage>>>> = Arc::new(Mutex::new(None));
-        let sync_orchestrator = build_orchestrator_with_full_capture(
-            pool.clone(),
-            captured_sync.clone(),
-            memory_context_builder(pool.clone()),
-        )
-        .await;
-        sync_orchestrator
-            .process_message("profile-1", "Hola")
-            .await?;
-
-        let captured_stream: Arc<Mutex<Option<Vec<ChatMessage>>>> = Arc::new(Mutex::new(None));
-        let stream_orchestrator = build_orchestrator_with_full_capture(
-            pool.clone(),
-            captured_stream.clone(),
-            memory_context_builder(pool.clone()),
-        )
-        .await;
-        let (tx, mut rx) = mpsc::channel(100);
-        stream_orchestrator
-            .process_message_stream("profile-1", "Hola", None, tx)
-            .await?;
-        while rx.recv().await.is_some() {}
-
-        let sync_msgs = captured_sync.lock().unwrap().clone().unwrap();
-        let stream_msgs = captured_stream.lock().unwrap().clone().unwrap();
-        let sync_block = extract_episodic_block(&sync_msgs).expect("sync block");
-        let stream_block = extract_episodic_block(&stream_msgs).expect("stream block");
-        assert_eq!(
-            sync_block, stream_block,
-            "process_message and process_message_stream must compose the identical block"
-        );
-        Ok(())
-    }
-
     /// 8.5 — the `<episodic_memory>` block appears BEFORE the first message of
     /// the conversation history, so the reminder is never read as the current
     /// turn. Plain `Hola` (`SlidingWindow`, no override) also proves that the
@@ -1950,7 +1551,11 @@ mod tests {
             memory_context_builder(pool.clone()),
         )
         .await;
-        orchestrator.process_message("profile-1", "Hola").await?;
+        let (tx, mut rx) = mpsc::channel(100);
+        orchestrator
+            .process_message_stream("profile-1", "Hola", None, tx)
+            .await?;
+        while rx.recv().await.is_some() {}
 
         let messages = captured.lock().unwrap().clone().unwrap();
         let block_idx = messages
@@ -3264,75 +2869,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_orchestrator_injects_profile_id_into_tool_call(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        // 1. Create in-memory SQLite pool
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(
-                SqliteConnectOptions::new()
-                    .filename(":memory:")
-                    .create_if_missing(true),
-            )
-            .await?;
-        sqlx::migrate::Migrator::new(std::path::Path::new("migrations"))
-            .await
-            .unwrap()
-            .run(&pool)
-            .await
-            .unwrap();
-
-        // 2. Create registry with capture tool
-        let profile_id_received = Arc::new(Mutex::new(false));
-        let mut registry = ToolRegistry::new();
-        registry.register(Box::new(ProfileIdCaptureTool {
-            profile_id_received: profile_id_received.clone(),
-        }));
-        let registry = Arc::new(registry);
-
-        // 3. Create mock LLM that returns tool call WITHOUT profile_id
-        let call_count = Arc::new(Mutex::new(0));
-        let llm = Arc::new(MockLLMWithToolCallNoProfile {
-            call_count: call_count.clone(),
-        });
-        let guardrails = Arc::new(Guardrails::new(registry.clone()));
-        let context_builder = Arc::new(ContextBuilder::new());
-        let config = OrchestratorConfig::default();
-
-        let orchestrator = Orchestrator::new(
-            llm,
-            registry,
-            guardrails,
-            context_builder,
-            config,
-            pool.clone(),
-            None,
-            None,
-            Arc::new(RwLock::new(None)),
-        );
-
-        // 4. Call process_message (non-streaming) with profile-id
-        let result = orchestrator
-            .process_message("profile-id", "test message")
-            .await;
-
-        // 5. Verify: orchestrator should complete
-        assert!(
-            result.is_ok(),
-            "Orchestrator should complete, got: {:?}",
-            result
-        );
-
-        // 6. Verify: tool received profile_id injected by orchestrator
-        assert!(
-            *profile_id_received.lock().unwrap(),
-            "Tool should have received profile_id='profile-id' injected by orchestrator"
-        );
-
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn test_streaming_injects_profile_id_into_tool_call(
     ) -> Result<(), Box<dyn std::error::Error>> {
         // 1. Create in-memory SQLite pool
@@ -3698,51 +3234,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_process_message_records_stats() -> Result<(), Box<dyn std::error::Error>> {
-        let pool = setup_test_db().await;
-
-        let llm = Arc::new(SimpleTextLLM);
-        let registry = Arc::new(ToolRegistry::new());
-        let guardrails = Arc::new(Guardrails::new(registry.clone()));
-        let context_builder = Arc::new(ContextBuilder::new());
-        let config = OrchestratorConfig::default();
-
-        let orchestrator = Orchestrator::new(
-            llm,
-            registry,
-            guardrails,
-            context_builder,
-            config,
-            pool.clone(),
-            None,
-            None,
-            Arc::new(RwLock::new(None)),
-        );
-
-        let result = orchestrator.process_message("profile-1", "hello").await?;
-        assert_eq!(result.iterations, 1);
-
-        // RED: this assertion will fail because the orchestrator does not yet
-        // call StatsRepo::record_request() after each LLM call.
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM llm_requests")
-            .fetch_one(&pool)
-            .await?;
-        assert_eq!(
-            count, 2,
-            "Expected 2 rows in llm_requests (chat + reflection)."
-        );
-
-        // Both rows should have status 'success'
-        let statuses: Vec<String> =
-            sqlx::query_scalar("SELECT status FROM llm_requests ORDER BY created_at")
-                .fetch_all(&pool)
-                .await?;
-        assert_eq!(statuses, vec!["success".to_string(), "success".to_string()]);
-
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn test_process_message_stream_records_stats() -> Result<(), Box<dyn std::error::Error>> {
         let pool = setup_test_db().await;
 
@@ -3769,21 +3260,19 @@ mod tests {
             .process_message_stream("profile-1", "hello", None, tx)
             .await?;
 
-        // RED: this assertion will fail because the orchestrator does not yet
-        // call StatsRepo::record_request() after each LLM call.
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM llm_requests")
             .fetch_one(&pool)
             .await?;
         assert!(
             count >= 1,
-            "Expected at least 1 row in llm_requests. RED: record_request is not yet called."
+            "Expected at least 1 row in llm_requests after a streamed LLM call."
         );
 
         Ok(())
     }
 
     #[tokio::test]
-    async fn test_process_message_records_stats_on_llm_error(
+    async fn test_process_message_stream_records_stats_on_llm_error(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let pool = setup_test_db().await;
 
@@ -3805,21 +3294,23 @@ mod tests {
             Arc::new(RwLock::new(None)),
         );
 
-        let result = orchestrator.process_message("profile-1", "hello").await;
+        let (tx, mut rx) = mpsc::channel(100);
+        let result = orchestrator
+            .process_message_stream("profile-1", "hello", None, tx)
+            .await;
+        while rx.recv().await.is_some() {}
         assert!(
             result.is_err(),
-            "process_message should return an error with AlwaysFailingLLM"
+            "process_message_stream should return an error with AlwaysFailingLLM"
         );
 
-        // RED: this assertion will fail because the orchestrator does not yet
-        // call StatsRepo::record_request() even on error paths.
         let count: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM llm_requests WHERE status = 'error'")
                 .fetch_one(&pool)
                 .await?;
         assert_eq!(
             count, 1,
-            "Expected 1 row with status='error' in llm_requests. RED: record_request is not yet called on error."
+            "Expected 1 row with status='error' in llm_requests after a failed streamed LLM call."
         );
 
         Ok(())
