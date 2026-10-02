@@ -27,6 +27,27 @@ const mockUpdateProfile = vi.fn();
 const mockUpdateSettings = vi.fn();
 const mockResetToDefaults = vi.fn();
 
+// Fixture de settings devuelta por el hook mockeado (equivale a lo que
+// responde `GET /settings`). Es mutable para que cada test pueda simular
+// una respuesta distinta sin redefinir el módulo.
+const defaultSettings: Record<string, string> = {
+  max_window_tokens: "10000",
+  system_prompt: "Eres Valet",
+  archivist_prompt: "Eres un archivista",
+  collapse_prompt: "Resume el texto",
+  font_size: "16",
+  message_page_size: "50",
+  openweather_api_key: "",
+  google_places_api_key: "",
+  brave_search_api_key: "",
+  MEMORY_HALF_LIFE_DAYS: "30",
+  SIMILARITY_THRESHOLD: "0.4",
+  RAG_BUDGET_TOKENS: "400",
+  MEMORY_KNN_CANDIDATES: "10",
+};
+
+let mockSettings: Record<string, string> = { ...defaultSettings };
+
 // ---------------------------------------------------------------------------
 // Mock hooks
 // ---------------------------------------------------------------------------
@@ -41,17 +62,7 @@ vi.mock("../hooks/useProfile", () => ({
 
 vi.mock("../hooks/useSettings", () => ({
   useSettings: vi.fn(() => ({
-    settings: {
-      max_window_tokens: "10000",
-      system_prompt: "Eres Valet",
-      archivist_prompt: "Eres un archivista",
-      collapse_prompt: "Resume el texto",
-      font_size: "16",
-      message_page_size: "50",
-      openweather_api_key: "",
-      google_places_api_key: "",
-      brave_search_api_key: "",
-    },
+    settings: mockSettings,
     loading: false,
     saving: false,
     error: null,
@@ -76,6 +87,7 @@ const renderDialog = (ui: ReactElement) => render(ui, { wrapper: AppWrapper });
 describe("SettingsDialog", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockSettings = { ...defaultSettings };
   });
 
   it("is not visible when visible=false", () => {
@@ -542,5 +554,76 @@ describe("SettingsDialog", () => {
       ).not.toBeNull();
     });
     expect(mockUpdateProfile).not.toHaveBeenCalled();
+  });
+
+  // ════════════════════════════════════════════════════════════════
+  // RED phase tests — pestaña "Memoria" (cuatro mandos numéricos)
+  // ════════════════════════════════════════════════════════════════
+
+  it("renders the Memoria tab with the four memory knobs", async () => {
+    const user = userEvent.setup();
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByText("Memoria"));
+
+    expect(screen.getByLabelText("MEMORY_HALF_LIFE_DAYS")).toBeInTheDocument();
+    expect(screen.getByLabelText("SIMILARITY_THRESHOLD")).toBeInTheDocument();
+    expect(screen.getByLabelText("RAG_BUDGET_TOKENS")).toBeInTheDocument();
+    expect(screen.getByLabelText("MEMORY_KNN_CANDIDATES")).toBeInTheDocument();
+  });
+
+  it("loads the memory knob values from the settings response", async () => {
+    const user = userEvent.setup();
+    mockSettings = {
+      ...mockSettings,
+      MEMORY_HALF_LIFE_DAYS: "90",
+      RAG_BUDGET_TOKENS: "800",
+    };
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByText("Memoria"));
+
+    expect(screen.getByLabelText("MEMORY_HALF_LIFE_DAYS")).toHaveValue("90");
+    expect(screen.getByLabelText("RAG_BUDGET_TOKENS")).toHaveValue("800");
+  });
+
+  it("saves the four memory knobs via updateSettings", async () => {
+    const user = userEvent.setup();
+    mockUpdateSettings.mockResolvedValue(undefined);
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByText("Memoria"));
+
+    const halfLife = screen.getByLabelText("MEMORY_HALF_LIFE_DAYS");
+    await user.clear(halfLife);
+    await user.type(halfLife, "120");
+
+    const threshold = screen.getByLabelText("SIMILARITY_THRESHOLD");
+    await user.clear(threshold);
+    await user.type(threshold, "0.7");
+
+    const budget = screen.getByLabelText("RAG_BUDGET_TOKENS");
+    await user.clear(budget);
+    await user.type(budget, "1000");
+
+    const knn = screen.getByLabelText("MEMORY_KNN_CANDIDATES");
+    await user.clear(knn);
+    await user.type(knn, "30");
+
+    const form = halfLife.closest("form") as HTMLFormElement;
+    await user.click(within(form).getByRole("button", { name: /guardar/i }));
+
+    await waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          MEMORY_HALF_LIFE_DAYS: "120",
+          SIMILARITY_THRESHOLD: "0.7",
+          RAG_BUDGET_TOKENS: "1000",
+          MEMORY_KNN_CANDIDATES: "30",
+        }),
+      );
+    });
+
+    expect(await screen.findByText("Ajustes guardados")).toBeInTheDocument();
   });
 });

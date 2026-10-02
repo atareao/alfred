@@ -1,6 +1,16 @@
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
 
+use async_trait::async_trait;
+use std::pin::Pin;
+use std::sync::Arc;
+use valet::embeddings::provider::EmbeddingError;
+use valet::embeddings::EmbeddingProvider;
+use valet::llm::provider::{
+    ChatMessage, ChatRequest, ChatResponse, LLMError, LLMProvider, StreamEvent, TokenUsage,
+};
+use valet::workers::episodic_memory::{EpisodicMemoryConfig, EpisodicMemoryWorker};
+
 async fn setup() -> SqlitePool {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
@@ -297,6 +307,175 @@ async fn test_migration_respects_custom_system_prompt() {
         value, "Mi prompt personalizado",
         "A non-empty custom system_prompt must be preserved"
     );
+}
+
+// ── 11.1: reset of the index source ────────────────────────────────────────
+
+/// A no-network LLM double: returns a parseable memory card immediately.
+struct NoNetworkLLM;
+
+#[async_trait]
+impl LLMProvider for NoNetworkLLM {
+    async fn chat(&self, _request: ChatRequest) -> Result<ChatResponse, LLMError> {
+        Ok(ChatResponse {
+            message: ChatMessage {
+                role: "assistant".into(),
+                content: "\
+- FECHA/CONTEXTO: test de reseteo
+- TEMAS TRATADOS: reconstrucción del índice
+- HECHOS Y DECISIONES: la fuente se ha reseteado
+- SÍNTESIS: el worker rearchiva desde el mensaje original"
+                    .into(),
+                tool_calls: None,
+                tool_result: None,
+                tool_call_id: None,
+            },
+            usage: Some(TokenUsage {
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                cached_tokens: 0,
+                reasoning_tokens: 0,
+                cost: 0.0,
+            }),
+        })
+    }
+
+    async fn chat_stream(
+        &self,
+        _request: ChatRequest,
+    ) -> Result<
+        Pin<Box<dyn tokio_stream::Stream<Item = Result<StreamEvent, LLMError>> + Send>>,
+        LLMError,
+    > {
+        unimplemented!("chat_stream is not used in this test")
+    }
+}
+
+/// A no-network embedding double: returns a valid 1024-dim vector.
+struct NoNetworkEmbedding;
+
+#[async_trait]
+impl EmbeddingProvider for NoNetworkEmbedding {
+    async fn embed(&self, _input: &str) -> Result<Vec<f32>, EmbeddingError> {
+        Ok(vec![0.1f32; 1024])
+    }
+}
+
+/// 11.1 — after `reset_memory_source`, the derived data is gone, the messages
+/// are un-indexed, and the worker re-archives from the original messages using
+/// test doubles (no network at all).
+#[tokio::test]
+async fn test_reset_source_makes_worker_rearchive() {
+    let pool = setup().await;
+
+    // Simulate an already-built index: one indexed message and one derived card
+    // plus its vector.
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query(
+        "INSERT INTO messages (id, role, content, tokens_count, is_indexed, summary_ref, created_at) \
+         VALUES ('m1', 'user', 'contenido original', 500, 1, 'mem-old', ?1)",
+    )
+    .bind(&now)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "INSERT INTO memory (id, content, tokens_count) VALUES ('mem-old', 'vieja ficha', 10)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let old_vector = serde_json::to_string(&vec![0.1f32; 1024]).unwrap();
+    sqlx::query("INSERT INTO vec_memory (id, embedding) VALUES ('mem-old', vec_f32(?1))")
+        .bind(&old_vector)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Reset the source.
+    let report = valet::embeddings::reindex::reset_memory_source(&pool)
+        .await
+        .expect("reset_memory_source should succeed");
+    assert_eq!(report.messages_reset, 1, "one message must be un-indexed");
+    assert_eq!(report.memories_deleted, 1, "one card must be deleted");
+    assert_eq!(report.vectors_deleted, 1, "one vector must be deleted");
+
+    // Derived data is gone and the message is un-indexed.
+    let count_memory: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM memory")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count_memory, 0, "memory must be empty after reset");
+
+    let count_vec: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM vec_memory")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count_vec, 0, "vec_memory must be empty after reset");
+
+    let (is_indexed, summary_ref): (bool, Option<String>) =
+        sqlx::query_as("SELECT is_indexed, summary_ref FROM messages WHERE id = 'm1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(!is_indexed, "message must be un-indexed after reset");
+    assert!(
+        summary_ref.is_none(),
+        "summary_ref must be NULL after reset"
+    );
+
+    // The worker must re-archive from the original message. `batch_tokens = 1`
+    // makes the single 500-token message meet the batch condition immediately.
+    let (memory_tx, memory_rx) = tokio::sync::mpsc::channel::<()>(16);
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
+
+    let _handle = EpisodicMemoryWorker::start(
+        pool.clone(),
+        Arc::new(NoNetworkLLM),
+        Arc::new(NoNetworkEmbedding),
+        memory_rx,
+        shutdown_rx,
+        EpisodicMemoryConfig {
+            batch_tokens: 1,
+            ..Default::default()
+        },
+    );
+
+    memory_tx.send(()).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    let count_memory_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM memory")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        count_memory_after, 1,
+        "the worker must re-archive a card from the message after the reset"
+    );
+
+    let count_vec_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM vec_memory")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        count_vec_after, 1,
+        "the worker must write a fresh vector into vec_memory after the reset"
+    );
+
+    let reindexed: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM messages WHERE is_indexed = 1 AND summary_ref IS NOT NULL",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        reindexed, 1,
+        "the message must be indexed again by the worker"
+    );
+
+    let _ = shutdown_tx.send(());
 }
 
 /// Running the prompts migration twice is idempotent and keeps one row per key.

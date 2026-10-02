@@ -10,6 +10,15 @@ RUN apk add --no-cache --update \
 
 WORKDIR /build
 
+# sqlite-vec.c declares `typedef u_intN_t ...` without including
+# <sys/types.h>. On glibc this goes unnoticed because <stdint.h> pulls in
+# <bits/types.h>, which declares u_intN_t under __USE_MISC; on musl it does
+# not. Alias the types to their <stdint.h> equivalents instead of forcing a
+# `-include`, because CFLAGS is global and also reaches the .S files of
+# aws-lc-sys. There a `-include` injects C headers into the assembler;
+# a `-D` only defines a preprocessor macro.
+ENV CFLAGS="-Du_int8_t=uint8_t -Du_int16_t=uint16_t -Du_int64_t=uint64_t"
+
 # Cache dependencies (avoid recompiling every time)
 RUN cargo init --bin --name valet . && \
     echo "pub fn dummy() {}" > src/lib.rs && \

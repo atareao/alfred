@@ -204,7 +204,7 @@ impl AppState {
         context_builder.rag_budget_tokens = std::env::var("RAG_BUDGET_TOKENS")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(2000);
+            .unwrap_or(800);
         let context_builder = Arc::new(context_builder);
         let model = std::env::var("OPENROUTER_MODEL")
             .unwrap_or_else(|_| "anthropic/claude-sonnet-20241022".into());
