@@ -81,10 +81,10 @@
 ## 11. Reconstrucción del índice desde la fuente (sin backfill)
 
 - [x] 11.1 Implementar el reseteo de la fuente: `UPDATE messages SET is_indexed = 0, summary_ref = NULL` y vaciado de `memory` y `vec_memory`. Los mensajes son el original y las fichas son datos derivados: es más robusto re-archivar que re-embeder contenido ya resumido por un LLM. Verificar en un test de integración que tras el reseteo el worker vuelve a archivar. Ejecutar `cargo test --test migrations` y confirmar GREEN.
-- [ ] 11.2 Ejecutar la reconstrucción sobre la BD de trabajo: en local `cargo run --bin valet-reindex` y esperar a que el `EpisodicMemoryWorker` rearchive todo con el backend `vec0`. Verificar el conteo final: `SELECT COUNT(*) FROM memory` y `SELECT COUNT(*) FROM vec_memory` alineados por id.
-  > **Nota**: verificado sobre una **copia** de la BD real (la migración entró, el worker re-archivó los 44 mensajes en 2 fichas y los conteos quedaron alineados por id), no sobre producción. La reconstrucción real sigue pendiente sobre la BD de producción hasta construir y desplegar la imagen nueva.
-- [ ] 11.3 Confirmar que no queda ningún embedding inbuscable (imposible por el esquema `vec0`) y que no existe ningún vector huérfano de otra dimensión.
-  > **Nota**: verificado sobre la **copia** de la BD real, no sobre producción. Pendiente sobre producción hasta el despliegue de la imagen nueva.
+- [x] 11.2 Ejecutar la reconstrucción sobre la BD de trabajo: en local `cargo run --bin valet-reindex` y esperar a que el `EpisodicMemoryWorker` rearchive todo con el backend `vec0`. Verificar el conteo final: `SELECT COUNT(*) FROM memory` y `SELECT COUNT(*) FROM vec_memory` alineados por id.
+  > **Nota**: ejecutado **sobre producción** el 2026-10-02. Copia de seguridad previa en `~/.local/share/valet-scratch/valet-pre-vec0-2026-10-02-0747.db` (`integrity_check: ok`, 44 mensajes / 7 fichas / 7 vectores); `valet-reindex --reset` sobre el volumen (`messages_reset=44 memories_deleted=7 vectors_deleted=0`) y despliegue de la imagen publicada (`just deploy`). El worker re-archivó los 44 mensajes en dos lotes (34 + 10) en dos ticks: `06:18:03 primary_count=34 tokens=159` y `06:48:04 primary_count=10 tokens=269`. Final: 2 fichas en `memory`, 2 vectores en `vec_memory`, alineados por id. La BD pasó de 446 KB a ~4,5 MB porque `vec0` reserva el vector en bloques de 1024 ranuras (1024 × 1024 × 4 B = 4 MB), coste que se paga una vez, no por ficha.
+- [x] 11.3 Confirmar que no queda ningún embedding inbuscable (imposible por el esquema `vec0`) y que no existe ningún vector huérfano de otra dimensión.
+  > **Nota**: verificado **sobre producción** el 2026-10-02: 0 desalineados por id en ambos sentidos y 0 mensajes originales sin indexar; las únicas filas sin indexar eran mensajes nuevos de una conversación en curso.
 
 ## 12. Verificación final
 
