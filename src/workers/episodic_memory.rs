@@ -653,12 +653,29 @@ impl EpisodicMemoryWorker {
 
         let tokens_count = estimate_markdown_tokens_heuristic(&ficha);
 
-        // Metadata: include the primary message IDs as reference
+        // Metadata: include the primary message IDs as reference.
+        //
+        // The card also records **when the facts happened**, not just when it
+        // was written: `first_message_at` is the `created_at` of the oldest
+        // origin message and `last_message_at` that of the newest. `primary` is
+        // already ordered chronologically (`query_unindexed_messages` uses
+        // `ORDER BY created_at ASC`), so the first and last slices are exactly
+        // the oldest and newest origin messages.
         let primary_ids: Vec<&str> = primary.iter().map(|m| m.id.as_str()).collect();
+        let first_message_at = primary
+            .first()
+            .map(|m| m.created_at.clone())
+            .unwrap_or_default();
+        let last_message_at = primary
+            .last()
+            .map(|m| m.created_at.clone())
+            .unwrap_or_default();
         let metadata = serde_json::json!({
             "source": "episodic_worker",
             "primary_message_ids": primary_ids,
             "date_context": card.date_context,
+            "first_message_at": first_message_at,
+            "last_message_at": last_message_at,
         });
 
         // 1. Generate embedding first (network call, no DB writes on failure).
@@ -1464,6 +1481,138 @@ mod tests {
         assert!(
             overlap_indexed,
             "Overlap message should still be indexed (was indexed before)"
+        );
+    }
+
+    // ─── Block 2: first_message_at / last_message_at (RED → GREEN) ────────
+
+    /// The `EpisodicMemoryWorker` SHALL derive, from
+    /// `metadata.primary_message_ids`, the `created_at` of the oldest and the
+    /// newest origin messages and write them into the card's `metadata` as
+    /// `first_message_at` and `last_message_at`.
+    #[tokio::test]
+    async fn test_persist_records_first_and_last_message_at_from_origin_messages() {
+        let db = test_db().await;
+
+        // A batch of origin messages spanning the real interval from the
+        // proposal: 2026-09-29T17:13:00Z → 2026-09-30T17:37:00Z.
+        let times = [
+            "2026-09-29T17:13:00Z",
+            "2026-09-29T20:00:00Z",
+            "2026-09-30T09:15:00Z",
+            "2026-09-30T12:00:00Z",
+            "2026-09-30T17:37:00Z",
+        ];
+        for (i, t) in times.iter().enumerate() {
+            insert_message(&db, "user", &format!("Mensaje {}", i), 100, false, t).await;
+        }
+
+        let provider = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE).wrap();
+
+        // `inactivity_minutes: 0` forces the batch to be processed regardless of
+        // the wall clock, and 5×100 < 2000 tokens keeps every message in the
+        // primary batch, so all of them count as origin messages.
+        EpisodicMemoryWorker::evaluate(
+            &db,
+            provider,
+            embedding_provider(),
+            &EpisodicMemoryConfig {
+                inactivity_minutes: 0,
+                ..Default::default()
+            },
+            &no_attempt(),
+        )
+        .await;
+
+        let (memories, _) = MemoryRepo::list(&db, 10, 0).await.unwrap();
+        assert_eq!(memories.len(), 1, "exactly one card must be persisted");
+        let metadata = &memories[0].metadata;
+
+        assert_eq!(
+            metadata["first_message_at"], "2026-09-29T17:13:00Z",
+            "first_message_at must be the oldest origin message's created_at"
+        );
+        assert_eq!(
+            metadata["last_message_at"], "2026-09-30T17:37:00Z",
+            "last_message_at must be the newest origin message's created_at"
+        );
+    }
+
+    /// Adding the two new keys SHALL NOT lose or rename anything: `source`,
+    /// `primary_message_ids` and `date_context` keep their exact values, and
+    /// they coexist with `first_message_at` / `last_message_at`.
+    #[tokio::test]
+    async fn test_persist_message_timestamps_do_not_displace_existing_metadata_keys() {
+        let db = test_db().await;
+
+        // Insert origin messages and remember their ids, in chronological order.
+        let times = [
+            "2026-09-29T17:13:00Z",
+            "2026-09-30T08:00:00Z",
+            "2026-09-30T17:37:00Z",
+        ];
+        let mut expected_ids = Vec::new();
+        for (i, t) in times.iter().enumerate() {
+            let id = insert_message(&db, "user", &format!("Mensaje {}", i), 100, false, t).await;
+            expected_ids.push(id);
+        }
+
+        let provider = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE).wrap();
+        EpisodicMemoryWorker::evaluate(
+            &db,
+            provider,
+            embedding_provider(),
+            &EpisodicMemoryConfig {
+                inactivity_minutes: 0,
+                ..Default::default()
+            },
+            &no_attempt(),
+        )
+        .await;
+
+        let (memories, _) = MemoryRepo::list(&db, 10, 0).await.unwrap();
+        assert_eq!(memories.len(), 1, "exactly one card must be persisted");
+        let metadata = memories[0]
+            .metadata
+            .as_object()
+            .expect("metadata must be a JSON object");
+
+        // The pre-existing keys keep their exact values...
+        assert_eq!(
+            metadata["source"], "episodic_worker",
+            "`source` must keep its value"
+        );
+        let stored_ids: Vec<String> =
+            serde_json::from_value(metadata["primary_message_ids"].clone())
+                .expect("`primary_message_ids` must remain an array of strings");
+        assert_eq!(
+            stored_ids, expected_ids,
+            "`primary_message_ids` must keep the origin ids, in order"
+        );
+        assert_eq!(
+            metadata["date_context"], "26 de septiembre de 2026 — Configuración de infraestructura",
+            "`date_context` must keep the LLM-written date text"
+        );
+
+        // ...they are all present, together with the two new keys...
+        for key in [
+            "source",
+            "primary_message_ids",
+            "date_context",
+            "first_message_at",
+            "last_message_at",
+        ] {
+            assert!(
+                metadata.contains_key(key),
+                "`{key}` must be present in the metadata"
+            );
+        }
+
+        // ...and nothing was lost or renamed: the object has exactly these keys.
+        assert_eq!(
+            metadata.len(),
+            5,
+            "the metadata must hold exactly the three original keys plus the two new ones"
         );
     }
 
