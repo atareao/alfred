@@ -4,7 +4,7 @@
 
 ### Requirement: El EpisodicMemoryWorker SHALL registrar cuándo ocurrieron los hechos en la metadata de la ficha
 
-Al persistir una ficha, el `EpisodicMemoryWorker` SHALL derivar de la tabla `messages` el `created_at` del mensaje de origen más antiguo y el del más reciente cuyos identificadores figuran en `metadata.primary_message_ids`, y SHALL escribir en la `metadata` de la ficha las claves `first_message_at` (el más antiguo) y `last_message_at` (el más reciente). SHALL NOT cambiar el esquema de `memory`: `metadata` ya es TEXT con JSON. El worker SHALL NOT alterar las demás claves de la `metadata` (`source`, `primary_message_ids`, `date_context`), que SHALL seguir escribiéndose igual.
+Al persistir una ficha, el `EpisodicMemoryWorker` SHALL escribir en la `metadata` de la ficha las claves `first_message_at` y `last_message_at`, con el `created_at` del mensaje de origen más antiguo y del más reciente de los que componen la ficha. SHALL NOT cambiar el esquema de `memory`: `metadata` ya es TEXT con JSON. El worker SHALL NOT alterar las demás claves de la `metadata` (`source`, `primary_message_ids`, `date_context`), que SHALL seguir escribiéndose igual.
 
 **Given** una ficha a persistir con sus mensajes de origen en `metadata.primary_message_ids`  
 **When** el `EpisodicMemoryWorker` la persiste  
