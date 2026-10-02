@@ -239,6 +239,38 @@ fn compose_episodic_memory_block(memories: &[String]) -> Option<String> {
     Some(block)
 }
 
+/// Compose the single `role:"system"` message that opens every request.
+///
+/// Sections are appended in order and the ones that are present are separated
+/// by a blank line (`\n\n`):
+///
+///   1. the prompt (`settings.system_prompt`),
+///   2. the reserved persistent-memory slot (empty today; insertion point),
+///   3. the episodic-memory section, when there are cards, and
+///   4. the date/time/location section, when the browser sent context.
+///
+/// An absent section leaves no trace: no title, marker, separator or stray
+/// blank line. With only the prompt the result is *exactly* the prompt.
+fn compose_system_message(
+    prompt: &str,
+    persistent_memory: Option<String>,
+    episodic_memory: Option<String>,
+    browser_section: Option<String>,
+) -> String {
+    let mut sections: Vec<String> = Vec::with_capacity(4);
+    sections.push(prompt.to_string());
+    if let Some(section) = persistent_memory {
+        sections.push(section);
+    }
+    if let Some(section) = episodic_memory {
+        sections.push(section);
+    }
+    if let Some(section) = browser_section {
+        sections.push(section);
+    }
+    sections.join("\n\n")
+}
+
 // ---------------------------------------------------------------------------
 // Orchestrator — ReAct loop
 // ---------------------------------------------------------------------------
@@ -453,28 +485,11 @@ impl Orchestrator {
             "Context built for ReAct loop"
         );
 
-        messages.push(ChatMessage {
-            role: "system".into(),
-            content: system_prompt,
-            tool_calls: None,
-            tool_result: None,
-            tool_call_id: None,
-        });
-
-        // Inject the composed episodic-memory block (block 8.3–8.5). Composed
-        // in code by `compose_episodic_memory_block`.
-        if let Some(block) = compose_episodic_memory_block(&ctx.rag_memories) {
-            messages.push(ChatMessage {
-                role: "system".into(),
-                content: block,
-                tool_calls: None,
-                tool_result: None,
-                tool_call_id: None,
-            });
-        }
-
-        // Inject browser context (date/time/location from user's browser)
-        if let Some(ref ctx) = browser_context {
+        // Browser context (date/time/location from the user's browser). It is
+        // composed here because resolving the location name may hit the
+        // network (`reverse_geocode` is async), then handed to the composer as
+        // the closing section. No browser context means no section at all.
+        let browser_section = if let Some(ref ctx) = browser_context {
             let fecha = format_browser_timestamp(&ctx.timestamp, &ctx.timezone)
                 .unwrap_or_else(|| ctx.timestamp.clone());
 
@@ -508,14 +523,28 @@ impl Orchestrator {
                 "🌍 Browser context injected"
             );
 
-            messages.push(ChatMessage {
-                role: "system".into(),
-                content: parts.join(" "),
-                tool_calls: None,
-                tool_result: None,
-                tool_call_id: None,
-            });
-        }
+            Some(parts.join(" "))
+        } else {
+            None
+        };
+
+        // Single system message: prompt → reserved persistent-memory slot
+        // (empty today) → episodic section → browser context. Absent sections
+        // leave no trace, so with only the prompt the message is exactly the
+        // prompt, and the browser section always closes it.
+        let system_content = compose_system_message(
+            &system_prompt,
+            None, // persistent-memory slot: reserved, intentionally empty for now
+            compose_episodic_memory_block(&ctx.rag_memories),
+            browser_section,
+        );
+        messages.push(ChatMessage {
+            role: "system".into(),
+            content: system_content,
+            tool_calls: None,
+            tool_result: None,
+            tool_call_id: None,
+        });
 
         // Load conversation history from DB using token budget
         {
@@ -1451,6 +1480,412 @@ mod tests {
             captured.lock().unwrap().as_deref(),
             Some(DEFAULT_SYSTEM_PROMPT_FALLBACK),
             "When settings.system_prompt is missing the minimal fallback must be used"
+        );
+
+        Ok(())
+    }
+
+    // ─── unified-system-message block 1: characterisation of the OLD contract ─
+    //
+    // The request used to open with THREE separate `role:"system"` messages,
+    // in this exact order, before the conversation history:
+    //   1. the prompt (`settings.system_prompt`),
+    //   2. the episodic-memory section (`<episodic_memory>`), and
+    //   3. the browser context (date, time, location).
+    //
+    // Two explicit exceptions are declared on purpose:
+    //   * the reverse-geocoding branch (browser context WITHOUT `location_name`)
+    //     is not reproduced here because it would hit the network; a known
+    //     `location_name` is supplied instead, and
+    //   * the reserved persistent-memory slot did not exist yet.
+    //
+    // The `unified-system-message` change broke that contract: blocks 2 and 3
+    // merged all three sections into ONE single system message, in the order
+    // prompt → episodic → browser. This characterisation documents the final
+    // contract; the intermediate two-message state was captured in block 2.
+    #[tokio::test]
+    async fn characterization_single_system_message() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+        seed_one_memory(&pool).await;
+
+        let captured: Arc<Mutex<Option<Vec<ChatMessage>>>> = Arc::new(Mutex::new(None));
+        let orchestrator = build_orchestrator_with_full_capture(
+            pool.clone(),
+            captured.clone(),
+            memory_context_builder(pool.clone()),
+        )
+        .await;
+
+        let browser = BrowserContext {
+            timestamp: "2026-09-26T06:23:55.149Z".into(),
+            timezone: "Europe/Madrid".into(),
+            latitude: Some(40.4168),
+            longitude: Some(-3.7038),
+            location_name: Some("Madrid".into()),
+        };
+
+        let (tx, mut rx) = mpsc::channel(100);
+        orchestrator
+            .process_message_stream("profile-1", "Hola", Some(browser), tx)
+            .await?;
+        while rx.recv().await.is_some() {}
+
+        let messages = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("LLM must have been called once");
+        let system_messages: Vec<&ChatMessage> =
+            messages.iter().filter(|m| m.role == "system").collect();
+
+        assert_eq!(
+            system_messages.len(),
+            1,
+            "the request must open with exactly one system message"
+        );
+        let content = &system_messages[0].content;
+        let episodic_pos = content.find(EPISODIC_MEMORY_SECTION_TITLE).unwrap();
+        let location_pos = content.find("Ubicación: Madrid").unwrap();
+        assert!(
+            episodic_pos < location_pos,
+            "episodic precedes the browser section"
+        );
+        assert!(content.ends_with("Ubicación: Madrid (40.4168, -3.7038)."));
+
+        Ok(())
+    }
+
+    // ─── unified-system-message block 2: one single system message ───────────
+
+    /// 2.1 — the request must open with exactly ONE `role:"system"` message
+    /// before the history, starting with the prompt and continuing with the
+    /// episodic section when there are cards.
+    #[tokio::test]
+    async fn single_system_message_merges_prompt_and_episodic(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+        seed_one_memory(&pool).await;
+        let prompt = "PROMPT_DE_PRUEBA_UNICO";
+        crate::db::repos::settings::SettingsRepo::set(&pool, "system_prompt", prompt).await?;
+        // A previous turn, so the conversation history is present too.
+        crate::db::repos::messages::MessagesRepo::create(
+            &pool,
+            "user",
+            "previous turn",
+            None,
+            None,
+            None,
+            None,
+            100_000,
+            None,
+        )
+        .await?;
+
+        let captured: Arc<Mutex<Option<Vec<ChatMessage>>>> = Arc::new(Mutex::new(None));
+        let orchestrator = build_orchestrator_with_full_capture(
+            pool.clone(),
+            captured.clone(),
+            memory_context_builder(pool.clone()),
+        )
+        .await;
+
+        let (tx, mut rx) = mpsc::channel(100);
+        orchestrator
+            .process_message_stream("profile-1", "Hola", None, tx)
+            .await?;
+        while rx.recv().await.is_some() {}
+
+        let messages = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("LLM must have been called once");
+        let system_messages: Vec<&ChatMessage> =
+            messages.iter().filter(|m| m.role == "system").collect();
+
+        assert_eq!(
+            system_messages.len(),
+            1,
+            "there must be exactly one system message before the history"
+        );
+        let content = &system_messages[0].content;
+        let prompt_pos = content.find(prompt).expect("prompt must be present");
+        let episodic_pos = content
+            .find(EPISODIC_MEMORY_SECTION_TITLE)
+            .expect("episodic section must be present");
+        assert!(
+            prompt_pos < episodic_pos,
+            "the prompt must precede the episodic section"
+        );
+        assert!(content.contains("<episodic_memory>"));
+
+        let system_idx = messages
+            .iter()
+            .position(|m| m.role == "system")
+            .expect("system message present");
+        let history_idx = messages
+            .iter()
+            .position(|m| m.content == "previous turn")
+            .expect("history present");
+        assert!(
+            system_idx < history_idx,
+            "the system message must precede the history"
+        );
+
+        Ok(())
+    }
+
+    /// 2.3 — without cards the episodic section is omitted entirely: the single
+    /// system message is *exactly* the prompt, with no tags and no filler.
+    #[tokio::test]
+    async fn single_system_message_omits_episodic_without_cards(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+        // No memory seeded on purpose.
+        let prompt = "PROMPT_SIN_FICHAS";
+        crate::db::repos::settings::SettingsRepo::set(&pool, "system_prompt", prompt).await?;
+
+        let captured: Arc<Mutex<Option<Vec<ChatMessage>>>> = Arc::new(Mutex::new(None));
+        let orchestrator = build_orchestrator_with_full_capture(
+            pool.clone(),
+            captured.clone(),
+            memory_context_builder(pool.clone()),
+        )
+        .await;
+
+        let (tx, mut rx) = mpsc::channel(100);
+        orchestrator
+            .process_message_stream("profile-1", "Hola", None, tx)
+            .await?;
+        while rx.recv().await.is_some() {}
+
+        let messages = captured.lock().unwrap().clone().unwrap();
+        let system_messages: Vec<&ChatMessage> =
+            messages.iter().filter(|m| m.role == "system").collect();
+        assert_eq!(system_messages.len(), 1);
+        assert_eq!(
+            system_messages[0].content, prompt,
+            "without cards the single system message must be exactly the prompt"
+        );
+        assert!(!system_messages[0].content.contains("<episodic_memory>"));
+
+        Ok(())
+    }
+
+    // ─── unified-system-message block 3: date/time/location closes the message ─
+
+    /// 3.1 — with a `BrowserContext`, the date/time/location section is the
+    /// last one of the single system message and keeps the current format.
+    #[tokio::test]
+    async fn single_system_message_browser_section_is_last(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+        seed_one_memory(&pool).await;
+        let prompt = "PROMPT_CON_CONTEXTO";
+        crate::db::repos::settings::SettingsRepo::set(&pool, "system_prompt", prompt).await?;
+
+        let captured: Arc<Mutex<Option<Vec<ChatMessage>>>> = Arc::new(Mutex::new(None));
+        let orchestrator = build_orchestrator_with_full_capture(
+            pool.clone(),
+            captured.clone(),
+            memory_context_builder(pool.clone()),
+        )
+        .await;
+
+        let browser = BrowserContext {
+            timestamp: "2026-09-26T06:23:55.149Z".into(),
+            timezone: "Europe/Madrid".into(),
+            latitude: Some(40.4168),
+            longitude: Some(-3.7038),
+            location_name: Some("Madrid".into()),
+        };
+
+        let (tx, mut rx) = mpsc::channel(100);
+        orchestrator
+            .process_message_stream("profile-1", "Hola", Some(browser), tx)
+            .await?;
+        while rx.recv().await.is_some() {}
+
+        let messages = captured.lock().unwrap().clone().unwrap();
+        let system_messages: Vec<&ChatMessage> =
+            messages.iter().filter(|m| m.role == "system").collect();
+        assert_eq!(
+            system_messages.len(),
+            1,
+            "browser context must not add a second system message"
+        );
+
+        let content = &system_messages[0].content;
+        let episodic_pos = content
+            .find(EPISODIC_MEMORY_SECTION_TITLE)
+            .expect("episodic section present");
+        let location_pos = content
+            .find("Ubicación: Madrid (40.4168, -3.7038).")
+            .expect("location present");
+        assert!(
+            episodic_pos < location_pos,
+            "the browser section must come after the episodic one"
+        );
+        assert!(
+            content.ends_with("Ubicación: Madrid (40.4168, -3.7038)."),
+            "the browser section must be the last one, got: {content:?}"
+        );
+        assert!(
+            content.contains("8:23"),
+            "the formatted local time must be present, got: {content:?}"
+        );
+
+        Ok(())
+    }
+
+    /// 3.3 — without a `BrowserContext` there is no date/time/location section:
+    /// the message is exactly the prompt and carries no location or coordinates.
+    #[tokio::test]
+    async fn single_system_message_omits_browser_section_without_context(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+        let prompt = "PROMPT_SIN_CONTEXTO";
+        crate::db::repos::settings::SettingsRepo::set(&pool, "system_prompt", prompt).await?;
+
+        let captured: Arc<Mutex<Option<Vec<ChatMessage>>>> = Arc::new(Mutex::new(None));
+        let orchestrator = build_orchestrator_with_full_capture(
+            pool.clone(),
+            captured.clone(),
+            memory_context_builder(pool.clone()),
+        )
+        .await;
+
+        let (tx, mut rx) = mpsc::channel(100);
+        orchestrator
+            .process_message_stream("profile-1", "Hola", None, tx)
+            .await?;
+        while rx.recv().await.is_some() {}
+
+        let messages = captured.lock().unwrap().clone().unwrap();
+        let system_messages: Vec<&ChatMessage> =
+            messages.iter().filter(|m| m.role == "system").collect();
+        assert_eq!(system_messages.len(), 1);
+        let content = &system_messages[0].content;
+        assert_eq!(
+            content, prompt,
+            "without context the message is exactly the prompt"
+        );
+        assert!(!content.contains("Ubicación:"));
+        assert!(!content.contains("Coordenadas:"));
+
+        Ok(())
+    }
+
+    // ─── unified-system-message block 4: reserved persistent-memory slot ──────
+
+    /// 4.1 — the composer accepts an OPTIONAL persistent-memory section placed
+    /// between the prompt and the episodic one. With the slot empty (`None`,
+    /// today's only value) it emits nothing: no title, marker, comment,
+    /// separator or stray blank line.
+    #[test]
+    fn compose_system_message_reserves_persistent_slot_without_text() {
+        // Empty slot: prompt + episodic only, no trace of the reservation.
+        let empty = compose_system_message("PROMPT", None, Some("EPISODIC".to_string()), None);
+        assert_eq!(empty, "PROMPT\n\nEPISODIC");
+
+        // A future section would land exactly between prompt and episodic.
+        let filled = compose_system_message(
+            "PROMPT",
+            Some("PERSISTENT".to_string()),
+            Some("EPISODIC".to_string()),
+            Some("BROWSER".to_string()),
+        );
+        assert_eq!(filled, "PROMPT\n\nPERSISTENT\n\nEPISODIC\n\nBROWSER");
+    }
+
+    /// 4.1 (request level) — the assembled request carries no persistent-memory
+    /// section at all: the prompt and the episodic section are adjacent, with no
+    /// marker between them.
+    #[tokio::test]
+    async fn request_has_no_persistent_memory_section() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+        seed_one_memory(&pool).await;
+        let prompt = "PROMPT_HUECO";
+        crate::db::repos::settings::SettingsRepo::set(&pool, "system_prompt", prompt).await?;
+
+        let captured: Arc<Mutex<Option<Vec<ChatMessage>>>> = Arc::new(Mutex::new(None));
+        let orchestrator = build_orchestrator_with_full_capture(
+            pool.clone(),
+            captured.clone(),
+            memory_context_builder(pool.clone()),
+        )
+        .await;
+
+        let (tx, mut rx) = mpsc::channel(100);
+        orchestrator
+            .process_message_stream("profile-1", "Hola", None, tx)
+            .await?;
+        while rx.recv().await.is_some() {}
+
+        let messages = captured.lock().unwrap().clone().unwrap();
+        let system_messages: Vec<&ChatMessage> =
+            messages.iter().filter(|m| m.role == "system").collect();
+        assert_eq!(system_messages.len(), 1);
+        let content = &system_messages[0].content;
+        assert!(
+            content.starts_with(&format!("{prompt}\n\n{EPISODIC_MEMORY_SECTION_TITLE}")),
+            "no persistent-memory text may sit between the prompt and the episodic \
+             section, got: {content:?}"
+        );
+
+        Ok(())
+    }
+
+    /// 4.3 — full order with prompt, cards and browser context:
+    /// prompt → (empty persistent slot) → episodic → date/time/location.
+    #[tokio::test]
+    async fn single_system_message_full_section_order() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+        seed_one_memory(&pool).await;
+        let prompt = "PROMPT_ORDEN";
+        crate::db::repos::settings::SettingsRepo::set(&pool, "system_prompt", prompt).await?;
+
+        let captured: Arc<Mutex<Option<Vec<ChatMessage>>>> = Arc::new(Mutex::new(None));
+        let orchestrator = build_orchestrator_with_full_capture(
+            pool.clone(),
+            captured.clone(),
+            memory_context_builder(pool.clone()),
+        )
+        .await;
+
+        let browser = BrowserContext {
+            timestamp: "2026-09-26T06:23:55.149Z".into(),
+            timezone: "Europe/Madrid".into(),
+            latitude: Some(40.4168),
+            longitude: Some(-3.7038),
+            location_name: Some("Madrid".into()),
+        };
+
+        let (tx, mut rx) = mpsc::channel(100);
+        orchestrator
+            .process_message_stream("profile-1", "Hola", Some(browser), tx)
+            .await?;
+        while rx.recv().await.is_some() {}
+
+        let messages = captured.lock().unwrap().clone().unwrap();
+        let system_messages: Vec<&ChatMessage> =
+            messages.iter().filter(|m| m.role == "system").collect();
+        assert_eq!(system_messages.len(), 1);
+        let content = &system_messages[0].content;
+
+        let prompt_pos = content.find(prompt).expect("prompt present");
+        let episodic_pos = content
+            .find(EPISODIC_MEMORY_SECTION_TITLE)
+            .expect("episodic present");
+        let browser_pos = content
+            .find("Ubicación: Madrid")
+            .expect("browser section present");
+        assert!(prompt_pos < episodic_pos, "prompt before episodic");
+        assert!(episodic_pos < browser_pos, "episodic before browser");
+        assert!(content.ends_with("Ubicación: Madrid (40.4168, -3.7038)."));
+        assert!(
+            content.starts_with(&format!("{prompt}\n\n{EPISODIC_MEMORY_SECTION_TITLE}")),
+            "the empty persistent slot leaves no text between prompt and episodic"
         );
 
         Ok(())
