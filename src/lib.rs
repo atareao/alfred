@@ -139,10 +139,6 @@ impl AppState {
         tool_registry.register(Box::new(crate::tools::web_search::WebSearchTool::new(
             pool.clone(),
         )));
-        tool_registry.register(Box::new(crate::tools::meals::MealsTool::new(pool.clone())));
-        tool_registry.register(Box::new(crate::tools::habits::HabitsTool::new(
-            pool.clone(),
-        )));
         tool_registry.register(Box::new(crate::tools::calendar::CalendarTool::new(
             pool.clone(),
         )));

@@ -122,76 +122,35 @@ mod tests {
         );
     }
 
+    /// The six tables belonging to the removed tools (meals, shopping list,
+    /// habits and contacts) must NOT exist after migration.
+    const REMOVED_TOOLS_TABLES: [&str; 6] = [
+        "contacts",
+        "contacts_fts",
+        "meal_plans",
+        "shopping_list",
+        "habits",
+        "habit_logs",
+    ];
+
     #[tokio::test]
-    async fn test_migrations_creates_meal_plans_table() {
+    async fn test_migrations_drop_removed_tools_tables() {
         let pool = setup().await;
 
-        let has_table: bool = sqlx::query_scalar(
-            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='meal_plans'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        for table in REMOVED_TOOLS_TABLES {
+            let count: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE name = ?1")
+                    .bind(table)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
 
-        assert!(
-            has_table,
-            "Expected 'meal_plans' table to exist after migration"
-        );
+            assert_eq!(count, 0, "Table '{table}' should NOT exist after migration");
+        }
     }
 
     #[tokio::test]
-    async fn test_migrations_creates_shopping_list_table() {
-        let pool = setup().await;
-
-        let has_table: bool = sqlx::query_scalar(
-            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='shopping_list'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-
-        assert!(
-            has_table,
-            "Expected 'shopping_list' table to exist after migration"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_migrations_creates_habits_table() {
-        let pool = setup().await;
-
-        let has_table: bool = sqlx::query_scalar(
-            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='habits'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-
-        assert!(
-            has_table,
-            "Expected 'habits' table to exist after migration"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_migrations_creates_habit_logs_table() {
-        let pool = setup().await;
-
-        let has_table: bool = sqlx::query_scalar(
-            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='habit_logs'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-
-        assert!(
-            has_table,
-            "Expected 'habit_logs' table to exist after migration"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_idempotent_includes_new_tables() {
+    async fn test_idempotent_does_not_recreate_removed_tables() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect_with(
@@ -211,10 +170,10 @@ mod tests {
                 .await
                 .unwrap();
 
-        for table in &["meal_plans", "shopping_list", "habits", "habit_logs"] {
+        for table in REMOVED_TOOLS_TABLES {
             assert!(
-                tables.contains(&table.to_string()),
-                "Expected '{table}' table after idempotent migration"
+                !tables.contains(&table.to_string()),
+                "Table '{table}' should NOT exist after idempotent migration"
             );
         }
     }

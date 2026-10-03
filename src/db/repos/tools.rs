@@ -73,14 +73,11 @@ impl ToolsRepo {
             ("tasks", "Gestión de tareas pendientes"),
             ("weather", "Consulta del clima"),
             ("geo", "Geolocalización y búsqueda de lugares"),
-            ("meals", "Planificación de comidas y lista de la compra"),
-            ("habits", "Seguimiento de hábitos"),
             ("knowledge", "Notas y conocimiento personal"),
-            ("contacts", "Gestión de contactos"),
             ("reminders", "Recordatorios con notificaciones"),
             (
                 "unified_search",
-                "Búsqueda unificada en todas las dimensiones (mensajes, memorias, notas, eventos, tareas, contactos)",
+                "Búsqueda unificada en todas las dimensiones (mensajes, memorias, notas, eventos, tareas)",
             ),
         ];
 
@@ -127,7 +124,7 @@ mod tests {
     async fn test_list_tools() -> Result<(), Box<dyn std::error::Error>> {
         let pool = setup().await?;
         let tools = ToolsRepo::list(&pool).await?;
-        assert_eq!(tools.len(), 10);
+        assert_eq!(tools.len(), 7);
         assert!(tools.iter().any(|t| t.name == "weather"));
         assert!(tools.iter().any(|t| t.name == "unified_search"));
         Ok(())
