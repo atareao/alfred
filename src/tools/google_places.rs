@@ -12,6 +12,9 @@ use sqlx::SqlitePool;
 use crate::tools::permission::Permission;
 use crate::tools::r#trait::{Tool, ToolError, ToolResult};
 
+/// Default base URL for the Google Places New API.
+const DEFAULT_PLACES_BASE_URL: &str = "https://places.googleapis.com/v1";
+
 // ---------------------------------------------------------------------------
 // Data types — mirrors the Google Places New API response shape
 // ---------------------------------------------------------------------------
@@ -106,17 +109,31 @@ pub const FIELD_MASK: &str = concat!(
 pub struct GooglePlacesClient {
     http: reqwest::Client,
     api_key: String,
+    base_url: String,
 }
 
 impl GooglePlacesClient {
     /// Create a new client with the given API key.
     pub fn new(api_key: String) -> Self {
+        Self::with_base_url(api_key, DEFAULT_PLACES_BASE_URL.to_string())
+    }
+
+    /// Create a client targeting an explicit base URL.
+    ///
+    /// This is a non-behavioural seam used by tests to point the client at a
+    /// mock server. Production callers should prefer [`GooglePlacesClient::new`],
+    /// which uses the real Google Places New API base URL.
+    pub(crate) fn with_base_url(api_key: String, base_url: String) -> Self {
         let http = reqwest::Client::builder()
             .user_agent("valet/1.0")
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .expect("Failed to create HTTP client");
-        Self { http, api_key }
+        Self {
+            http,
+            api_key,
+            base_url,
+        }
     }
 
     /// Search places by free-text query (e.g. "restaurantes en Lecce").
@@ -142,9 +159,11 @@ impl GooglePlacesClient {
             body["includedType"] = serde_json::json!(typ);
         }
 
+        let url = format!("{}/places:searchText", self.base_url);
+
         let resp = self
             .http
-            .post("https://places.googleapis.com/v1/places:searchText")
+            .post(url)
             .header("X-Goog-Api-Key", &self.api_key)
             .header("X-Goog-FieldMask", FIELD_MASK)
             .header("Content-Type", "application/json")
@@ -210,9 +229,11 @@ impl GooglePlacesClient {
             }
         });
 
+        let url = format!("{}/places:searchNearby", self.base_url);
+
         let resp = self
             .http
-            .post("https://places.googleapis.com/v1/places:searchNearby")
+            .post(url)
             .header("X-Goog-Api-Key", &self.api_key)
             .header("X-Goog-FieldMask", FIELD_MASK)
             .header("Content-Type", "application/json")
@@ -283,6 +304,7 @@ impl GooglePlacesClient {
 /// (key: `google_places_api_key`).
 pub struct SearchPlacesTool {
     db: SqlitePool,
+    base_url: String,
 }
 
 impl SearchPlacesTool {
@@ -291,7 +313,19 @@ impl SearchPlacesTool {
     /// The API key is **not** read at construction time; it is fetched from
     /// the settings database on each `execute` call.
     pub fn new(db: SqlitePool) -> Self {
-        Self { db }
+        Self {
+            db,
+            base_url: DEFAULT_PLACES_BASE_URL.to_string(),
+        }
+    }
+
+    /// Create a tool instance targeting an explicit base URL.
+    ///
+    /// Non-behavioural test seam: it lets tests redirect the underlying HTTP
+    /// client to a mock server without altering production routing.
+    #[cfg(test)]
+    pub fn new_with_base_url(db: SqlitePool, base_url: String) -> Self {
+        Self { db, base_url }
     }
 }
 
@@ -348,7 +382,6 @@ impl Tool for SearchPlacesTool {
             .get("longitude")
             .and_then(|v| v.as_f64())
             .ok_or_else(|| ToolError::InvalidArguments("Missing or invalid longitude".into()))?;
-        let radius = args.get("radius").and_then(|v| v.as_u64()).unwrap_or(1000);
 
         // Read API key from settings DB first, fallback to Config/ENV
         let api_key =
@@ -363,17 +396,23 @@ impl Tool for SearchPlacesTool {
                     })?,
             };
 
-        let client = GooglePlacesClient::new(api_key);
+        let client = GooglePlacesClient::with_base_url(api_key, self.base_url.clone());
 
-        // Use search_nearby when coordinates are provided (query is used as type filter)
-        let types: Vec<&str> = if query.is_empty() {
-            vec![]
-        } else {
-            vec![query]
+        // Dispatch on the presence of `radius`:
+        //   - present → proximity search (`places:searchNearby`), query as type filter
+        //   - absent  → free-text search (`places:searchText`), query as `textQuery`
+        let places = match args.get("radius") {
+            Some(radius_value) => {
+                let radius = radius_value.as_u64().unwrap_or(1000) as u32;
+                let types: Vec<&str> = if query.is_empty() {
+                    vec![]
+                } else {
+                    vec![query]
+                };
+                client.search_nearby(lat, lon, radius, &types).await?
+            }
+            None => client.search_text(query, 10, None).await?,
         };
-        let places = client
-            .search_nearby(lat, lon, radius as u32, &types)
-            .await?;
 
         let maps_link = client.maps_link(&places);
 
@@ -547,6 +586,7 @@ mod tests {
         GooglePlacesClient {
             http: reqwest::Client::new(),
             api_key: "test".into(),
+            base_url: DEFAULT_PLACES_BASE_URL.into(),
         }
     }
 
@@ -737,5 +777,160 @@ mod tests {
             "Expected InvalidArguments error for missing latitude"
         );
         Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Endpoint routing — searchText vs searchNearby (wiremock)
+    // -----------------------------------------------------------------------
+
+    /// Scenario: Búsqueda por texto (searchText)
+    ///
+    /// RED test — without the dispatch fix, `execute` always calls
+    /// `places:searchNearby`, so the `places:searchText` mock never receives a
+    /// request and this assertion fires.
+    #[tokio::test]
+    async fn test_execute_without_radius_uses_search_text() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/places:searchText"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "places": [] })),
+            )
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/places:searchNearby"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "places": [] })),
+            )
+            .mount(&server)
+            .await;
+
+        let (pool, _) = setup_tool().await;
+        crate::db::repos::settings::SettingsRepo::set(&pool, "google_places_api_key", "test-key")
+            .await
+            .expect("failed to seed google_places_api_key");
+        let tool = SearchPlacesTool::new_with_base_url(pool, server.uri());
+
+        let result = tool
+            .execute(serde_json::json!({
+                "query": "restaurantes en Madrid",
+                "latitude": 40.4168,
+                "longitude": -3.7038
+            }))
+            .await;
+        assert!(result.is_ok(), "execute failed: {:?}", result.err());
+
+        let requests = server
+            .received_requests()
+            .await
+            .expect("received_requests should be available");
+        let search_text_requests: Vec<_> = requests
+            .iter()
+            .filter(|r| r.url.path() == "/places:searchText")
+            .collect();
+        let paths: Vec<&str> = requests.iter().map(|r| r.url.path()).collect();
+
+        assert_eq!(
+            search_text_requests.len(),
+            1,
+            "expected exactly one POST /places:searchText, got request paths: {:?}",
+            paths
+        );
+
+        let body: Value =
+            serde_json::from_slice(&search_text_requests[0].body).expect("valid JSON body");
+        assert_eq!(
+            body["textQuery"], "restaurantes en Madrid",
+            "textQuery must carry the query, got body: {body}"
+        );
+        assert_eq!(
+            body["languageCode"], "es",
+            "languageCode must be 'es', got body: {body}"
+        );
+        assert!(
+            body.get("includedTypes").is_none(),
+            "searchText body must NOT contain includedTypes, got body: {body}"
+        );
+        assert!(
+            body.get("includedType").is_none(),
+            "searchText body must NOT contain includedType (singular), got body: {body}"
+        );
+    }
+
+    /// Scenario: Búsqueda por cercanía (searchNearby)
+    ///
+    /// Guard test — when `radius` is present, routing must stay on
+    /// `places:searchNearby` with a `locationRestriction.circle`.
+    #[tokio::test]
+    async fn test_execute_with_radius_uses_search_nearby() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/places:searchNearby"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "places": [] })),
+            )
+            .mount(&server)
+            .await;
+
+        let (pool, _) = setup_tool().await;
+        crate::db::repos::settings::SettingsRepo::set(&pool, "google_places_api_key", "test-key")
+            .await
+            .expect("failed to seed google_places_api_key");
+        let tool = SearchPlacesTool::new_with_base_url(pool, server.uri());
+
+        let result = tool
+            .execute(serde_json::json!({
+                "query": "cafe",
+                "latitude": 40.4168,
+                "longitude": -3.7038,
+                "radius": 500
+            }))
+            .await;
+        assert!(result.is_ok(), "execute failed: {:?}", result.err());
+
+        let requests = server
+            .received_requests()
+            .await
+            .expect("received_requests should be available");
+        let nearby_requests: Vec<_> = requests
+            .iter()
+            .filter(|r| r.url.path() == "/places:searchNearby")
+            .collect();
+        let paths: Vec<&str> = requests.iter().map(|r| r.url.path()).collect();
+
+        assert_eq!(
+            nearby_requests.len(),
+            1,
+            "expected exactly one POST /places:searchNearby, got request paths: {:?}",
+            paths
+        );
+
+        let body: Value =
+            serde_json::from_slice(&nearby_requests[0].body).expect("valid JSON body");
+        assert_eq!(
+            body["locationRestriction"]["circle"]["center"]["latitude"],
+            serde_json::json!(40.4168),
+            "locationRestriction.circle.center.latitude must be 40.4168, got body: {body}"
+        );
+        assert_eq!(
+            body["locationRestriction"]["circle"]["center"]["longitude"],
+            serde_json::json!(-3.7038),
+            "locationRestriction.circle.center.longitude must be -3.7038, got body: {body}"
+        );
+        assert_eq!(
+            body["locationRestriction"]["circle"]["radius"],
+            serde_json::json!(500),
+            "locationRestriction.circle.radius must be 500, got body: {body}"
+        );
     }
 }

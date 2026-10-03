@@ -14,7 +14,7 @@ SHALL usar `places:searchText` y enviar la consulta como `textQuery`.
 **Then** la tool DEBE leer `google_places_api_key` de la tabla `settings` (SettingsRepo)
 **And** DEBE llamar a la Google Places New API (`places:searchNearby` o `places:searchText`) según los argumentos
 **And** DEBE incluir `X-Goog-Api-Key` y `X-Goog-FieldMask` en los headers
-**And** DEBE devolver los resultados como `ToolResult.data` con el JSON completo de la API
+**And** DEBE devolver los lugares parseados y el enlace a Google Maps en `ToolResult.data`
 
 #### Scenario: Búsqueda por texto (searchText)
 **Given** un `SearchPlacesTool` con API key en settings DB
@@ -22,14 +22,14 @@ SHALL usar `places:searchText` y enviar la consulta como `textQuery`.
 **Then** la tool DEBE llamar a `POST https://places.googleapis.com/v1/places:searchText`
 **And** DEBE incluir `textQuery` con el valor de `query` y `languageCode: "es"` en el body
 **And** NO DEBE enviar `query` como `includedTypes`
-**And** DEBE devolver los lugares parseados como `Vec<Place>` y el JSON crudo
+**And** DEBE devolver los lugares parseados y el enlace a Google Maps
 
 #### Scenario: Búsqueda por cercanía (searchNearby)
 **Given** un `SearchPlacesTool` con API key en settings DB
 **When** se ejecuta con `{"query": "cafe", "latitude": 40.4168, "longitude": -3.7038, "radius": 500}`
 **Then** la tool DEBE llamar a `POST https://places.googleapis.com/v1/places:searchNearby`
 **And** DEBE incluir `locationRestriction.circle` con center y radius en el body
-**And** DEBE devolver los lugares parseados como `Vec<Place>` y el JSON crudo
+**And** DEBE devolver los lugares parseados y el enlace a Google Maps
 
 #### Scenario: Error de API key inválida
 **Given** un `SearchPlacesTool` con API key inválida en settings DB
