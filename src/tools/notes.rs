@@ -130,7 +130,7 @@ impl Tool for NotesTool {
         })
     }
 
-    fn permission(&self) -> Permission {
+    fn permission(&self, _args: &Value) -> Permission {
         Permission::NoConfirm
     }
 
@@ -182,7 +182,10 @@ mod tests {
     async fn test_notes_permission() -> Result<(), Box<dyn std::error::Error>> {
         let db = setup_db().await?;
         let tool = NotesTool::new(db);
-        assert_eq!(tool.permission(), Permission::NoConfirm);
+        assert_eq!(
+            tool.permission(&serde_json::json!({})),
+            Permission::NoConfirm
+        );
         Ok(())
     }
 

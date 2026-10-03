@@ -101,6 +101,8 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
             activeTools={mainChat.activeTools}
             settings={settings}
             userAvatarUrl={profile?.avatar_url ?? null}
+            pendingApproval={mainChat.pendingApproval}
+            onResolveApproval={mainChat.resolveApproval}
           />
         )}
       </Content>

@@ -30,7 +30,7 @@ impl Tool for CurrentTimeTool {
         serde_json::json!({"type": "object", "properties": {}})
     }
 
-    fn permission(&self) -> Permission {
+    fn permission(&self, _args: &Value) -> Permission {
         Permission::NoConfirm
     }
 
@@ -95,7 +95,10 @@ mod tests {
     async fn test_tool_permission() {
         let pool = setup_pool().await;
         let tool = CurrentTimeTool { db: pool };
-        assert_eq!(tool.permission(), Permission::NoConfirm);
+        assert_eq!(
+            tool.permission(&serde_json::json!({})),
+            Permission::NoConfirm
+        );
     }
 
     #[tokio::test]

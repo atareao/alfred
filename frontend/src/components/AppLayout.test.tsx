@@ -40,6 +40,8 @@ vi.mock("../hooks/useMainChat", () => ({
     streaming: false,
     streamingContent: null,
     activeTools: [],
+    pendingApproval: null,
+    resolveApproval: vi.fn(),
   }),
 }));
 
