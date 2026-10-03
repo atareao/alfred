@@ -147,7 +147,7 @@ impl Tool for RemindersTool {
         })
     }
 
-    fn permission(&self) -> Permission {
+    fn permission(&self, _args: &Value) -> Permission {
         Permission::Notify
     }
 
@@ -215,7 +215,7 @@ mod tests {
     async fn test_reminders_permission() -> Result<(), Box<dyn std::error::Error>> {
         let db = setup_db().await?;
         let tool = RemindersTool::new(db);
-        assert_eq!(tool.permission(), Permission::Notify);
+        assert_eq!(tool.permission(&serde_json::json!({})), Permission::Notify);
         Ok(())
     }
 

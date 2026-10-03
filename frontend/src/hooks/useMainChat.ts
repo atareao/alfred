@@ -48,6 +48,11 @@ export function useMainChat() {
   const [streaming, setStreaming] = useState(false);
   const [activeTools, setActiveTools] = useState<string[]>([]);
   const [usedTools, setUsedTools] = useState<string[]>([]);
+  const [pendingApproval, setPendingApproval] = useState<{
+    requestId: string;
+    toolName: string;
+    reason: string;
+  } | null>(null);
 
   const sse = useSSE();
 
@@ -94,6 +99,7 @@ export function useMainChat() {
       setError(null);
       setActiveTools([]);
       setUsedTools([]);
+      setPendingApproval(null);
 
       let assistantContent = "";
 
@@ -151,6 +157,22 @@ export function useMainChat() {
               window.dispatchEvent(new CustomEvent("tasks-changed"));
             }
           },
+          onApprovalRequired: (
+            requestId: string,
+            toolName: string,
+            reason: string,
+          ) => {
+            console.log(
+              "[useMainChat] Approval required:",
+              requestId,
+              toolName,
+            );
+            setPendingApproval({ requestId, toolName, reason });
+          },
+          onApprovalResult: (requestId: string) =>
+            setPendingApproval((cur) =>
+              cur && cur.requestId === requestId ? null : cur,
+            ),
           onDone: (messageId: string, userMessageId?: string, location?: string | null, tools_used?: string, user_location?: string, user_created_at?: string) => {
             console.log(
               "[useMainChat] Stream done. Total content length:",
@@ -179,6 +201,7 @@ export function useMainChat() {
             setStreamingContent("");
             setActiveTools([]);
             setUsedTools([]);
+            setPendingApproval(null);
           },
           onError: (msg) => {
             console.error("[useMainChat] Stream error:", msg);
@@ -187,6 +210,7 @@ export function useMainChat() {
             setStreamingContent("");
             setActiveTools([]);
             setUsedTools([]);
+            setPendingApproval(null);
             // Keep the user message visible - DON'T filter it out
           },
         },
@@ -194,6 +218,20 @@ export function useMainChat() {
       );
     },
     [sse],
+  );
+
+  const resolveApproval = useCallback(
+    async (approved: boolean) => {
+      const current = pendingApproval;
+      if (!current) return;
+      try {
+        await api.approveAction(current.requestId, approved);
+        setPendingApproval(null);
+      } catch (err) {
+        console.error("[useMainChat] Failed to resolve approval:", err);
+      }
+    },
+    [pendingApproval],
   );
 
   return {
@@ -205,5 +243,7 @@ export function useMainChat() {
     streamingContent,
     activeTools,
     usedTools,
+    pendingApproval,
+    resolveApproval,
   };
 }

@@ -35,7 +35,7 @@ impl Tool for CurrentLocationTool {
         })
     }
 
-    fn permission(&self) -> Permission {
+    fn permission(&self, _args: &Value) -> Permission {
         Permission::NoConfirm
     }
 
@@ -120,6 +120,9 @@ mod tests {
     async fn test_tool_permission_no_confirm() {
         let pool = setup_pool().await;
         let tool = CurrentLocationTool::new(pool);
-        assert_eq!(tool.permission(), Permission::NoConfirm);
+        assert_eq!(
+            tool.permission(&serde_json::json!({})),
+            Permission::NoConfirm
+        );
     }
 }

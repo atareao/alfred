@@ -3,7 +3,7 @@ use serde_json::Value;
 use sqlx::SqlitePool;
 use std::sync::Arc;
 use std::sync::RwLock;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::models::stats::LastApiCall;
 use tokio::sync::mpsc;
@@ -12,7 +12,7 @@ use crate::db::repos::stats::StatsRepo;
 use crate::llm::provider::{ChatMessage, ChatRequest, LLMProvider, StreamEvent, ToolCall};
 use crate::orchestrator::context_builder::ContextBuilder;
 use crate::orchestrator::context_classifier::ContextClassifier;
-use crate::orchestrator::guardrails::{GuardrailResult, Guardrails};
+use crate::orchestrator::guardrails::{ApprovalOutcome, GuardrailResult, Guardrails};
 use crate::tools::geo_utils::reverse_geocode;
 use crate::tools::r#trait::ToolResult;
 use crate::tools::registry::ToolRegistry;
@@ -207,6 +207,10 @@ pub struct BrowserContext {
 
 /// Maximum number of times the same tool+operation can be called in one ReAct loop.
 const MAX_TOOL_RETRIES: usize = 5;
+
+/// Maximum time a turn waits for a human approval decision before treating it
+/// as a denial (`ApprovalOutcome::TimedOut`).
+const APPROVAL_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Title of the code-composed episodic-memory section injected as a `system`
 /// message (block 8.3). The block is composed here, never from a placeholder in
@@ -886,136 +890,8 @@ impl Orchestrator {
                                         AgentError::GuardrailError(e.to_string())
                                     })?;
 
-                                match guardrail {
-                                    GuardrailResult::Allowed { .. } => {
-                                        // Check per-tool retry limit (max 3 calls per tool per ReAct loop)
-                                        let op =
-                                            tc.arguments.get("operation").and_then(|v| v.as_str());
-                                        let op_key = match op {
-                                            Some(op_val) => format!("{}::{}", tc.name, op_val),
-                                            None => tc.name.clone(),
-                                        };
-                                        let tool_count =
-                                            tool_call_counts.entry(op_key.clone()).or_insert(0);
-                                        *tool_count += 1;
-                                        if *tool_count > MAX_TOOL_RETRIES {
-                                            let display_name = match op {
-                                                Some(op_val) => format!("{}::{}", tc.name, op_val),
-                                                None => tc.name.clone(),
-                                            };
-                                            tracing::warn!(
-                                                tool_name = %display_name,
-                                                call_count = %tool_count,
-                                                "⚠️ Tool retry limit reached"
-                                            );
-                                            let msg = format!(
-                                                "Tool '{}' has been called 3 times. No more retries allowed. Inform the user and suggest alternatives.",
-                                                display_name
-                                            );
-                                            messages.push(ChatMessage {
-                                                role: "tool".into(),
-                                                content: msg.clone(),
-                                                tool_calls: None,
-                                                tool_result: None,
-                                                tool_call_id: Some(tc.id.clone()),
-                                            });
-                                            // Still emit tool_result event so frontend knows tool was "called"
-                                            let _ = tx
-                                                .send(SSEEvent::ToolResult {
-                                                    name: tc.name.clone(),
-                                                    success: false,
-                                                })
-                                                .await
-                                                .ok();
-                                            continue;
-                                        }
-
-                                        tracing::debug!(
-                                            tool_name = %tc.name,
-                                            tool_args = %tc.arguments,
-                                            "🔧 Executing tool"
-                                        );
-
-                                        // Inject profile_id from authenticated session
-                                        let mut args = tc.arguments.clone();
-                                        if let Some(obj) = args.as_object_mut() {
-                                            obj.insert(
-                                                "profile_id".into(),
-                                                serde_json::json!(profile_id),
-                                            );
-                                        }
-
-                                        let tool_result =
-                                            match self.registry.execute(&tc.name, args).await {
-                                                Ok(result) => result,
-                                                Err(e) => {
-                                                    tracing::error!(
-                                                        tool_name = %tc.name,
-                                                        tool_args = %tc.arguments,
-                                                        error = %e,
-                                                        error_debug = ?e,
-                                                        "❌ Tool execution error"
-                                                    );
-                                                    ToolResult {
-                                                        success: false,
-                                                        data: serde_json::json!({}),
-                                                        message: Some(e.to_string()),
-                                                    }
-                                                }
-                                            };
-
-                                        match tool_result.success {
-                                            true => {
-                                                // Track the tool name for the footer
-                                                used_tools.push(op_key.clone());
-
-                                                // Emit success event
-                                                let _ = tx
-                                                    .send(SSEEvent::ToolResult {
-                                                        name: tc.name.clone(),
-                                                        success: true,
-                                                    })
-                                                    .await
-                                                    .ok();
-
-                                                messages.push(ChatMessage {
-                                                    role: "tool".into(),
-                                                    content: serde_json::to_string(
-                                                        &tool_result.data,
-                                                    )
-                                                    .unwrap_or_default(),
-                                                    tool_calls: None,
-                                                    tool_result: Some(tool_result.data),
-                                                    tool_call_id: Some(tc.id.clone()),
-                                                });
-                                            }
-                                            false => {
-                                                let err_msg =
-                                                    tool_result.message.unwrap_or_default();
-                                                tracing::error!(
-                                                    tool_name = %tc.name,
-                                                    tool_args = %tc.arguments,
-                                                    error_msg = %err_msg,
-                                                    "❌ Tool returned failure"
-                                                );
-                                                let _ = tx
-                                                    .send(SSEEvent::ToolResult {
-                                                        name: tc.name.clone(),
-                                                        success: false,
-                                                    })
-                                                    .await
-                                                    .ok();
-
-                                                messages.push(ChatMessage {
-                                                    role: "tool".into(),
-                                                    content: format!("Error: {}", err_msg),
-                                                    tool_calls: None,
-                                                    tool_result: None,
-                                                    tool_call_id: Some(tc.id.clone()),
-                                                });
-                                            }
-                                        }
-                                    }
+                                let allowed = match guardrail {
+                                    GuardrailResult::Allowed { .. } => true,
                                     GuardrailResult::RequiresApproval { request_id } => {
                                         let _ = tx
                                             .send(SSEEvent::ApprovalRequired {
@@ -1029,13 +905,168 @@ impl Orchestrator {
                                             .await
                                             .ok();
 
-                                        let err = AgentError::GuardrailError(format!(
-                                            "Tool '{}' requires explicit approval (request_id: {})",
-                                            tc.name, request_id
-                                        ));
-                                        tracing::error!(error = %err, "❌ Orchestrator error");
-                                        return Err(err);
+                                        let approved = matches!(
+                                            self.guardrails
+                                                .await_approval(&request_id, APPROVAL_TIMEOUT)
+                                                .await,
+                                            ApprovalOutcome::Approved
+                                        );
+
+                                        let _ = tx
+                                            .send(SSEEvent::ApprovalResult {
+                                                request_id: request_id.clone(),
+                                                approved,
+                                            })
+                                            .await
+                                            .ok();
+
+                                        approved
                                     }
+                                };
+
+                                if allowed {
+                                    // Check per-tool retry limit (max 3 calls per tool per ReAct loop)
+                                    let op = tc.arguments.get("operation").and_then(|v| v.as_str());
+                                    let op_key = match op {
+                                        Some(op_val) => format!("{}::{}", tc.name, op_val),
+                                        None => tc.name.clone(),
+                                    };
+                                    let tool_count =
+                                        tool_call_counts.entry(op_key.clone()).or_insert(0);
+                                    *tool_count += 1;
+                                    if *tool_count > MAX_TOOL_RETRIES {
+                                        let display_name = match op {
+                                            Some(op_val) => format!("{}::{}", tc.name, op_val),
+                                            None => tc.name.clone(),
+                                        };
+                                        tracing::warn!(
+                                            tool_name = %display_name,
+                                            call_count = %tool_count,
+                                            "⚠️ Tool retry limit reached"
+                                        );
+                                        let msg = format!(
+                                                "Tool '{}' has been called 3 times. No more retries allowed. Inform the user and suggest alternatives.",
+                                                display_name
+                                            );
+                                        messages.push(ChatMessage {
+                                            role: "tool".into(),
+                                            content: msg.clone(),
+                                            tool_calls: None,
+                                            tool_result: None,
+                                            tool_call_id: Some(tc.id.clone()),
+                                        });
+                                        // Still emit tool_result event so frontend knows tool was "called"
+                                        let _ = tx
+                                            .send(SSEEvent::ToolResult {
+                                                name: tc.name.clone(),
+                                                success: false,
+                                            })
+                                            .await
+                                            .ok();
+                                        continue;
+                                    }
+
+                                    tracing::debug!(
+                                        tool_name = %tc.name,
+                                        tool_args = %tc.arguments,
+                                        "🔧 Executing tool"
+                                    );
+
+                                    // Inject profile_id from authenticated session
+                                    let mut args = tc.arguments.clone();
+                                    if let Some(obj) = args.as_object_mut() {
+                                        obj.insert(
+                                            "profile_id".into(),
+                                            serde_json::json!(profile_id),
+                                        );
+                                    }
+
+                                    let tool_result =
+                                        match self.registry.execute(&tc.name, args).await {
+                                            Ok(result) => result,
+                                            Err(e) => {
+                                                tracing::error!(
+                                                    tool_name = %tc.name,
+                                                    tool_args = %tc.arguments,
+                                                    error = %e,
+                                                    error_debug = ?e,
+                                                    "❌ Tool execution error"
+                                                );
+                                                ToolResult {
+                                                    success: false,
+                                                    data: serde_json::json!({}),
+                                                    message: Some(e.to_string()),
+                                                }
+                                            }
+                                        };
+
+                                    match tool_result.success {
+                                        true => {
+                                            // Track the tool name for the footer
+                                            used_tools.push(op_key.clone());
+
+                                            // Emit success event
+                                            let _ = tx
+                                                .send(SSEEvent::ToolResult {
+                                                    name: tc.name.clone(),
+                                                    success: true,
+                                                })
+                                                .await
+                                                .ok();
+
+                                            messages.push(ChatMessage {
+                                                role: "tool".into(),
+                                                content: serde_json::to_string(&tool_result.data)
+                                                    .unwrap_or_default(),
+                                                tool_calls: None,
+                                                tool_result: Some(tool_result.data),
+                                                tool_call_id: Some(tc.id.clone()),
+                                            });
+                                        }
+                                        false => {
+                                            let err_msg = tool_result.message.unwrap_or_default();
+                                            tracing::error!(
+                                                tool_name = %tc.name,
+                                                tool_args = %tc.arguments,
+                                                error_msg = %err_msg,
+                                                "❌ Tool returned failure"
+                                            );
+                                            let _ = tx
+                                                .send(SSEEvent::ToolResult {
+                                                    name: tc.name.clone(),
+                                                    success: false,
+                                                })
+                                                .await
+                                                .ok();
+
+                                            messages.push(ChatMessage {
+                                                role: "tool".into(),
+                                                content: format!("Error: {}", err_msg),
+                                                tool_calls: None,
+                                                tool_result: None,
+                                                tool_call_id: Some(tc.id.clone()),
+                                            });
+                                        }
+                                    }
+                                } else {
+                                    let msg = format!(
+                                        "Tool '{}' was not approved by the user. Do not retry it; inform the user.",
+                                        tc.name
+                                    );
+                                    let _ = tx
+                                        .send(SSEEvent::ToolResult {
+                                            name: tc.name.clone(),
+                                            success: false,
+                                        })
+                                        .await
+                                        .ok();
+                                    messages.push(ChatMessage {
+                                        role: "tool".into(),
+                                        content: msg,
+                                        tool_calls: None,
+                                        tool_result: None,
+                                        tool_call_id: Some(tc.id.clone()),
+                                    });
                                 }
                             }
 
@@ -2666,7 +2697,7 @@ mod tests {
             serde_json::json!({"type": "object"})
         }
 
-        fn permission(&self) -> Permission {
+        fn permission(&self, _args: &serde_json::Value) -> Permission {
             Permission::NoConfirm
         }
 
@@ -3133,7 +3164,7 @@ mod tests {
             serde_json::json!({"type": "object"})
         }
 
-        fn permission(&self) -> Permission {
+        fn permission(&self, _args: &serde_json::Value) -> Permission {
             Permission::NoConfirm
         }
 
@@ -3385,7 +3416,7 @@ mod tests {
             serde_json::json!({"type": "object"})
         }
 
-        fn permission(&self) -> Permission {
+        fn permission(&self, _args: &serde_json::Value) -> Permission {
             Permission::NoConfirm
         }
 
@@ -3586,7 +3617,7 @@ mod tests {
             serde_json::json!({"type": "object"})
         }
 
-        fn permission(&self) -> Permission {
+        fn permission(&self, _args: &serde_json::Value) -> Permission {
             Permission::NoConfirm
         }
 
@@ -4365,5 +4396,281 @@ mod tests {
             !content.contains("# USUARIO"),
             "a missing profile must leave no `# USUARIO` trace, got: {content:?}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Human-in-the-loop approval: end-to-end pause/resume
+    // -----------------------------------------------------------------------
+
+    /// Tool that only runs when explicitly approved, counting executions.
+    struct ExplicitApprovalTool {
+        executed: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl Tool for ExplicitApprovalTool {
+        fn name(&self) -> &'static str {
+            "explicit_tool"
+        }
+
+        fn description(&self) -> &'static str {
+            "A tool that requires explicit human approval"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+
+        fn permission(&self, _args: &serde_json::Value) -> Permission {
+            Permission::ExplicitApproval
+        }
+
+        async fn execute(&self, _args: serde_json::Value) -> Result<ToolResult, ToolError> {
+            self.executed.fetch_add(1, Ordering::SeqCst);
+            Ok(ToolResult {
+                success: true,
+                data: serde_json::json!({"deleted": true}),
+                message: None,
+            })
+        }
+    }
+
+    /// Mock LLM: the first call requests `explicit_tool`; later calls answer in
+    /// plain text. The message list of the *second* call is captured so tests
+    /// can inspect what the LLM saw after the approval decision.
+    struct MockLLMExplicitApproval {
+        call_count: Arc<Mutex<usize>>,
+        second_call_messages: Arc<Mutex<Option<Vec<ChatMessage>>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl LLMProvider for MockLLMExplicitApproval {
+        async fn chat(&self, _request: ChatRequest) -> Result<ChatResponse, LLMError> {
+            Ok(ChatResponse {
+                message: ChatMessage {
+                    role: "assistant".into(),
+                    content: "Understood.".into(),
+                    tool_calls: None,
+                    tool_result: None,
+                    tool_call_id: None,
+                },
+                usage: None,
+            })
+        }
+
+        async fn chat_stream(
+            &self,
+            request: ChatRequest,
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, LLMError>> + Send>>, LLMError>
+        {
+            let n = {
+                let mut count = self.call_count.lock().unwrap();
+                *count += 1;
+                *count
+            };
+
+            let mut events: Vec<Result<StreamEvent, LLMError>> = Vec::new();
+
+            if n == 1 {
+                let tool_call = ToolCall {
+                    id: "call-approval-1".into(),
+                    name: "explicit_tool".into(),
+                    arguments: serde_json::json!({"operation": "delete"}),
+                };
+                events.push(Ok(StreamEvent::ToolCall(tool_call.clone())));
+                events.push(Ok(StreamEvent::Done(ChatResponse {
+                    message: ChatMessage {
+                        role: "assistant".into(),
+                        content: String::new(),
+                        tool_calls: Some(vec![tool_call]),
+                        tool_result: None,
+                        tool_call_id: None,
+                    },
+                    usage: None,
+                })));
+            } else {
+                if n == 2 {
+                    *self.second_call_messages.lock().unwrap() = Some(request.messages.clone());
+                }
+                let text = "The action was handled.";
+                for chunk in text
+                    .chars()
+                    .collect::<Vec<_>>()
+                    .chunks(10)
+                    .map(|c| c.iter().collect::<String>())
+                {
+                    events.push(Ok(StreamEvent::Chunk(chunk)));
+                }
+                events.push(Ok(StreamEvent::Done(ChatResponse {
+                    message: ChatMessage {
+                        role: "assistant".into(),
+                        content: text.into(),
+                        tool_calls: None,
+                        tool_result: None,
+                        tool_call_id: None,
+                    },
+                    usage: None,
+                })));
+            }
+
+            Ok(Box::pin(futures::stream::iter(events)))
+        }
+    }
+
+    /// SSE events captured during an approval flow, with small query helpers.
+    struct ApprovalHarness {
+        events: Vec<SSEEvent>,
+    }
+
+    impl ApprovalHarness {
+        fn has_approval_result(&self, approved: bool) -> bool {
+            self.events.iter().any(|e| {
+                matches!(
+                    e,
+                    SSEEvent::ApprovalResult { approved: a, .. } if *a == approved
+                )
+            })
+        }
+
+        fn has_done(&self) -> bool {
+            self.events
+                .iter()
+                .any(|e| matches!(e, SSEEvent::Done { .. }))
+        }
+
+        fn has_error(&self) -> bool {
+            self.events
+                .iter()
+                .any(|e| matches!(e, SSEEvent::Error { .. }))
+        }
+    }
+
+    /// Drive `process_message_stream` in a background task and resolve the first
+    /// approval request with `approved`, returning the emitted events and the
+    /// orchestrator's final result.
+    async fn run_approval_flow(
+        pool: SqlitePool,
+        executed: Arc<AtomicUsize>,
+        second_call_messages: Arc<Mutex<Option<Vec<ChatMessage>>>>,
+        approved: bool,
+    ) -> (ApprovalHarness, Result<(), Box<dyn std::error::Error>>) {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(ExplicitApprovalTool {
+            executed: executed.clone(),
+        }));
+        let registry = Arc::new(registry);
+
+        let llm = Arc::new(MockLLMExplicitApproval {
+            call_count: Arc::new(Mutex::new(0)),
+            second_call_messages,
+        });
+        let guardrails = Arc::new(Guardrails::new(registry.clone()));
+        let context_builder = Arc::new(ContextBuilder::new());
+        let config = OrchestratorConfig::default();
+
+        let orchestrator = Arc::new(Orchestrator::new(
+            llm,
+            registry,
+            guardrails.clone(),
+            context_builder,
+            config,
+            pool,
+            None,
+            None,
+            Arc::new(RwLock::new(None)),
+        ));
+
+        let (tx, mut rx) = mpsc::channel(100);
+        let orch = orchestrator.clone();
+        let handle = tokio::spawn(async move {
+            orch.process_message_stream("profile-1", "delete something", None, tx)
+                .await
+        });
+
+        let mut events = Vec::new();
+        while let Ok(Some(event)) = tokio::time::timeout(Duration::from_secs(3), rx.recv()).await {
+            if let SSEEvent::ApprovalRequired { request_id, .. } = &event {
+                guardrails
+                    .resolve_approval(request_id, approved)
+                    .expect("resolve_approval must succeed");
+            }
+            let done = matches!(event, SSEEvent::Done { .. });
+            events.push(event);
+            if done {
+                break;
+            }
+        }
+
+        let join = handle.await.expect("orchestrator task must not panic");
+        let result: Result<(), Box<dyn std::error::Error>> = join.map_err(|e| e.into());
+        (ApprovalHarness { events }, result)
+    }
+
+    #[tokio::test]
+    async fn test_approval_approved_executes_tool_and_finishes(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+        let executed = Arc::new(AtomicUsize::new(0));
+        let second = Arc::new(Mutex::new(None));
+
+        let (harness, result) = run_approval_flow(pool, executed.clone(), second, true).await;
+
+        result?;
+        assert_eq!(
+            executed.load(Ordering::SeqCst),
+            1,
+            "the approved tool must execute exactly once"
+        );
+        assert!(
+            harness.has_approval_result(true),
+            "an ApprovalResult with approved: true must be emitted"
+        );
+        assert!(harness.has_done(), "the stream must end with Done");
+        assert!(
+            !harness.has_error(),
+            "no SSE error event must be emitted for the approval path"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_approval_denied_does_not_execute_and_finishes(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+        let executed = Arc::new(AtomicUsize::new(0));
+        let second = Arc::new(Mutex::new(None));
+
+        let (harness, result) =
+            run_approval_flow(pool, executed.clone(), second.clone(), false).await;
+
+        result?;
+        assert_eq!(
+            executed.load(Ordering::SeqCst),
+            0,
+            "a denied tool must not execute"
+        );
+        assert!(
+            harness.has_approval_result(false),
+            "an ApprovalResult with approved: false must be emitted"
+        );
+        assert!(harness.has_done(), "the stream must end with Done");
+        assert!(
+            !harness.has_error(),
+            "no SSE error event must be emitted for the denial path"
+        );
+
+        // The LLM must have received a `role:"tool"` rejection message.
+        let messages = second
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("the second LLM call must have been captured");
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.role == "tool" && m.content.contains("not approved")),
+            "the rejection message must reach the LLM, got: {messages:?}"
+        );
+        Ok(())
     }
 }

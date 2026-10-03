@@ -122,7 +122,7 @@ impl Tool for UnifiedSearchTool {
         })
     }
 
-    fn permission(&self) -> Permission {
+    fn permission(&self, _args: &Value) -> Permission {
         Permission::NoConfirm
     }
 

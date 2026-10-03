@@ -163,6 +163,8 @@ docker compose -f docker-compose.prod.yml up -d
 
 El orquestador expone 12 herramientas desde `src/tools/`: `calendar`, `geocode`, `get_current_location`, `get_current_time`, `notes`, `reminders`, `reverse_geocode`, `search_places`, `tasks`, `unified_search`, `weather`, `web_search`.
 
+Las herramientas con varias operaciones (`calendar`, `tasks`) declaran el permiso por operación: las lecturas se ejecutan directamente, crear y actualizar avisan, mientras que los borrados (`delete_event`, `delete_task`) pausan el turno y exigen confirmación explícita del usuario antes de ejecutarse. La confirmación se resuelve con `POST /api/approval/{request_id}`; si no llega ninguna, la operación caduca y no se ejecuta.
+
 Workers en segundo plano en `src/workers/`: `briefing`, `collapse`, `conflict_detector`, `episodic_memory`, `memory_worker`, `pool`, `stats_cleanup`, `travel_prep`.
 
 ## 🔌 API

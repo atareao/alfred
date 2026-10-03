@@ -186,8 +186,11 @@ impl Tool for TasksTool {
         })
     }
 
-    fn permission(&self) -> Permission {
-        Permission::NoConfirm
+    fn permission(&self, args: &Value) -> Permission {
+        match args.get("operation").and_then(|v| v.as_str()) {
+            Some("delete_task") => Permission::ExplicitApproval,
+            _ => Permission::NoConfirm,
+        }
     }
 
     async fn execute(&self, args: Value) -> Result<ToolResult, ToolError> {

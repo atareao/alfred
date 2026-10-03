@@ -177,7 +177,7 @@ impl Tool for WeatherTool {
         })
     }
 
-    fn permission(&self) -> Permission {
+    fn permission(&self, _args: &Value) -> Permission {
         Permission::NoConfirm
     }
 
@@ -246,7 +246,10 @@ mod tests {
     #[tokio::test]
     async fn test_weather_permission() -> Result<(), Box<dyn std::error::Error>> {
         let (_, tool) = setup().await?;
-        assert_eq!(tool.permission(), Permission::NoConfirm);
+        assert_eq!(
+            tool.permission(&serde_json::json!({})),
+            Permission::NoConfirm
+        );
         Ok(())
     }
 

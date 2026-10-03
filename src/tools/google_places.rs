@@ -330,7 +330,7 @@ impl Tool for SearchPlacesTool {
         })
     }
 
-    fn permission(&self) -> Permission {
+    fn permission(&self, _args: &Value) -> Permission {
         Permission::NoConfirm
     }
 
@@ -681,7 +681,10 @@ mod tests {
     #[tokio::test]
     async fn test_search_places_permission() -> Result<(), Box<dyn std::error::Error>> {
         let (_, tool) = setup_tool().await;
-        assert_eq!(tool.permission(), Permission::NoConfirm);
+        assert_eq!(
+            tool.permission(&serde_json::json!({})),
+            Permission::NoConfirm
+        );
         Ok(())
     }
 

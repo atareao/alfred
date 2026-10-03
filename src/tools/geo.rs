@@ -66,7 +66,7 @@ impl Tool for GeocodeTool {
         })
     }
 
-    fn permission(&self) -> Permission {
+    fn permission(&self, _args: &Value) -> Permission {
         Permission::NoConfirm
     }
 
@@ -161,7 +161,7 @@ impl Tool for ReverseGeocodeTool {
         })
     }
 
-    fn permission(&self) -> Permission {
+    fn permission(&self, _args: &Value) -> Permission {
         Permission::NoConfirm
     }
 
@@ -258,7 +258,10 @@ mod tests {
     #[tokio::test]
     async fn test_geocode_permission() -> Result<(), Box<dyn std::error::Error>> {
         let tool = GeocodeTool::new();
-        assert_eq!(tool.permission(), Permission::NoConfirm);
+        assert_eq!(
+            tool.permission(&serde_json::json!({})),
+            Permission::NoConfirm
+        );
         Ok(())
     }
 
@@ -306,7 +309,10 @@ mod tests {
     #[tokio::test]
     async fn test_reverse_geocode_permission() -> Result<(), Box<dyn std::error::Error>> {
         let tool = ReverseGeocodeTool::new();
-        assert_eq!(tool.permission(), Permission::NoConfirm);
+        assert_eq!(
+            tool.permission(&serde_json::json!({})),
+            Permission::NoConfirm
+        );
         Ok(())
     }
 

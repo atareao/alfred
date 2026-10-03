@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
+use serde_json::Value;
+
 use crate::llm::provider::ToolDef;
 use crate::tools::permission::Permission;
 use crate::tools::r#trait::{Tool, ToolError, ToolResult};
@@ -86,8 +88,8 @@ impl ToolRegistry {
         }
     }
 
-    pub fn permission(&self, name: &str) -> Option<Permission> {
-        self.tools.get(name).map(|t| t.permission())
+    pub fn permission(&self, name: &str, args: &Value) -> Option<Permission> {
+        self.tools.get(name).map(|t| t.permission(args))
     }
 }
 
@@ -118,7 +120,7 @@ mod tests {
             serde_json::json!({"type": "object"})
         }
 
-        fn permission(&self) -> Permission {
+        fn permission(&self, _args: &Value) -> Permission {
             Permission::NoConfirm
         }
 
@@ -196,6 +198,6 @@ mod tests {
     #[test]
     fn test_permission_of_unknown_tool() {
         let reg = ToolRegistry::new();
-        assert!(reg.permission("unknown").is_none());
+        assert!(reg.permission("unknown", &serde_json::json!({})).is_none());
     }
 }

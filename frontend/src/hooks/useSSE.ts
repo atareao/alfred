@@ -13,6 +13,7 @@ export interface UseSSEOptions {
     toolName: string,
     reason: string,
   ) => void;
+  onApprovalResult?: (requestId: string, approved: boolean) => void;
 }
 
 export function useSSE() {
@@ -120,6 +121,12 @@ export function useSSE() {
                       event.request_id || "",
                       event.tool_name || "",
                       event.reason || "",
+                    );
+                    break;
+                  case "approval_result":
+                    options.onApprovalResult?.(
+                      event.request_id || "",
+                      event.approved ?? false,
                     );
                     break;
                   default:
