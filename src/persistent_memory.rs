@@ -1,0 +1,385 @@
+//! Capa C (persistent-memory) core.
+//!
+//! Pure, side-effect-free logic for the stable user state: the schema/version
+//! validation and the Rust-owned `updated_at` rule. The persistence itself
+//! lives in [`crate::db::repos::persistent_memory`]; the consolidation worker
+//! (a later block) composes both.
+
+/// The id of the single logical row of the persistent-memory table.
+pub const GLOBAL_STATE_ID: &str = "global_state";
+
+/// The only accepted `schema_version`.
+pub const CURRENT_SCHEMA_VERSION: i64 = 1;
+
+/// The fixed, closed set of allowed top-level payload keys. The LLM cannot add
+/// sections: anything outside this set is discarded.
+pub const ALLOWED_TOP_LEVEL_KEYS: [&str; 3] = ["schema_version", "user_profile", "system_rules"];
+
+/// Reasons a candidate persistent-memory payload is rejected.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SchemaError {
+    #[error("payload is not a JSON object")]
+    NotAnObject,
+    #[error("schema_version is missing or not an integer")]
+    InvalidSchemaVersion,
+    #[error("unsupported schema_version {0} (expected {CURRENT_SCHEMA_VERSION})")]
+    UnsupportedSchemaVersion(i64),
+    #[error("key '{0}' has an invalid shape")]
+    InvalidShape(String),
+}
+
+/// Validate a candidate payload against the fixed, versioned schema and return
+/// the **normalized** state.
+///
+/// - `schema_version` must be the integer `1`; missing, non-integer or any
+///   other version is rejected.
+/// - Only the keys in [`ALLOWED_TOP_LEVEL_KEYS`] survive; unknown top-level
+///   keys are discarded (the LLM cannot invent sections).
+/// - `user_profile`, when present, must be an object; `system_rules`, when
+///   present, must be an array of strings.
+///
+/// The result is never truncated by count: no section is capped by size.
+pub fn validate_payload(candidate: &serde_json::Value) -> Result<serde_json::Value, SchemaError> {
+    let object = candidate.as_object().ok_or(SchemaError::NotAnObject)?;
+
+    let version = match object.get("schema_version") {
+        Some(serde_json::Value::Number(number)) => {
+            number.as_i64().ok_or(SchemaError::InvalidSchemaVersion)?
+        }
+        Some(_) => return Err(SchemaError::InvalidSchemaVersion),
+        None => return Err(SchemaError::InvalidSchemaVersion),
+    };
+    if version != CURRENT_SCHEMA_VERSION {
+        return Err(SchemaError::UnsupportedSchemaVersion(version));
+    }
+
+    // Rebuild from the closed set of allowed keys: unknown top-level keys are
+    // dropped and the section set is fixed.
+    let mut normalized = serde_json::Map::new();
+    normalized.insert(
+        "schema_version".to_string(),
+        serde_json::Value::from(CURRENT_SCHEMA_VERSION),
+    );
+
+    if let Some(profile) = object.get("user_profile") {
+        if !profile.is_object() {
+            return Err(SchemaError::InvalidShape("user_profile".into()));
+        }
+        normalized.insert("user_profile".to_string(), profile.clone());
+    }
+
+    if let Some(rules) = object.get("system_rules") {
+        let array = rules
+            .as_array()
+            .ok_or_else(|| SchemaError::InvalidShape("system_rules".into()))?;
+        if !array.iter().all(serde_json::Value::is_string) {
+            return Err(SchemaError::InvalidShape("system_rules".into()));
+        }
+        normalized.insert("system_rules".to_string(), rules.clone());
+    }
+
+    Ok(serde_json::Value::Object(normalized))
+}
+
+/// Stable content hash of a payload, **excluding** the `updated_at` key.
+///
+/// Used to decide whether the state changed between consolidations: an
+/// LLM-supplied date must not count as content.
+pub fn content_hash(payload: &serde_json::Value) -> String {
+    let mut canonical = payload.clone();
+    if let Some(object) = canonical.as_object_mut() {
+        object.remove("updated_at");
+    }
+
+    // `serde_json`'s default object map is a `BTreeMap`, so serialization is
+    // key-sorted and deterministic for a given logical value.
+    let serialized = serde_json::to_string(&canonical).unwrap_or_default();
+
+    // FNV-1a (64-bit): tiny, stable and dependency-free.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in serialized.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
+/// Resolve the `updated_at` of the next state (Rust owns this value).
+///
+/// If `previous` exists and its payload has the same content hash as
+/// `candidate` (ignoring the timestamp), the previous `updated_at` is kept.
+/// Otherwise — changed content, unreadable previous payload, or a new state —
+/// `now` is sealed. The candidate's own date is never read.
+pub fn resolve_updated_at(
+    previous: Option<&crate::models::PersistentMemory>,
+    candidate: &serde_json::Value,
+    now: &str,
+) -> String {
+    if let Some(previous) = previous {
+        if let Ok(previous_payload) = serde_json::from_str::<serde_json::Value>(&previous.payload) {
+            if content_hash(&previous_payload) == content_hash(candidate) {
+                return previous.updated_at.clone();
+            }
+        }
+    }
+    now.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::PersistentMemory;
+    use serde_json::json;
+
+    fn prev(payload: serde_json::Value, updated_at: &str) -> PersistentMemory {
+        PersistentMemory {
+            id: GLOBAL_STATE_ID.to_string(),
+            payload: serde_json::to_string(&payload).unwrap(),
+            updated_at: updated_at.to_string(),
+        }
+    }
+
+    // ─── Schema: shape and version ──────────────────────────────────────────
+
+    /// A valid version-1 payload is accepted without shape changes.
+    #[test]
+    fn valid_payload_v1_is_accepted_unchanged() {
+        let candidate = json!({
+            "schema_version": 1,
+            "user_profile": {"city": "Madrid", "likes": ["té"]},
+            "system_rules": ["sé breve", "no inventes"]
+        });
+
+        let normalized = validate_payload(&candidate).expect("valid payload must be accepted");
+        assert_eq!(normalized, candidate);
+    }
+
+    /// A missing or non-integer `schema_version` is rejected.
+    #[test]
+    fn missing_or_non_integer_version_is_rejected() {
+        assert_eq!(
+            validate_payload(&json!({"user_profile": {}})),
+            Err(SchemaError::InvalidSchemaVersion),
+            "missing version must be rejected"
+        );
+        assert_eq!(
+            validate_payload(&json!({"schema_version": "1"})),
+            Err(SchemaError::InvalidSchemaVersion),
+            "string version must be rejected"
+        );
+        assert_eq!(
+            validate_payload(&json!({"schema_version": 1.5})),
+            Err(SchemaError::InvalidSchemaVersion),
+            "non-integer version must be rejected"
+        );
+    }
+
+    /// A version other than `1` is rejected (previous state is preserved by the
+    /// caller: this function writes nothing).
+    #[test]
+    fn other_version_is_rejected() {
+        assert_eq!(
+            validate_payload(&json!({"schema_version": 2, "user_profile": {}})),
+            Err(SchemaError::UnsupportedSchemaVersion(2))
+        );
+    }
+
+    /// A non-object payload is rejected.
+    #[test]
+    fn non_object_payload_is_rejected() {
+        assert_eq!(
+            validate_payload(&json!([1, 2, 3])),
+            Err(SchemaError::NotAnObject)
+        );
+        assert_eq!(
+            validate_payload(&json!("nope")),
+            Err(SchemaError::NotAnObject)
+        );
+    }
+
+    /// Unknown top-level keys are discarded; the rest is preserved.
+    #[test]
+    fn unknown_top_level_keys_are_discarded() {
+        let candidate = json!({
+            "schema_version": 1,
+            "scratchpad": "no permitido",
+            "user_profile": {"name": "Ada"},
+            "system_rules": ["sé breve"]
+        });
+
+        let normalized = validate_payload(&candidate).expect("accepted");
+        let object = normalized.as_object().expect("object");
+        assert!(
+            !object.contains_key("scratchpad"),
+            "unknown key must be discarded"
+        );
+        assert_eq!(object.get("schema_version"), Some(&json!(1)));
+        assert_eq!(object.get("user_profile"), Some(&json!({"name": "Ada"})));
+        assert_eq!(object.get("system_rules"), Some(&json!(["sé breve"])));
+
+        // The closed set is exactly the allowed keys.
+        for key in object.keys() {
+            assert!(
+                ALLOWED_TOP_LEVEL_KEYS.contains(&key.as_str()),
+                "unexpected surviving key: {key}"
+            );
+        }
+    }
+
+    /// A permitted key with the wrong type is rejected.
+    #[test]
+    fn wrong_shapes_are_rejected() {
+        assert_eq!(
+            validate_payload(&json!({"schema_version": 1, "user_profile": "nope"})),
+            Err(SchemaError::InvalidShape("user_profile".into()))
+        );
+        assert_eq!(
+            validate_payload(&json!({"schema_version": 1, "system_rules": {"a": 1}})),
+            Err(SchemaError::InvalidShape("system_rules".into()))
+        );
+        assert_eq!(
+            validate_payload(&json!({"schema_version": 1, "system_rules": ["ok", 7]})),
+            Err(SchemaError::InvalidShape("system_rules".into())),
+            "system_rules must be an array of strings"
+        );
+    }
+
+    /// D3 — there are no count caps: no section is truncated or dropped,
+    /// however many entries it has.
+    #[test]
+    fn no_count_caps_on_any_section() {
+        let rules: Vec<serde_json::Value> = (0..200).map(|i| json!(format!("regla {i}"))).collect();
+        let mut profile = serde_json::Map::new();
+        for i in 0..100 {
+            profile.insert(format!("hecho_{i}"), json!(i));
+        }
+        let candidate = json!({
+            "schema_version": 1,
+            "user_profile": profile,
+            "system_rules": rules,
+        });
+
+        let normalized = validate_payload(&candidate).expect("accepted");
+        let object = normalized.as_object().unwrap();
+        assert_eq!(
+            object
+                .get("system_rules")
+                .and_then(|v| v.as_array())
+                .map(Vec::len),
+            Some(200),
+            "no rule may be dropped by a count cap"
+        );
+        assert_eq!(
+            object
+                .get("user_profile")
+                .and_then(|v| v.as_object())
+                .map(|m| m.len()),
+            Some(100),
+            "no profile entry may be dropped by a count cap"
+        );
+    }
+
+    // ─── Timestamp: content hash and resolve_updated_at ─────────────────────
+
+    /// The content hash ignores the `updated_at` key and is order-independent.
+    #[test]
+    fn content_hash_excludes_timestamp_and_ignores_key_order() {
+        let without = json!({"schema_version": 1, "user_profile": {"a": 1}});
+        let with_date = json!({
+            "updated_at": "1999-01-01T00:00:00Z",
+            "schema_version": 1,
+            "user_profile": {"a": 1}
+        });
+        assert_eq!(
+            content_hash(&without),
+            content_hash(&with_date),
+            "the timestamp must not count as content"
+        );
+
+        let reordered = json!({"user_profile": {"a": 1}, "schema_version": 1});
+        assert_eq!(
+            content_hash(&without),
+            content_hash(&reordered),
+            "key order must not change the hash"
+        );
+
+        let changed = json!({"schema_version": 1, "user_profile": {"a": 2}});
+        assert_ne!(
+            content_hash(&without),
+            content_hash(&changed),
+            "different content must hash differently"
+        );
+    }
+
+    /// A new state seals `now`.
+    #[test]
+    fn new_state_seals_now() {
+        let candidate = json!({"schema_version": 1, "user_profile": {}});
+        assert_eq!(
+            resolve_updated_at(None, &candidate, "2026-10-03T00:00:00Z"),
+            "2026-10-03T00:00:00Z"
+        );
+    }
+
+    /// Unchanged content keeps the previous `updated_at`.
+    #[test]
+    fn unchanged_content_keeps_previous_timestamp() {
+        let previous = prev(
+            json!({"schema_version": 1, "user_profile": {"a": 1}}),
+            "2026-09-01T10:00:00Z",
+        );
+        let candidate = json!({"schema_version": 1, "user_profile": {"a": 1}});
+
+        assert_eq!(
+            resolve_updated_at(Some(&previous), &candidate, "2026-10-03T00:00:00Z"),
+            "2026-09-01T10:00:00Z"
+        );
+    }
+
+    /// Changed content seals `now`.
+    #[test]
+    fn changed_content_seals_now() {
+        let previous = prev(
+            json!({"schema_version": 1, "user_profile": {"a": 1}}),
+            "2026-09-01T10:00:00Z",
+        );
+        let candidate = json!({"schema_version": 1, "user_profile": {"a": 2}});
+
+        assert_eq!(
+            resolve_updated_at(Some(&previous), &candidate, "2026-10-03T00:00:00Z"),
+            "2026-10-03T00:00:00Z"
+        );
+    }
+
+    /// The date the LLM proposes is ignored: after validation it is not part of
+    /// the state, so an otherwise-identical state keeps its previous timestamp
+    /// and a new one seals `now`.
+    #[test]
+    fn llm_supplied_date_is_ignored() {
+        let now = "2026-10-03T00:00:00Z";
+        let llm_candidate = json!({
+            "schema_version": 1,
+            "user_profile": {"a": 1},
+            "updated_at": "1999-01-01T00:00:00Z"
+        });
+        let validated = validate_payload(&llm_candidate).expect("accepted");
+        assert!(
+            validated.get("updated_at").is_none(),
+            "the LLM date must not survive validation"
+        );
+
+        // Same content as the previous state → previous timestamp is kept,
+        // never the LLM's date.
+        let previous = prev(
+            json!({"schema_version": 1, "user_profile": {"a": 1}}),
+            "2026-09-01T10:00:00Z",
+        );
+        assert_eq!(
+            resolve_updated_at(Some(&previous), &validated, now),
+            "2026-09-01T10:00:00Z"
+        );
+
+        // New state → `now`, still not the LLM's date.
+        assert_eq!(resolve_updated_at(None, &validated, now), now);
+    }
+}

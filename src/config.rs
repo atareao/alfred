@@ -47,6 +47,9 @@ pub struct Config {
     pub memory_overlap: i64,
     pub memory_poll_interval_minutes: u64,
     pub memory_model: String,
+    /// Model used by the persistent-memory consolidator. Reads `SEMANTIC_MODEL`
+    /// and falls back to `MEMORY_MODEL` (and, in turn, to its default).
+    pub semantic_model: String,
     pub rag_budget_tokens: usize,
 
     // Embeddings (RAG)
@@ -59,6 +62,12 @@ impl Config {
     /// Build a [`Config`] from environment variables, applying sensible
     /// defaults whenever a variable is not set or cannot be parsed.
     pub fn from_env() -> Self {
+        // `SEMANTIC_MODEL` is the consolidator's model; when it is not set it
+        // falls back to `MEMORY_MODEL` (which in turn has its own default).
+        let memory_model = env::var("MEMORY_MODEL")
+            .unwrap_or_else(|_| "mistralai/mistral-small-24b-instruct-2501".into());
+        let semantic_model = env::var("SEMANTIC_MODEL").unwrap_or_else(|_| memory_model.clone());
+
         Self {
             host: env::var("HOST").unwrap_or_else(|_| "0.0.0.0".into()),
             port: env::var("PORT")
@@ -116,8 +125,8 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(30),
-            memory_model: env::var("MEMORY_MODEL")
-                .unwrap_or_else(|_| "mistralai/mistral-small-24b-instruct-2501".into()),
+            memory_model,
+            semantic_model,
             rag_budget_tokens: env::var("RAG_BUDGET_TOKENS")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -180,6 +189,7 @@ mod tests {
             "MEMORY_OVERLAP",
             "MEMORY_POLL_INTERVAL_MINUTES",
             "MEMORY_MODEL",
+            "SEMANTIC_MODEL",
             "RAG_BUDGET_TOKENS",
             "EMBEDDING_PROVIDER",
             "EMBEDDING_MODEL",
@@ -227,6 +237,10 @@ mod tests {
             "mistralai/mistral-small-24b-instruct-2501"
         );
         assert_eq!(cfg.rag_budget_tokens, 800);
+        assert_eq!(
+            cfg.semantic_model, "mistralai/mistral-small-24b-instruct-2501",
+            "without SEMANTIC_MODEL, semantic_model falls back to the MEMORY_MODEL default"
+        );
 
         assert!(cfg.embedding_provider.is_none());
         assert!(cfg.embedding_model.is_none());
@@ -307,6 +321,10 @@ mod tests {
         assert_eq!(cfg.memory_poll_interval_minutes, 10);
         assert_eq!(cfg.memory_model, "google/gemini-2.0-flash-lite");
         assert_eq!(cfg.rag_budget_tokens, 4000);
+        assert_eq!(
+            cfg.semantic_model, "google/gemini-2.0-flash-lite",
+            "without SEMANTIC_MODEL, semantic_model falls back to MEMORY_MODEL"
+        );
 
         assert_eq!(cfg.embedding_provider.as_deref(), Some("openrouter"));
         assert_eq!(
@@ -342,6 +360,7 @@ mod tests {
             "MEMORY_OVERLAP",
             "MEMORY_POLL_INTERVAL_MINUTES",
             "MEMORY_MODEL",
+            "SEMANTIC_MODEL",
             "RAG_BUDGET_TOKENS",
             "EMBEDDING_PROVIDER",
             "EMBEDDING_MODEL",
@@ -381,6 +400,7 @@ mod tests {
             "MEMORY_OVERLAP",
             "MEMORY_POLL_INTERVAL_MINUTES",
             "MEMORY_MODEL",
+            "SEMANTIC_MODEL",
             "RAG_BUDGET_TOKENS",
             "EMBEDDING_PROVIDER",
             "EMBEDDING_MODEL",
@@ -423,6 +443,7 @@ mod tests {
             "MEMORY_OVERLAP",
             "MEMORY_POLL_INTERVAL_MINUTES",
             "MEMORY_MODEL",
+            "SEMANTIC_MODEL",
             "RAG_BUDGET_TOKENS",
             "EMBEDDING_PROVIDER",
             "EMBEDDING_MODEL",
@@ -449,5 +470,47 @@ mod tests {
         assert!(cfg.embedding_dimension.is_none());
 
         env::remove_var("EMBEDDING_DIMENSION");
+    }
+
+    /// `SEMANTIC_MODEL` overrides `MEMORY_MODEL` when both are set.
+    #[test]
+    #[serial]
+    fn test_config_semantic_model_overrides_memory_model() {
+        env::set_var("MEMORY_MODEL", "memory/model");
+        env::set_var("SEMANTIC_MODEL", "semantic/model");
+
+        let cfg = Config::from_env();
+        assert_eq!(cfg.semantic_model, "semantic/model");
+        assert_eq!(cfg.memory_model, "memory/model");
+
+        env::remove_var("MEMORY_MODEL");
+        env::remove_var("SEMANTIC_MODEL");
+    }
+
+    /// Without `SEMANTIC_MODEL`, `semantic_model` falls back to `MEMORY_MODEL`.
+    #[test]
+    #[serial]
+    fn test_config_semantic_model_falls_back_to_memory_model() {
+        env::remove_var("SEMANTIC_MODEL");
+        env::set_var("MEMORY_MODEL", "memory/only");
+
+        let cfg = Config::from_env();
+        assert_eq!(cfg.semantic_model, "memory/only");
+
+        env::remove_var("MEMORY_MODEL");
+    }
+
+    /// With neither set, `semantic_model` uses the shared default.
+    #[test]
+    #[serial]
+    fn test_config_semantic_model_default() {
+        env::remove_var("MEMORY_MODEL");
+        env::remove_var("SEMANTIC_MODEL");
+
+        let cfg = Config::from_env();
+        assert_eq!(
+            cfg.semantic_model,
+            "mistralai/mistral-small-24b-instruct-2501"
+        );
     }
 }
