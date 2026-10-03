@@ -28,8 +28,10 @@ en un modelo lingüístico concreto, de modo que sirva igual para cualquier prov
 
 El estimador SHALL recorrer el JSON contando: los símbolos estructurales (`{`, `}`, `[`, `]`,
 `:`, `,`), las cadenas (con una ratio de caracteres por token distinta para ASCII y para
-no-ASCII), los literales (`true`, `false`, `null`) y los números. Los escapes dentro de las
-cadenas (`\"`, `\\`) SHALL tratarse como contenido y NO como fin de cadena.
+no-ASCII), los literales (`true`, `false`, `null`), los números y los tramos de espacios
+(colapsados). Los escapes dentro de las cadenas (`\"`, `\\`) SHALL tratarse como contenido y
+NO como fin de cadena. Las ratios y constantes SHALL ser una aproximación determinista y
+documentada, NO calibrada contra un tokenizer concreto.
 
 **Given** un JSON con símbolos estructurales, cadenas, literales y números  
 **When** se estima su número de tokens  
@@ -53,6 +55,11 @@ cadenas (`\"`, `\\`) SHALL tratarse como contenido y NO como fin de cadena.
 **Given** el JSON `{"a":""}`  
 **When** se estima  
 **Then** la cadena vacía aporta únicamente el coste de sus comillas
+
+#### Scenario: Los espacios se colapsan y se cuentan
+**Given** un JSON con un tramo de espacios  
+**When** se estima  
+**Then** el tramo aporta al menos un token y no uno por carácter
 
 ### Requirement: La Capa C SHALL medir su tamaño con este estimador
 

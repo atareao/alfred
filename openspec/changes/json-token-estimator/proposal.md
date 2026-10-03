@@ -18,11 +18,13 @@ varios proveedores, ninguna medida sería exacta para todos.
 - **D2 — La Capa C mide con él.** `payload_token_count` deja de usar el heurístico de markdown
   y usa `estimate_json_tokens` sobre el JSON minificado. La medición de los mensajes de chat NO
   se toca.
-- **D3 — Calibración con datos reales.** Comparar la estimación con los tokens reales que ya
-  registran las stats del proveedor (`llm_requests`) sobre muestras representativas, y ajustar
-  los ratios si la desviación es grande. Procedimiento documentado, sin dependencias.
-- **D4 — Recalibración del presupuesto.** Comprobar si el default `PERSISTENT_MEMORY_BUDGET_TOKENS`
-  (500) sigue siendo razonable con el nuevo medidor y ajustarlo si procede.
+- **D3 — Sanity check con muestras.** No es posible calibrar contra los tokens del proveedor:
+  `llm_requests` guarda agregados de la petición completa (prompt + herramientas + historial +
+  estado), no aislables por JSON. Se hace un chequeo con muestras representativas y se documenta
+  que las ratios son una aproximación determinista, no calibrada.
+- **D4 — Recalibración del presupuesto.** Con el medidor nuevo, un estado típico (12 hechos +
+  12 reglas) mide ~373 tokens: cabe en el default `PERSISTENT_MEMORY_BUDGET_TOKENS` (500). Se
+  mantiene 500, que es configurable en `settings`.
 
 ### Fuera de alcance
 
