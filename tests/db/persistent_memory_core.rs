@@ -1,17 +1,16 @@
-//! Characterization of the Layer C (persistent memory) baseline — Bloque 1 of
-//! the `persistent-memory-core` change.
+//! Characterization of the Layer C (persistent memory) core — Bloque 1 of the
+//! `persistent-memory-core` change.
 //!
-//! These tests document the state of the code *before* the Capa C migration and
-//! the worker pass are introduced:
+//! These tests document the evolution of the code across the change:
 //!
-//! 1. there is no `persistent_memory` table yet, and
-//! 2. the episodic worker performs a **single** extraction (a Layer B card) and
-//!    writes no Layer C state.
+//! 1. the Capa C migration creates the `persistent_memory` table, and
+//! 2. the episodic worker performs **two** extractions from the same batch — the
+//!    episodic card (Layer B) and the consolidated persistent state (Layer C) —
+//!    and writes both, plus the index mark.
 //!
-//! The reserved persistent-memory slot in the system message (its insertion
-//! point) already exists but is intentionally empty; that behaviour is pinned
-//! by `orchestrator::agent`'s own `compose_system_message_reserves_*` tests, so
-//! it is referenced here rather than duplicated.
+//! The persistent-memory section of the system message is pinned by
+//! `orchestrator::agent`'s own tests, so it is referenced here rather than
+//! duplicated.
 
 use async_trait::async_trait;
 use std::pin::Pin;
@@ -68,24 +67,37 @@ async fn persistent_memory_rows(pool: &SqlitePool) -> i64 {
         .expect("count persistent_memory")
 }
 
-/// LLM double that counts calls and always returns a parseable card.
+/// LLM double used by the characterization test. It replies with the episodic
+/// card for the archivist call and with a valid Layer C state for the
+/// consolidator call (told apart by the prompt marker).
 struct CountingLLM {
     calls: Arc<AtomicUsize>,
 }
 
 #[async_trait]
 impl LLMProvider for CountingLLM {
-    async fn chat(&self, _request: ChatRequest) -> Result<ChatResponse, LLMError> {
+    async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, LLMError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        let system_content = request
+            .messages
+            .first()
+            .map(|m| m.content.as_str())
+            .unwrap_or_default();
+        let content = if system_content.contains("consolidador de memoria persistente") {
+            r#"{"schema_version":1,"user_profile":{"note":"caracterizacion"},"system_rules":["una regla"]}"#
+                .to_string()
+        } else {
+            "\
+- FECHA/CONTEXTO: caracterización de la línea base
+- TEMAS TRATADOS: nodo aislado
+- HECHOS Y DECISIONES: doble extracción
+- SÍNTESIS: el worker produce la ficha episódica (Capa B) y el estado persistente (Capa C)"
+                .to_string()
+        };
         Ok(ChatResponse {
             message: ChatMessage {
                 role: "assistant".into(),
-                content: "\
-- FECHA/CONTEXTO: caracterización de la línea base
-- TEMAS TRATADOS: nodo aislado
-- HECHOS Y DECISIONES: una sola extracción
-- SÍNTESIS: el worker produce únicamente la ficha episódica (Capa B)"
-                    .into(),
+                content,
                 tool_calls: None,
                 tool_result: None,
                 tool_call_id: None,
@@ -134,14 +146,12 @@ async fn characterization_persistent_memory_table_present_after_migration() {
     );
 }
 
-/// BLOCK 1 CHARACTERIZATION: the episodic worker makes exactly **one** LLM
-/// extraction and writes only the Layer B card (`memory` + `vec_memory` + the
-/// index mark). It writes no Layer C (persistent) state.
-///
-/// This test is deliberately robust to the Capa C table appearing in Bloque 2:
-/// the invariant it pins for Bloque 1 is "no Layer C write", not "no table".
+/// BLOCK 1 CHARACTERIZATION → **CHANGED ON PURPOSE (Bloques 4–5)**: the worker
+/// no longer performs a single extraction. It now makes **two** extractions
+/// from the same batch — the episodic card (Layer B) and the consolidated
+/// persistent state (Layer C) — and writes both, plus the index mark.
 #[tokio::test]
-async fn characterization_worker_writes_only_episodic_card() {
+async fn characterization_worker_makes_two_extractions_and_writes_both_layers() {
     let pool = setup().await;
     let now = chrono::Utc::now().to_rfc3339();
 
@@ -180,11 +190,11 @@ async fn characterization_worker_writes_only_episodic_card() {
     memory_tx.send(()).await.expect("signal");
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    // Exactly ONE extraction: a single Layer B card.
+    // TWO extractions: Layer B (card) and Layer C (state).
     assert_eq!(
         calls.load(Ordering::SeqCst),
-        1,
-        "baseline: the worker performs a single extraction (Layer B card)"
+        2,
+        "the worker makes two extractions: the card (B) and the state (C)"
     );
 
     let memory_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM memory")
@@ -198,6 +208,13 @@ async fn characterization_worker_writes_only_episodic_card() {
         .await
         .expect("count vec_memory");
     assert_eq!(vec_rows, 1, "the card's embedding is written");
+
+    // The Layer C state is written too.
+    assert_eq!(
+        persistent_memory_rows(&pool).await,
+        1,
+        "the Layer C persistent state is written"
+    );
 
     // The primary batch is a prefix bounded by `batch_tokens` (4 × 500 = 2000),
     // so exactly those four messages are marked as indexed in this pass.
@@ -215,13 +232,6 @@ async fn characterization_worker_writes_only_episodic_card() {
         .await
         .expect("count indexed");
     assert_eq!(indexed, 4, "four origin messages are marked as indexed");
-
-    // No Layer C state is produced by the baseline worker.
-    assert_eq!(
-        persistent_memory_rows(&pool).await,
-        0,
-        "baseline: the worker writes no persistent (Layer C) state"
-    );
 
     let _ = shutdown_tx.send(());
 }

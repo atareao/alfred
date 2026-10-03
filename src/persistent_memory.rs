@@ -11,6 +11,10 @@ pub const GLOBAL_STATE_ID: &str = "global_state";
 /// The only accepted `schema_version`.
 pub const CURRENT_SCHEMA_VERSION: i64 = 1;
 
+/// Default token budget for the persistent state when the
+/// `PERSISTENT_MEMORY_BUDGET_TOKENS` setting is missing or unparseable.
+pub const PERSISTENT_MEMORY_BUDGET_TOKENS_DEFAULT: usize = 500;
+
 /// The fixed, closed set of allowed top-level payload keys. The LLM cannot add
 /// sections: anything outside this set is discarded.
 pub const ALLOWED_TOP_LEVEL_KEYS: [&str; 3] = ["schema_version", "user_profile", "system_rules"];
@@ -125,9 +129,77 @@ pub fn resolve_updated_at(
     now.to_string()
 }
 
+/// Compact (minified) JSON serialization of a payload.
+///
+/// This is the exact form the state is measured in and injected as. It is
+/// always valid JSON, because it comes from `serde_json` serialization.
+pub fn minified_json(payload: &serde_json::Value) -> String {
+    serde_json::to_string(payload).unwrap_or_else(|_| "{}".to_string())
+}
+
+/// Token count of the state, measured over its minified JSON form.
+///
+/// Reuses the project's markdown-aware heuristic counter
+/// ([`crate::models::message::estimate_markdown_tokens_heuristic`]).
+pub fn payload_token_count(payload: &serde_json::Value) -> usize {
+    crate::models::message::estimate_markdown_tokens_heuristic(&minified_json(payload))
+}
+
+/// Whether the state carries no meaningful content.
+///
+/// A state is empty when neither `user_profile` has entries nor `system_rules`
+/// has rules (missing/empty section ⇒ empty). An empty state is never injected
+/// and leaves no trace.
+pub fn is_empty_state(payload: &serde_json::Value) -> bool {
+    let Some(object) = payload.as_object() else {
+        return true;
+    };
+
+    let profile_empty = object
+        .get("user_profile")
+        .and_then(serde_json::Value::as_object)
+        .is_none_or(|p| p.is_empty());
+    let rules_empty = object
+        .get("system_rules")
+        .and_then(serde_json::Value::as_array)
+        .is_none_or(|r| r.is_empty());
+
+    profile_empty && rules_empty
+}
+
+/// The absolute ceiling: twice the configured budget. Above it, a consolidated
+/// state is refused (the previous one is kept) rather than truncated.
+pub fn absolute_ceiling(budget_tokens: usize) -> usize {
+    budget_tokens.saturating_mul(2)
+}
+
+/// How a state that went through a single compression relates to the budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompressionOutcome {
+    /// Fits the budget: store it as is.
+    Store,
+    /// Fits under the ceiling but still exceeds the budget: store it and warn.
+    StoreWithWarning,
+    /// Exceeds the absolute ceiling: refuse the write and keep the previous
+    /// state.
+    Reject,
+}
+
+/// Classify a compressed state against the budget and the absolute ceiling.
+pub fn evaluate_compressed(compressed_tokens: usize, budget_tokens: usize) -> CompressionOutcome {
+    if compressed_tokens > absolute_ceiling(budget_tokens) {
+        CompressionOutcome::Reject
+    } else if compressed_tokens > budget_tokens {
+        CompressionOutcome::StoreWithWarning
+    } else {
+        CompressionOutcome::Store
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::message::estimate_markdown_tokens_heuristic;
     use crate::models::PersistentMemory;
     use serde_json::json;
 
@@ -381,5 +453,74 @@ mod tests {
 
         // New state → `now`, still not the LLM's date.
         assert_eq!(resolve_updated_at(None, &validated, now), now);
+    }
+
+    // ─── Bloque 4: presupuesto, techo y JSON minificado ─────────────────────
+
+    /// `minified_json` is the compact serialization of the payload and always
+    /// re-parses as valid JSON.
+    #[test]
+    fn minified_json_is_compact_and_valid() {
+        let value = json!({"schema_version": 1, "user_profile": {"a": 1}});
+        assert_eq!(
+            minified_json(&value),
+            r#"{"schema_version":1,"user_profile":{"a":1}}"#
+        );
+
+        let reparsed: serde_json::Value =
+            serde_json::from_str(&minified_json(&value)).expect("valid JSON");
+        assert_eq!(reparsed, value);
+    }
+
+    /// The token count is measured over the **minified** JSON, reusing the
+    /// project's heuristic counter.
+    #[test]
+    fn payload_token_count_measures_the_minified_json() {
+        let value = json!({"schema_version": 1, "user_profile": {"a": 1}});
+        assert_eq!(
+            payload_token_count(&value),
+            estimate_markdown_tokens_heuristic(&minified_json(&value))
+        );
+        assert!(payload_token_count(&value) > 0);
+    }
+
+    /// `is_empty_state` is true only when neither `user_profile` nor
+    /// `system_rules` carry anything.
+    #[test]
+    fn empty_state_detection() {
+        assert!(is_empty_state(&json!({"schema_version": 1})));
+        assert!(is_empty_state(
+            &json!({"schema_version": 1, "user_profile": {}, "system_rules": []})
+        ));
+        assert!(!is_empty_state(
+            &json!({"schema_version": 1, "user_profile": {"city": "Madrid"}})
+        ));
+        assert!(!is_empty_state(
+            &json!({"schema_version": 1, "system_rules": ["sé breve"]})
+        ));
+    }
+
+    /// The absolute ceiling is twice the budget.
+    #[test]
+    fn absolute_ceiling_is_twice_the_budget() {
+        assert_eq!(absolute_ceiling(500), 1000);
+        assert_eq!(absolute_ceiling(0), 0);
+    }
+
+    /// After a (single) compression: within budget ⇒ store; over budget but
+    /// under the ceiling ⇒ store with warning; over the ceiling ⇒ reject.
+    #[test]
+    fn compression_outcome_classifies_by_budget_and_ceiling() {
+        assert_eq!(evaluate_compressed(400, 500), CompressionOutcome::Store);
+        assert_eq!(evaluate_compressed(500, 500), CompressionOutcome::Store);
+        assert_eq!(
+            evaluate_compressed(800, 500),
+            CompressionOutcome::StoreWithWarning
+        );
+        assert_eq!(
+            evaluate_compressed(1000, 500),
+            CompressionOutcome::StoreWithWarning
+        );
+        assert_eq!(evaluate_compressed(1001, 500), CompressionOutcome::Reject);
     }
 }
