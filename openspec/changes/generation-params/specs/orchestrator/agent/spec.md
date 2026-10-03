@@ -9,9 +9,9 @@ El orquestador SHALL leer `GENERATION_CHAT_TEMPERATURE` (default `0.7`),
 `settings` **en cada turno** y aplicarlos al `ChatRequest` del chat, en lugar de dejar la
 temperatura sin definir y los tokens fijos en el código. El razonamiento vacío SHALL significar
 `None` (no se envía el campo y decide el modelo); `off`/`none` ⇒ `ReasoningSpec::Off`; un nivel ⇒
-`ReasoningSpec::Effort`. Esto SHALL aplicarse tanto a `process_message()` como a
-`process_message_stream()` (que usa `chat_stream`). Si una clave falta o no es parseable, SHALL
-caer al default con un warning.
+`ReasoningSpec::Effort`. Esto SHALL aplicarse a la construcción del `ChatRequest` que usa
+`process_message_stream()`, el camino del chat que llama a `chat_stream()`. Si una clave falta o
+no es parseable, SHALL caer al default con un warning.
 
 **Given** los defaults de `settings`  
 **When** el orquestador construye el `ChatRequest` del chat  
@@ -48,7 +48,7 @@ caer al default con un warning.
 **When** el orquestador construye la petición del chat  
 **Then** `max_tokens` es `Some(8000)`
 
-#### Scenario: El camino de streaming usa los mismos parámetros
+#### Scenario: El camino de streaming usa los parámetros de settings
 **Given** `GENERATION_CHAT_TEMPERATURE = 0.5` y `GENERATION_CHAT_REASONING = "medium"`  
 **When** se ejecuta `process_message_stream()`  
 **Then** el `ChatRequest` de `chat_stream()` lleva `temperature = Some(0.5)` y el mismo `reasoning`

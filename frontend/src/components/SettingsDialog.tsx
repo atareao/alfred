@@ -5,6 +5,7 @@ import {
   Form,
   Input,
   InputNumber,
+  Select,
   Button,
   App as AntdApp,
   Space,
@@ -59,6 +60,28 @@ function getMissingConsolidatorPlaceholders(
   );
 }
 
+// Los cuatro roles de generación y el prefijo de sus tres claves en `settings`.
+// El bloque visible es el heading; el prefijo compone los `name`/`id` del form
+// (que son la clave cruda, como en la pestaña "Memoria").
+const GENERATION_BLOCKS = [
+  { heading: "Chat", prefix: "GENERATION_CHAT" },
+  { heading: "Colapso", prefix: "GENERATION_COLLAPSE" },
+  { heading: "Fichas", prefix: "GENERATION_MEMORY" },
+  { heading: "Consolidación", prefix: "GENERATION_SEMANTIC" },
+] as const;
+
+// `default` (vacío) significa "no enviar razonamiento" y deja decidir al modelo.
+const GENERATION_REASONING_OPTIONS = [
+  { value: "", label: "default" },
+  { value: "off", label: "off" },
+  { value: "minimal", label: "minimal" },
+  { value: "low", label: "low" },
+  { value: "medium", label: "medium" },
+  { value: "high", label: "high" },
+  { value: "xhigh", label: "xhigh" },
+  { value: "max", label: "max" },
+];
+
 export interface SettingsFormValues {
   font_size: number;
   max_window_tokens: number;
@@ -74,6 +97,18 @@ export interface SettingsFormValues {
   SIMILARITY_THRESHOLD: number;
   RAG_BUDGET_TOKENS: number;
   MEMORY_KNN_CANDIDATES: number;
+  GENERATION_CHAT_TEMPERATURE: number;
+  GENERATION_CHAT_REASONING: string;
+  GENERATION_CHAT_MAX_TOKENS: number;
+  GENERATION_COLLAPSE_TEMPERATURE: number;
+  GENERATION_COLLAPSE_REASONING: string;
+  GENERATION_COLLAPSE_MAX_TOKENS: number;
+  GENERATION_MEMORY_TEMPERATURE: number;
+  GENERATION_MEMORY_REASONING: string;
+  GENERATION_MEMORY_MAX_TOKENS: number;
+  GENERATION_SEMANTIC_TEMPERATURE: number;
+  GENERATION_SEMANTIC_REASONING: string;
+  GENERATION_SEMANTIC_MAX_TOKENS: number;
 }
 
 export const SettingsDialog: React.FC<SettingsDialogProps> = ({
@@ -124,6 +159,38 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
         RAG_BUDGET_TOKENS: parseInt(settings.RAG_BUDGET_TOKENS || "800"),
         MEMORY_KNN_CANDIDATES: parseInt(
           settings.MEMORY_KNN_CANDIDATES || "20",
+        ),
+        GENERATION_CHAT_TEMPERATURE: parseFloat(
+          settings.GENERATION_CHAT_TEMPERATURE || "0.7",
+        ),
+        GENERATION_CHAT_REASONING:
+          settings.GENERATION_CHAT_REASONING || "",
+        GENERATION_CHAT_MAX_TOKENS: parseInt(
+          settings.GENERATION_CHAT_MAX_TOKENS || "4096",
+        ),
+        GENERATION_COLLAPSE_TEMPERATURE: parseFloat(
+          settings.GENERATION_COLLAPSE_TEMPERATURE || "0.2",
+        ),
+        GENERATION_COLLAPSE_REASONING:
+          settings.GENERATION_COLLAPSE_REASONING || "off",
+        GENERATION_COLLAPSE_MAX_TOKENS: parseInt(
+          settings.GENERATION_COLLAPSE_MAX_TOKENS || "1024",
+        ),
+        GENERATION_MEMORY_TEMPERATURE: parseFloat(
+          settings.GENERATION_MEMORY_TEMPERATURE || "0.3",
+        ),
+        GENERATION_MEMORY_REASONING:
+          settings.GENERATION_MEMORY_REASONING || "off",
+        GENERATION_MEMORY_MAX_TOKENS: parseInt(
+          settings.GENERATION_MEMORY_MAX_TOKENS || "1024",
+        ),
+        GENERATION_SEMANTIC_TEMPERATURE: parseFloat(
+          settings.GENERATION_SEMANTIC_TEMPERATURE || "0.1",
+        ),
+        GENERATION_SEMANTIC_REASONING:
+          settings.GENERATION_SEMANTIC_REASONING || "low",
+        GENERATION_SEMANTIC_MAX_TOKENS: parseInt(
+          settings.GENERATION_SEMANTIC_MAX_TOKENS || "2048",
         ),
       });
     }
@@ -195,6 +262,54 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
         MEMORY_KNN_CANDIDATES: (
           values.MEMORY_KNN_CANDIDATES ??
           parseInt(settings?.MEMORY_KNN_CANDIDATES || "20")
+        ).toString(),
+        GENERATION_CHAT_TEMPERATURE: (
+          values.GENERATION_CHAT_TEMPERATURE ??
+          parseFloat(settings?.GENERATION_CHAT_TEMPERATURE || "0.7")
+        ).toString(),
+        GENERATION_CHAT_REASONING:
+          values.GENERATION_CHAT_REASONING ??
+          settings?.GENERATION_CHAT_REASONING ??
+          "",
+        GENERATION_CHAT_MAX_TOKENS: (
+          values.GENERATION_CHAT_MAX_TOKENS ??
+          parseInt(settings?.GENERATION_CHAT_MAX_TOKENS || "4096")
+        ).toString(),
+        GENERATION_COLLAPSE_TEMPERATURE: (
+          values.GENERATION_COLLAPSE_TEMPERATURE ??
+          parseFloat(settings?.GENERATION_COLLAPSE_TEMPERATURE || "0.2")
+        ).toString(),
+        GENERATION_COLLAPSE_REASONING:
+          values.GENERATION_COLLAPSE_REASONING ??
+          settings?.GENERATION_COLLAPSE_REASONING ??
+          "off",
+        GENERATION_COLLAPSE_MAX_TOKENS: (
+          values.GENERATION_COLLAPSE_MAX_TOKENS ??
+          parseInt(settings?.GENERATION_COLLAPSE_MAX_TOKENS || "1024")
+        ).toString(),
+        GENERATION_MEMORY_TEMPERATURE: (
+          values.GENERATION_MEMORY_TEMPERATURE ??
+          parseFloat(settings?.GENERATION_MEMORY_TEMPERATURE || "0.3")
+        ).toString(),
+        GENERATION_MEMORY_REASONING:
+          values.GENERATION_MEMORY_REASONING ??
+          settings?.GENERATION_MEMORY_REASONING ??
+          "off",
+        GENERATION_MEMORY_MAX_TOKENS: (
+          values.GENERATION_MEMORY_MAX_TOKENS ??
+          parseInt(settings?.GENERATION_MEMORY_MAX_TOKENS || "1024")
+        ).toString(),
+        GENERATION_SEMANTIC_TEMPERATURE: (
+          values.GENERATION_SEMANTIC_TEMPERATURE ??
+          parseFloat(settings?.GENERATION_SEMANTIC_TEMPERATURE || "0.1")
+        ).toString(),
+        GENERATION_SEMANTIC_REASONING:
+          values.GENERATION_SEMANTIC_REASONING ??
+          settings?.GENERATION_SEMANTIC_REASONING ??
+          "low",
+        GENERATION_SEMANTIC_MAX_TOKENS: (
+          values.GENERATION_SEMANTIC_MAX_TOKENS ??
+          parseInt(settings?.GENERATION_SEMANTIC_MAX_TOKENS || "2048")
         ).toString(),
       });
       messageApi.success("Ajustes guardados");
@@ -498,6 +613,59 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                 >
                   <InputNumber min={1} max={1000} step={1} style={{ width: "100%" }} />
                 </Form.Item>
+                <Button type="primary" htmlType="submit" loading={saving}>
+                  Guardar
+                </Button>
+              </Form>
+            ),
+          },
+          {
+            key: "generation",
+            label: "Generación",
+            children: settingsLoading ? (
+              renderSettingsLoading()
+            ) : (
+              <Form
+                form={settingsForm}
+                layout="vertical"
+                onFinish={handleSettingsSubmit}
+              >
+                {GENERATION_BLOCKS.map((block) => (
+                  <div key={block.prefix} style={{ marginBottom: 16 }}>
+                    <h4 style={{ margin: "0 0 8px" }}>{block.heading}</h4>
+                    <Form.Item
+                      label={`${block.prefix}_TEMPERATURE`}
+                      name={`${block.prefix}_TEMPERATURE`}
+                    >
+                      <InputNumber
+                        min={0}
+                        max={2}
+                        step={0.05}
+                        style={{ width: "100%" }}
+                      />
+                    </Form.Item>
+                    <Form.Item
+                      label={`${block.prefix}_REASONING`}
+                      name={`${block.prefix}_REASONING`}
+                    >
+                      <Select
+                        virtual={false}
+                        options={GENERATION_REASONING_OPTIONS}
+                      />
+                    </Form.Item>
+                    <Form.Item
+                      label={`${block.prefix}_MAX_TOKENS`}
+                      name={`${block.prefix}_MAX_TOKENS`}
+                    >
+                      <InputNumber
+                        min={1}
+                        max={1000000}
+                        step={1}
+                        style={{ width: "100%" }}
+                      />
+                    </Form.Item>
+                  </div>
+                ))}
                 <Button type="primary" htmlType="submit" loading={saving}>
                   Guardar
                 </Button>

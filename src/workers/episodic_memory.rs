@@ -12,7 +12,7 @@ use crate::db::repos::memory::MemoryRepo;
 use crate::db::repos::persistent_memory::PersistentMemoryRepo;
 use crate::db::repos::stats::StatsRepo;
 use crate::embeddings::EmbeddingProvider;
-use crate::llm::provider::{ChatMessage, ChatRequest, LLMProvider};
+use crate::llm::provider::{ChatMessage, ChatRequest, LLMProvider, ResponseFormat};
 use crate::models::message::estimate_markdown_tokens_heuristic;
 use crate::persistent_memory::{
     evaluate_compressed, payload_token_count, resolve_updated_at, validate_payload,
@@ -564,6 +564,12 @@ impl EpisodicMemoryWorker {
             "EpisodicMemoryWorker: LLM request prompt preview"
         );
 
+        let generation = crate::generation::read_generation_params(
+            db,
+            crate::generation::GenerationRole::Memory,
+        )
+        .await;
+
         let request = ChatRequest {
             model: config.model.clone(),
             messages: vec![ChatMessage {
@@ -574,9 +580,11 @@ impl EpisodicMemoryWorker {
                 tool_call_id: None,
             }],
             tools: None,
-            temperature: Some(0.3),
-            max_tokens: Some(1024),
+            temperature: Some(generation.temperature),
+            max_tokens: Some(generation.max_tokens),
             stream: false,
+            reasoning: generation.reasoning,
+            response_format: None,
         };
 
         let start = std::time::Instant::now();
@@ -762,6 +770,12 @@ impl EpisodicMemoryWorker {
         config: &EpisodicMemoryConfig,
         system_content: String,
     ) -> Result<String, ConsolidationError> {
+        let generation = crate::generation::read_generation_params(
+            db,
+            crate::generation::GenerationRole::Semantic,
+        )
+        .await;
+
         let request = ChatRequest {
             model: config.semantic_model.clone(),
             messages: vec![ChatMessage {
@@ -772,9 +786,11 @@ impl EpisodicMemoryWorker {
                 tool_call_id: None,
             }],
             tools: None,
-            temperature: Some(0.2),
-            max_tokens: Some(1024),
+            temperature: Some(generation.temperature),
+            max_tokens: Some(generation.max_tokens),
             stream: false,
+            reasoning: generation.reasoning,
+            response_format: Some(ResponseFormat::JsonObject),
         };
 
         let start = std::time::Instant::now();
@@ -1160,7 +1176,10 @@ mod tests {
     use super::*;
     use crate::db::schema::run_migrations;
     use crate::embeddings::provider::EmbeddingError;
-    use crate::llm::provider::{ChatMessage, ChatRequest, ChatResponse, LLMError, TokenUsage};
+    use crate::llm::provider::{
+        ChatMessage, ChatRequest, ChatResponse, LLMError, ReasoningEffort, ReasoningSpec,
+        ResponseFormat, TokenUsage,
+    };
     use async_trait::async_trait;
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     use std::sync::{Arc, Mutex};
@@ -2835,5 +2854,223 @@ mod tests {
         let sys = &calls[0].messages[0].content;
         assert!(sys.contains(SEMANTIC_CALL_MARKER), "fallback prompt in use");
         assert!(sys.contains("BLOQUE456"));
+    }
+
+    // ─── Contract tests: parámetros de generación por rol ──────────────────
+
+    /// Run the episodic-card extraction once and return the captured request.
+    async fn fichas_request(db: &SqlitePool) -> ChatRequest {
+        let mock = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE);
+        let calls = mock.chat_calls.clone();
+        let provider = mock.wrap();
+
+        let _ = EpisodicMemoryWorker::call_llm(
+            db,
+            &provider,
+            &EpisodicMemoryConfig::default(),
+            "BLOQUE",
+        )
+        .await;
+
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 1, "the card extraction must call the LLM once");
+        calls[0].clone()
+    }
+
+    /// Scenario: Las fichas no razonan con los defaults (0.3 / off / 1024).
+    #[tokio::test]
+    async fn test_fichas_use_generation_defaults() {
+        let db = test_db().await;
+
+        let request = fichas_request(&db).await;
+
+        assert_eq!(request.temperature, Some(0.3));
+        assert!(
+            matches!(request.reasoning, Some(ReasoningSpec::Off)),
+            "default card reasoning must be Off, got {:?}",
+            request.reasoning
+        );
+        assert_eq!(request.max_tokens, Some(1024));
+    }
+
+    /// Scenario: Las fichas toman sus tres parámetros de settings
+    #[tokio::test]
+    async fn test_fichas_read_generation_params_from_settings() {
+        let db = test_db().await;
+        crate::db::repos::settings::SettingsRepo::set(&db, "GENERATION_MEMORY_TEMPERATURE", "0.45")
+            .await
+            .unwrap();
+        crate::db::repos::settings::SettingsRepo::set(&db, "GENERATION_MEMORY_REASONING", "high")
+            .await
+            .unwrap();
+        crate::db::repos::settings::SettingsRepo::set(&db, "GENERATION_MEMORY_MAX_TOKENS", "777")
+            .await
+            .unwrap();
+
+        let request = fichas_request(&db).await;
+
+        assert_eq!(request.temperature, Some(0.45));
+        assert!(
+            matches!(
+                request.reasoning,
+                Some(ReasoningSpec::Effort(ReasoningEffort::High))
+            ),
+            "expected Effort(High), got {:?}",
+            request.reasoning
+        );
+        assert_eq!(request.max_tokens, Some(777));
+    }
+
+    /// Run the consolidator once and return the captured semantic request.
+    async fn consolidation_request(db: &SqlitePool) -> ChatRequest {
+        set_persistent_budget(db, "100000").await;
+        let mock = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE);
+        let calls = mock.chat_calls.clone();
+        let provider = mock.wrap();
+
+        EpisodicMemoryWorker::consolidate_state(
+            db,
+            &provider,
+            &EpisodicMemoryConfig::default(),
+            "BLOQUE",
+        )
+        .await
+        .expect("consolidation must succeed");
+
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 1, "within budget: only the consolidation call");
+        calls[0].clone()
+    }
+
+    /// Scenario: El consolidador pide JSON y usa 0.1 / low / 2048 por defecto.
+    #[tokio::test]
+    async fn test_consolidator_forces_json_and_uses_semantic_defaults() {
+        let db = test_db().await;
+
+        let request = consolidation_request(&db).await;
+
+        assert!(
+            matches!(request.response_format, Some(ResponseFormat::JsonObject)),
+            "the consolidator must always request JSON, got {:?}",
+            request.response_format
+        );
+        assert_eq!(request.temperature, Some(0.1));
+        assert!(
+            matches!(
+                request.reasoning,
+                Some(ReasoningSpec::Effort(ReasoningEffort::Low))
+            ),
+            "default consolidator reasoning must be Effort(Low), got {:?}",
+            request.reasoning
+        );
+        assert_eq!(request.max_tokens, Some(2048));
+    }
+
+    /// Scenario: El modo JSON no se puede desactivar desde settings
+    #[tokio::test]
+    async fn test_consolidator_json_mode_not_configurable() {
+        let db = test_db().await;
+        crate::db::repos::settings::SettingsRepo::set(
+            &db,
+            "GENERATION_SEMANTIC_TEMPERATURE",
+            "0.9",
+        )
+        .await
+        .unwrap();
+        crate::db::repos::settings::SettingsRepo::set(
+            &db,
+            "GENERATION_SEMANTIC_REASONING",
+            "super",
+        )
+        .await
+        .unwrap();
+        crate::db::repos::settings::SettingsRepo::set(&db, "GENERATION_SEMANTIC_MAX_TOKENS", "11")
+            .await
+            .unwrap();
+
+        let request = consolidation_request(&db).await;
+
+        assert!(
+            matches!(request.response_format, Some(ResponseFormat::JsonObject)),
+            "no settings combination may disable JSON mode"
+        );
+        assert_eq!(request.temperature, Some(0.9));
+        assert_eq!(request.max_tokens, Some(11));
+    }
+
+    /// Scenario: La compresión pide JSON y usa GENERATION_SEMANTIC_*.
+    #[tokio::test]
+    async fn test_compression_forces_json_and_uses_semantic_params() {
+        let db = test_db().await;
+        let state: serde_json::Value = serde_json::from_str(DEFAULT_STATE_RESPONSE).unwrap();
+
+        let mock = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE)
+            .semantic(DEFAULT_STATE_RESPONSE)
+            .compression(DEFAULT_STATE_RESPONSE);
+        let calls = mock.chat_calls.clone();
+        let provider = mock.wrap();
+
+        let _ = EpisodicMemoryWorker::try_compress(
+            &db,
+            &provider,
+            &EpisodicMemoryConfig::default(),
+            &state,
+        )
+        .await;
+
+        let calls = calls.lock().unwrap();
+        assert_eq!(
+            calls.len(),
+            1,
+            "the compression pass must call the LLM once"
+        );
+        let request = calls[0].clone();
+        assert!(
+            matches!(request.response_format, Some(ResponseFormat::JsonObject)),
+            "the compression pass must request JSON, got {:?}",
+            request.response_format
+        );
+        assert_eq!(request.temperature, Some(0.1));
+        assert!(
+            matches!(
+                request.reasoning,
+                Some(ReasoningSpec::Effort(ReasoningEffort::Low))
+            ),
+            "compression must use Effort(Low) by default, got {:?}",
+            request.reasoning
+        );
+        assert_eq!(request.max_tokens, Some(2048));
+    }
+
+    /// Scenario: Una temperatura no parseable cae al default con warning.
+    #[tokio::test]
+    async fn test_fichas_unparseable_temperature_falls_back_to_default() {
+        let db = test_db().await;
+        crate::db::repos::settings::SettingsRepo::set(&db, "GENERATION_MEMORY_TEMPERATURE", "alta")
+            .await
+            .unwrap();
+
+        let request = fichas_request(&db).await;
+        assert_eq!(
+            request.temperature,
+            Some(0.3),
+            "an unparseable temperature must fall back to the role default"
+        );
+    }
+
+    /// Scenario: Un razonamiento desconocido cae a off con warning.
+    #[tokio::test]
+    async fn test_fichas_unknown_reasoning_falls_back_to_off() {
+        let db = test_db().await;
+        crate::db::repos::settings::SettingsRepo::set(&db, "GENERATION_MEMORY_REASONING", "super")
+            .await
+            .unwrap();
+
+        let request = fichas_request(&db).await;
+        assert!(
+            matches!(request.reasoning, Some(ReasoningSpec::Off)),
+            "an unknown reasoning level must fall back to Off, got {:?}",
+            request.reasoning
+        );
     }
 }

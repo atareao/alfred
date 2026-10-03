@@ -3,6 +3,7 @@ pub mod config;
 pub mod db;
 pub mod embeddings;
 pub mod errors;
+pub mod generation;
 pub mod handlers;
 pub mod llm;
 pub mod models;

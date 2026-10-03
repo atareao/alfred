@@ -48,6 +48,7 @@ el cambio surta efecto en caliente. Eso pide el patrón que ya usan los mandos d
 - Elegir los **modelos** desde la UI: siguen en variables de entorno. Solo los parámetros de
   generación pasan a `settings`.
 - Structured output en el chat: solo consolidador y compresión.
+- La reflexión del agente (`analyze()`) conserva sus propios valores (0.3 / 256): queda fuera de la configuración por rol.
 - Tocar `docker-compose.prod.yml`.
 
 ## Capabilities
@@ -73,7 +74,7 @@ el cambio surta efecto en caliente. Eso pide el patrón que ya usan los mandos d
 - **Código**: `src/llm/provider.rs` (tipos + `ChatRequest`); `src/llm/openrouter.rs` (cuerpos de
   `chat` y `chat_stream`); `src/llm/ollama.rs` (ignora ambos campos); un helper de lectura/parseo
   de los parámetros de generación desde `settings`; `src/workers/collapse.rs` y
-  `src/workers/episodic_memory.rs`; `src/orchestrator/agent.rs` (los dos caminos).
+  `src/workers/episodic_memory.rs`; `src/orchestrator/agent.rs` (el camino del chat).
 - **Migración**: nueva migración que siembra las doce claves con sus defaults.
 - **Frontend**: `types.ts`, `components/SettingsDialog.tsx` (+ test), reutilizando
   `updateSettings`; una pestaña «Generación» con cuatro bloques de tres campos.
