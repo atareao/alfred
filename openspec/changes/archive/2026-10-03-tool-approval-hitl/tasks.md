@@ -31,4 +31,4 @@
 - [x] 4.1 `cargo fmt --check` y `cargo clippy --all-targets -- -D warnings` limpios; `npm run lint`.
 - [x] 4.2 `grep -rn "fn permission" src/` sin impls con la firma vieja.
 - [x] 4.3 Revisión con `rust-reviewer` (backend) y `react-reviewer` (frontend).
-- [ ] 4.4 PR a `development`; tras el merge, PR de archivado (`openspec archive tool-approval-hitl`).
+- [x] 4.4 PR a `development`; tras el merge, PR de archivado (`openspec archive tool-approval-hitl`).
