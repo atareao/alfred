@@ -14,8 +14,8 @@ use serde_json::Value;
 use crate::db::repos::persistent_memory::PersistentMemoryRepo;
 use crate::errors::AppError;
 use crate::persistent_memory::{
-    absolute_ceiling, is_empty_state, minified_json, payload_token_count, read_budget,
-    resolve_updated_at, validate_payload,
+    absolute_ceiling, evaluate_compressed, is_empty_state, minified_json, payload_token_count,
+    read_budget, resolve_updated_at, validate_payload, CompressionOutcome,
 };
 use crate::AppState;
 
@@ -104,8 +104,10 @@ pub async fn get_persistent_memory(
     }))
 }
 
-/// Write the state: validate the schema, check the optimistic mark, enforce the
-/// budget/ceiling, then persist with a Rust-resolved `updated_at`. No LLM.
+/// Write the state: validate the schema, classify its size against the same
+/// budget/ceiling rule as the consolidation worker, and persist with a
+/// Rust-resolved `updated_at`. Optimistic concurrency is enforced atomically in
+/// the write statement itself. No LLM.
 pub async fn update_persistent_memory(
     State(state): State<AppState>,
     Json(body): Json<UpdatePersistentMemoryRequest>,
@@ -114,41 +116,61 @@ pub async fn update_persistent_memory(
     let normalized = validate_payload(&body.payload)
         .map_err(|e| AppError::UnprocessableEntity(e.to_string()))?;
 
+    // `previous` is read ONLY to resolve the content-hash `updated_at`; it is
+    // never the concurrency guard (that lives in the SQL `WHERE`).
     let previous = PersistentMemoryRepo::get(&state.db).await?;
 
-    // 2. Optimistic concurrency: only when the field is present.
-    if let Some(expected) = &body.expected_updated_at {
-        let current = previous.as_ref().map(|entry| entry.updated_at.as_str());
-        if current != expected.as_deref() {
-            return Err(AppError::Conflict(
-                "the persistent state changed since it was last read".to_string(),
-            ));
-        }
-    }
-
-    // 3. Measure and enforce the size bounds. A rejection keeps the previous
-    //    state: nothing has been written yet.
+    // 2. Measure and enforce the size bounds with the same classifier the
+    //    consolidation worker uses. A rejection keeps the previous state:
+    //    nothing has been written yet.
     let budget_tokens = read_budget(&state.db).await;
     let ceiling_tokens = absolute_ceiling(budget_tokens);
     let token_count = payload_token_count(&normalized);
 
-    if token_count > ceiling_tokens {
-        return Err(AppError::UnprocessableEntity(format!(
-            "the persistent state uses {token_count} tokens, above the absolute ceiling of {ceiling_tokens} (budget {budget_tokens}); it was not saved"
-        )));
-    }
-
-    let warning = (token_count > budget_tokens).then(|| {
-        format!(
+    let warning = match evaluate_compressed(token_count, budget_tokens) {
+        CompressionOutcome::Reject => {
+            return Err(AppError::UnprocessableEntity(format!(
+                "the persistent state uses {token_count} tokens, above the absolute ceiling of {ceiling_tokens} (budget {budget_tokens}); it was not saved"
+            )));
+        }
+        CompressionOutcome::StoreWithWarning => Some(format!(
             "the persistent state uses {token_count} tokens, above the budget of {budget_tokens}; it was saved with a warning"
-        )
-    });
+        )),
+        CompressionOutcome::Store => None,
+    };
 
-    // 4. Rust owns `updated_at`; the client's date is ignored.
+    // 3. Rust owns `updated_at`; the client's date is ignored.
     let now = chrono::Utc::now().to_rfc3339();
     let updated_at = resolve_updated_at(previous.as_ref(), &normalized, &now);
     let payload_text = minified_json(&normalized);
-    PersistentMemoryRepo::upsert(&state.db, &payload_text, &updated_at).await?;
+
+    // 4. Atomic optimistic concurrency: the guard is part of the write
+    //    statement itself, so a consolidation on the same pool cannot slip in
+    //    between the check and the write (no TOCTOU window).
+    let conflict = match &body.expected_updated_at {
+        // Omitted: unconditional write.
+        None => {
+            PersistentMemoryRepo::upsert(&state.db, &payload_text, &updated_at).await?;
+            false
+        }
+        // Explicit `null`: expected no row ⇒ insert only if still absent.
+        Some(None) => {
+            PersistentMemoryRepo::insert_if_absent(&state.db, &payload_text, &updated_at).await?
+                == 0
+        }
+        // Expected a concrete mark ⇒ update only if it still matches.
+        Some(Some(expected)) => {
+            PersistentMemoryRepo::update_if_mark(&state.db, &payload_text, &updated_at, expected)
+                .await?
+                == 0
+        }
+    };
+
+    if conflict {
+        return Err(AppError::Conflict(
+            "the persistent state changed since it was last read".to_string(),
+        ));
+    }
 
     let is_empty = is_empty_state(&normalized);
     Ok(Json(PersistentMemoryWriteResponse {

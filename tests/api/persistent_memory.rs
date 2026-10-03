@@ -79,7 +79,31 @@ async fn get_state_returns_payload_mark_and_bounds() {
     assert_eq!(body["budget_tokens"], 1234);
     assert_eq!(body["ceiling_tokens"], 2468);
     assert_eq!(body["is_empty"], false);
-    assert_eq!(body["token_count"], payload_token_count(&state));
+    // Contrast against the low-level estimator over the minified state, so the
+    // assertion is not tautological through `payload_token_count`.
+    let expected_tokens = valet::token_estimate::estimate_json_tokens(
+        &valet::persistent_memory::minified_json(&state),
+    );
+    assert_eq!(body["token_count"], expected_tokens);
+}
+
+/// Una fila almacenada cuyo JSON no parsea es una violación de invariante: la
+/// lectura responde 500 y nunca la trata como estado vacío.
+#[tokio::test]
+async fn get_corrupt_stored_payload_returns_500() {
+    let app = TestApp::new().await;
+
+    // Seed a raw row that no endpoint would ever produce.
+    sqlx::query(
+        "INSERT INTO persistent_memory (id, payload, updated_at) \
+         VALUES ('global_state', 'not valid json', '2026-10-03T00:00:00Z')",
+    )
+    .execute(&app.db)
+    .await
+    .expect("seed a corrupt row");
+
+    let resp = app.get("/api/persistent-memory").await;
+    assert_eq!(resp.status(), 500);
 }
 
 // ─── Requirement: la escritura manual SHALL validar el esquema y respetar el techo
@@ -266,6 +290,32 @@ async fn explicit_null_expected_conflicts_with_existing_row() {
         .send()
         .await;
     assert_eq!(resp.status(), 409);
+}
+
+/// El caso simétrico: una marca string esperada contra una tabla vacía también
+/// es conflicto (la spec exige la diferencia «sin fila» vs «con fila» en ambos
+/// sentidos), y nada se escribe.
+#[tokio::test]
+async fn expected_string_mark_against_empty_table_conflicts() {
+    let app = TestApp::new().await;
+
+    let resp = app
+        .put("/api/persistent-memory")
+        .json(&json!({
+            "payload": small_state(),
+            "expected_updated_at": "2026-10-03T00:00:00Z"
+        }))
+        .send()
+        .await;
+    assert_eq!(resp.status(), 409);
+
+    let get = app
+        .get("/api/persistent-memory")
+        .await
+        .json::<serde_json::Value>()
+        .await;
+    assert_eq!(get["is_empty"], true, "nothing must have been written");
+    assert_eq!(get["payload"], serde_json::Value::Null);
 }
 
 /// La marca vigente permite la escritura.

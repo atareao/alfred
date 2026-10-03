@@ -867,10 +867,19 @@ impl EpisodicMemoryWorker {
     ) -> Result<Consolidation, ConsolidationError> {
         // Previous state; its absence is a valid empty state.
         let previous = PersistentMemoryRepo::get(db).await?;
-        let current_payload = previous
-            .as_ref()
-            .and_then(|p| serde_json::from_str::<serde_json::Value>(&p.payload).ok())
-            .unwrap_or_else(|| serde_json::json!({ "schema_version": 1 }));
+        let current_payload = match previous.as_ref() {
+            Some(entry) => match serde_json::from_str::<serde_json::Value>(&entry.payload) {
+                Ok(payload) => payload,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "the stored persistent-memory payload is not valid JSON; treating it as empty"
+                    );
+                    serde_json::json!({ "schema_version": 1 })
+                }
+            },
+            None => serde_json::json!({ "schema_version": 1 }),
+        };
 
         // The prompt lives in `settings` (seeded by migration), with a minimal
         // fallback when it is missing, empty or unreadable.

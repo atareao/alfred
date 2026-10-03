@@ -67,6 +67,56 @@ impl PersistentMemoryRepo {
         Ok(())
     }
 
+    /// Update the `'global_state'` row **only if** its current `updated_at`
+    /// equals `expected_updated_at`.
+    ///
+    /// The guard lives in the SQL `WHERE`, so the check and the write are one
+    /// atomic statement: no read-then-write race window. Returns the number of
+    /// affected rows; `0` means the row is absent or its mark differs, and the
+    /// caller must treat it as a conflict.
+    pub async fn update_if_mark(
+        pool: &SqlitePool,
+        payload: &str,
+        updated_at: &str,
+        expected_updated_at: &str,
+    ) -> Result<u64, sqlx::Error> {
+        let result = sqlx::query(
+            "UPDATE persistent_memory SET payload = ?1, updated_at = ?2 \
+             WHERE id = ?3 AND updated_at = ?4",
+        )
+        .bind(payload)
+        .bind(updated_at)
+        .bind(GLOBAL_STATE_ID)
+        .bind(expected_updated_at)
+        .execute(pool)
+        .await?;
+
+        Ok(result.rows_affected())
+    }
+
+    /// Insert the `'global_state'` row **only if** it is absent.
+    ///
+    /// `ON CONFLICT(id) DO NOTHING` makes the absence check and the insert one
+    /// atomic statement. Returns the number of affected rows; `0` means a row
+    /// already existed and the caller must treat it as a conflict.
+    pub async fn insert_if_absent(
+        pool: &SqlitePool,
+        payload: &str,
+        updated_at: &str,
+    ) -> Result<u64, sqlx::Error> {
+        let result = sqlx::query(
+            "INSERT INTO persistent_memory (id, payload, updated_at) VALUES (?1, ?2, ?3) \
+             ON CONFLICT(id) DO NOTHING",
+        )
+        .bind(GLOBAL_STATE_ID)
+        .bind(payload)
+        .bind(updated_at)
+        .execute(pool)
+        .await?;
+
+        Ok(result.rows_affected())
+    }
+
     /// Delete the single `'global_state'` row.
     ///
     /// Idempotent: deleting an absent row is a no-op that still succeeds.
@@ -196,5 +246,76 @@ mod tests {
             0,
             "deleting an absent row creates nothing"
         );
+    }
+
+    /// `update_if_mark` updates only when the current mark matches, and reports
+    /// `0` otherwise — the atomic guard behind optimistic concurrency.
+    #[tokio::test]
+    async fn test_update_if_mark_guards_on_the_mark() {
+        let pool = setup().await;
+        PersistentMemoryRepo::upsert(&pool, r#"{"a":1}"#, "T1")
+            .await
+            .expect("seed");
+
+        // Wrong mark: nothing is affected and the row is untouched.
+        let affected = PersistentMemoryRepo::update_if_mark(&pool, r#"{"a":2}"#, "T2", "T0")
+            .await
+            .expect("update with stale mark");
+        assert_eq!(affected, 0, "a stale mark must not write");
+        let row = PersistentMemoryRepo::get(&pool)
+            .await
+            .expect("get")
+            .expect("row");
+        assert_eq!(row.payload, r#"{"a":1}"#);
+        assert_eq!(row.updated_at, "T1");
+
+        // Right mark: exactly one row updated.
+        let affected = PersistentMemoryRepo::update_if_mark(&pool, r#"{"a":2}"#, "T2", "T1")
+            .await
+            .expect("update with current mark");
+        assert_eq!(affected, 1);
+        let row = PersistentMemoryRepo::get(&pool)
+            .await
+            .expect("get")
+            .expect("row");
+        assert_eq!(row.payload, r#"{"a":2}"#);
+        assert_eq!(row.updated_at, "T2");
+    }
+
+    /// `update_if_mark` on an absent row affects nothing (and creates nothing).
+    #[tokio::test]
+    async fn test_update_if_mark_missing_row_affects_nothing() {
+        let pool = setup().await;
+
+        let affected = PersistentMemoryRepo::update_if_mark(&pool, r#"{"a":2}"#, "T2", "T1")
+            .await
+            .expect("update on empty table");
+        assert_eq!(affected, 0);
+        assert_eq!(row_count(&pool).await, 0, "no row must be created");
+    }
+
+    /// `insert_if_absent` inserts only when there is no row, and reports `0`
+    /// otherwise without touching the existing row.
+    #[tokio::test]
+    async fn test_insert_if_absent_guards_on_absence() {
+        let pool = setup().await;
+
+        let affected = PersistentMemoryRepo::insert_if_absent(&pool, r#"{"a":1}"#, "T1")
+            .await
+            .expect("insert when absent");
+        assert_eq!(affected, 1);
+        assert_eq!(row_count(&pool).await, 1);
+
+        // A second insert does nothing and leaves the existing row intact.
+        let affected = PersistentMemoryRepo::insert_if_absent(&pool, r#"{"a":9}"#, "T9")
+            .await
+            .expect("insert when present");
+        assert_eq!(affected, 0, "an existing row must not be overwritten");
+        let row = PersistentMemoryRepo::get(&pool)
+            .await
+            .expect("get")
+            .expect("row");
+        assert_eq!(row.payload, r#"{"a":1}"#);
+        assert_eq!(row.updated_at, "T1");
     }
 }
