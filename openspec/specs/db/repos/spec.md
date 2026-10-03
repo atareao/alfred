@@ -294,7 +294,7 @@ vacía).
 | `GENERATION_MEMORY_REASONING` | fichas | razonamiento | `off` |
 | `GENERATION_MEMORY_MAX_TOKENS` | fichas | tokens máximos | `1024` |
 | `GENERATION_SEMANTIC_TEMPERATURE` | consolidador/compresión | temperatura | `0.1` |
-| `GENERATION_SEMANTIC_REASONING` | consolidador/compresión | razonamiento | `low` |
+| `GENERATION_SEMANTIC_REASONING` | consolidador/compresión | razonamiento | `off` |
 | `GENERATION_SEMANTIC_MAX_TOKENS` | consolidador/compresión | tokens máximos | `2048` |
 
 El campo de razonamiento SHALL codificarse como cadena: vacío ⇒ no se envía el campo `reasoning`
@@ -316,7 +316,7 @@ warning.
 **Given** una base de datos recién migrada  
 **When** se consulta `settings`  
 **Then** existe `GENERATION_CHAT_TEMPERATURE = 0.7`  
-**And** existe `GENERATION_SEMANTIC_REASONING = low`  
+**And** existe `GENERATION_SEMANTIC_REASONING = off`  
 **And** existe `GENERATION_SEMANTIC_MAX_TOKENS = 2048`  
 **And** existen las nueve claves restantes con sus valores iniciales
 
@@ -346,6 +346,16 @@ warning.
 **Given** `GENERATION_CHAT_REASONING = ""`  
 **When** una llamada del chat lee sus parámetros  
 **Then** el `reasoning` del `ChatRequest` es `None`
+
+#### Scenario: Un `low` heredado del consolidador se corrige a `off`
+**Given** una base migrada con `GENERATION_SEMANTIC_REASONING = low`  
+**When** se aplica la migración de endurecimiento del consolidador  
+**Then** `GENERATION_SEMANTIC_REASONING` pasa a `off`
+
+#### Scenario: Un razonamiento del consolidador distinto de `low` se respeta
+**Given** una base migrada con `GENERATION_SEMANTIC_REASONING = medium`  
+**When** se aplica la migración de endurecimiento del consolidador  
+**Then** `GENERATION_SEMANTIC_REASONING` sigue siendo `medium`
 
 ### Requirement: ProfilesRepo::get_by_id SHALL return the profile or None
 

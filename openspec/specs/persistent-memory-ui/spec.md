@@ -13,7 +13,7 @@ cotas de tamaño en un objeto JSON con las claves `payload`, `updated_at`, `toke
 `budget_tokens`, `ceiling_tokens` e `is_empty`. `payload` SHALL ser el estado ya parseado (objeto
 JSON) o `null` si no existe fila; `updated_at` SHALL ser la marca almacenada o `null`;
 `token_count` SHALL medirse sobre la forma minificada con el mismo medidor que la Capa C;
-`budget_tokens` SHALL leerse de `settings.PERSISTENT_MEMORY_BUDGET_TOKENS` (por defecto 500) y
+`budget_tokens` SHALL leerse de `settings.PERSISTENT_MEMORY_BUDGET_TOKENS` (por defecto 800) y
 `ceiling_tokens` SHALL ser su doble. La ausencia de fila SHALL leerse como estado vacío sin crear
 la fila.
 
@@ -23,9 +23,9 @@ la fila.
 **And** la lectura SHALL NOT crear la fila
 
 #### Scenario: Estado existente se devuelve con sus cotas
-**Given** un estado persistente de 120 tokens y un presupuesto de 500  
+**Given** un estado persistente de 120 tokens y un presupuesto de 800  
 **When** se lee por HTTP  
-**Then** `token_count` es 120, `budget_tokens` es 500 y `ceiling_tokens` es 1000  
+**Then** `token_count` es 120, `budget_tokens` es 800 y `ceiling_tokens` es 1600  
 **And** `payload` es el objeto almacenado y `updated_at` su marca
 
 #### Scenario: Estado ausente se lee como vacío
