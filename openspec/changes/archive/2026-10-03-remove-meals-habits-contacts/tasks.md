@@ -36,4 +36,4 @@
 - [x] 5.1 `cargo fmt --check` y `cargo clippy --all-targets -- -D warnings` limpios.
 - [x] 5.2 `grep -rn -iE '\b(meals|habits|contacts)\b' src/ migrations/ README.md README.es.md` sin residuos en producción.
 - [x] 5.3 Revisión con `rust-reviewer`.
-- [ ] 5.4 Verificación final por CLI y PR a `development`; después PR de archivado (`openspec archive remove-meals-habits-contacts`).
+- [x] 5.4 Verificación final por CLI y PR a `development`; después PR de archivado (`openspec archive remove-meals-habits-contacts`).

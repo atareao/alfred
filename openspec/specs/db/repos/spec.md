@@ -164,7 +164,7 @@ El repositorio SHALL exponer `StatsRepo::db_sizes(pool)` devolviendo el número 
 **Given** una base de datos con tablas pobladas
 **When** se llama a `StatsRepo::db_sizes(pool)`
 **Then** devuelve `Vec<TableSize>` con nombre de tabla y row count para:
-messages, profiles, memories, events, tasks, notes, contacts, reminders, meal_plans, shopping_list, habits, habit_logs, tools
+events, llm_requests, memory, message_embeddings, messages, notes, profiles, reminders, settings, tasks, tools
 
 #### Scenario: Tablas con datos
 **Given** 10 messages, 2 profiles, 5 memories
