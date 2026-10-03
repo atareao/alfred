@@ -35,6 +35,8 @@ const defaultSettings: Record<string, string> = {
   system_prompt: "Eres Valet",
   archivist_prompt: "Eres un archivista",
   collapse_prompt: "Resume el texto",
+  consolidator_prompt:
+    "Consolida {{ ESTADO_ACTUAL }} con {{ BLOQUE_DE_MENSAJES }}",
   font_size: "16",
   message_page_size: "50",
   openweather_api_key: "",
@@ -153,7 +155,7 @@ describe("SettingsDialog", () => {
     expect(screen.getByText("Tamaño de página")).toBeInTheDocument();
   });
 
-  it("renders Prompts tab with System, Archivist and Collapse sub-tabs", async () => {
+  it("renders Prompts tab with System, Archivist, Collapse and Consolidator sub-tabs", async () => {
     const user = userEvent.setup();
     renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
@@ -162,6 +164,7 @@ describe("SettingsDialog", () => {
     expect(screen.getByText("System")).toBeInTheDocument();
     expect(screen.getByText("Archivist")).toBeInTheDocument();
     expect(screen.getByText("Collapse")).toBeInTheDocument();
+    expect(screen.getByText("Consolidator")).toBeInTheDocument();
   });
 
   it("shows system_prompt when opening the System sub-tab", async () => {
@@ -630,5 +633,96 @@ describe("SettingsDialog", () => {
   it("renders the Memoria persistente tab", () => {
     renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
     expect(screen.getByText("Memoria persistente")).toBeInTheDocument();
+  });
+
+  // ════════════════════════════════════════════════════════════════
+  // RED phase tests — sub-pestaña "Consolidator" y aviso de placeholders
+  // ════════════════════════════════════════════════════════════════
+
+  it("renders the Consolidator sub-tab showing the current prompt", async () => {
+    const user = userEvent.setup();
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByText("Prompts"));
+    expect(screen.getByText("Consolidator")).toBeInTheDocument();
+
+    await user.click(screen.getByText("Consolidator"));
+
+    expect(screen.getByLabelText("Consolidator Prompt")).toHaveValue(
+      "Consolida {{ ESTADO_ACTUAL }} con {{ BLOQUE_DE_MENSAJES }}",
+    );
+    expect(screen.queryByText(/Faltan placeholders/i)).not.toBeInTheDocument();
+  });
+
+  it("edits and saves consolidator_prompt keeping the rest of the settings", async () => {
+    const user = userEvent.setup();
+    mockUpdateSettings.mockResolvedValue(undefined);
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByText("Prompts"));
+    await user.click(screen.getByText("Consolidator"));
+
+    const area = screen.getByLabelText("Consolidator Prompt");
+    await user.clear(area);
+    await user.type(area, "Nuevo consolidator");
+
+    const form = area.closest("form") as HTMLFormElement;
+    await user.click(within(form).getByRole("button", { name: /guardar/i }));
+
+    await waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          consolidator_prompt: "Nuevo consolidator",
+          system_prompt: "Eres Valet",
+          archivist_prompt: "Eres un archivista",
+          collapse_prompt: "Resume el texto",
+          font_size: "16",
+          max_window_tokens: "10000",
+        }),
+      );
+    });
+  });
+
+  it("warns about the missing placeholder naming it and still saves", async () => {
+    const user = userEvent.setup();
+    mockUpdateSettings.mockResolvedValue(undefined);
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByText("Prompts"));
+    await user.click(screen.getByText("Consolidator"));
+
+    const area = screen.getByLabelText("Consolidator Prompt");
+    await user.clear(area);
+    // user-event interpreta las llaves como descriptores de tecla; `fireEvent`
+    // permite fijar el valor literal con placeholders.
+    fireEvent.change(area, { target: { value: "Solo {{ ESTADO_ACTUAL }}" } });
+
+    expect(
+      await screen.findByText(/BLOQUE_DE_MENSAJES/),
+    ).toBeInTheDocument();
+
+    const form = area.closest("form") as HTMLFormElement;
+    await user.click(within(form).getByRole("button", { name: /guardar/i }));
+
+    await waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          consolidator_prompt: "Solo {{ ESTADO_ACTUAL }}",
+        }),
+      );
+    });
+  });
+
+  it("does not warn when the prompt contains both placeholders", async () => {
+    const user = userEvent.setup();
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByText("Prompts"));
+    await user.click(screen.getByText("Consolidator"));
+
+    expect(screen.getByLabelText("Consolidator Prompt")).toHaveValue(
+      "Consolida {{ ESTADO_ACTUAL }} con {{ BLOQUE_DE_MENSAJES }}",
+    );
+    expect(screen.queryByText(/Faltan placeholders/i)).not.toBeInTheDocument();
   });
 });

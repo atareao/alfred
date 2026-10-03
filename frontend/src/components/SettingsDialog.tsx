@@ -9,6 +9,7 @@ import {
   App as AntdApp,
   Space,
   Spin,
+  Alert,
 } from "antd";
 import { useSettings } from "../hooks/useSettings";
 import { useProfileContext } from "../contexts/ProfileContext";
@@ -41,12 +42,30 @@ function isAllowedAvatarUrl(value: string | null | undefined): boolean {
   return false;
 }
 
+// La comparación es EXACTA (incluidos los espacios internos) a propósito:
+// replica el contrato de placeholders que exige el worker en Rust. No
+// normalizar espacios ni el espaciado interior de las llaves.
+const CONSOLIDATOR_PLACEHOLDERS = [
+  "{{ ESTADO_ACTUAL }}",
+  "{{ BLOQUE_DE_MENSAJES }}",
+] as const;
+
+function getMissingConsolidatorPlaceholders(
+  value: string | undefined,
+): string[] {
+  const text = value ?? "";
+  return CONSOLIDATOR_PLACEHOLDERS.filter((placeholder) =>
+    !text.includes(placeholder),
+  );
+}
+
 export interface SettingsFormValues {
   font_size: number;
   max_window_tokens: number;
   system_prompt: string;
   archivist_prompt: string;
   collapse_prompt: string;
+  consolidator_prompt: string;
   message_page_size: number;
   openweather_api_key: string;
   google_places_api_key: string;
@@ -73,6 +92,12 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
 
   const [profileForm] = Form.useForm();
   const [settingsForm] = Form.useForm();
+  const consolidatorPrompt = Form.useWatch<string>(
+    "consolidator_prompt",
+    settingsForm,
+  );
+  const missingConsolidatorPlaceholders =
+    getMissingConsolidatorPlaceholders(consolidatorPrompt);
   const [resetting, setResetting] = useState(false);
   const [profileSaving, setProfileSaving] = useState(false);
 
@@ -85,6 +110,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
         system_prompt: settings.system_prompt || "",
         archivist_prompt: settings.archivist_prompt || "",
         collapse_prompt: settings.collapse_prompt || "",
+        consolidator_prompt: settings.consolidator_prompt || "",
         message_page_size: parseInt(settings.message_page_size || "50"),
         openweather_api_key: settings.openweather_api_key || "",
         google_places_api_key: settings.google_places_api_key || "",
@@ -146,6 +172,8 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
         system_prompt: values.system_prompt ?? settings?.system_prompt ?? "",
         archivist_prompt: values.archivist_prompt ?? settings?.archivist_prompt ?? "",
         collapse_prompt: values.collapse_prompt ?? settings?.collapse_prompt ?? "",
+        consolidator_prompt:
+          values.consolidator_prompt ?? settings?.consolidator_prompt ?? "",
         message_page_size: (
           values.message_page_size ?? parseInt(settings?.message_page_size || "50")
         ).toString(),
@@ -371,8 +399,29 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                         </Form.Item>
                       ),
                     },
+                    {
+                      key: "consolidator",
+                      label: "Consolidator",
+                      forceRender: true,
+                      children: (
+                        <Form.Item
+                          label="Consolidator Prompt"
+                          name="consolidator_prompt"
+                        >
+                          <TextArea rows={10} />
+                        </Form.Item>
+                      ),
+                    },
                   ]}
                 />
+                {missingConsolidatorPlaceholders.length > 0 && (
+                  <Alert
+                    type="warning"
+                    showIcon
+                    style={{ marginBottom: 16 }}
+                    message={`Faltan placeholders en el prompt del consolidador: ${missingConsolidatorPlaceholders.join(", ")}`}
+                  />
+                )}
                 <Button type="primary" htmlType="submit" loading={saving}>
                   Guardar
                 </Button>
