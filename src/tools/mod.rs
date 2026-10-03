@@ -4,7 +4,7 @@ pub mod current_time;
 pub mod geo;
 pub mod geo_utils;
 pub mod google_places;
-pub mod knowledge;
+pub mod notes;
 pub mod permission;
 pub mod registry;
 pub mod reminders;

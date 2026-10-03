@@ -58,15 +58,13 @@ async fn test_toggle_tool_not_found() {
 }
 
 #[tokio::test]
-async fn test_list_tools_includes_all_domain_tools() {
-    // Given the database is seeded with the remaining domain tools
+async fn test_list_tools_includes_all_registered_tools() {
+    // Given the tools table is reconciled from the production registry
     // When GET /api/tools is called
-    // Then the response contains calendar, tasks, reminders, knowledge
-    // and does NOT contain the removed contacts, meals or habits tools
+    // Then the response lists the 12 real tool names and no legacy ones
     let app = TestApp::new().await;
 
     let resp = app.get("/api/tools").await;
-
     assert_eq!(resp.status(), StatusCode::OK);
     let tools = resp.json::<serde_json::Value>().await;
     let names: Vec<&str> = tools
@@ -75,13 +73,29 @@ async fn test_list_tools_includes_all_domain_tools() {
         .iter()
         .filter_map(|t| t["name"].as_str())
         .collect();
-    assert!(names.contains(&"calendar"), "Expected calendar tool");
-    assert!(names.contains(&"tasks"), "Expected tasks tool");
-    assert!(names.contains(&"reminders"), "Expected reminders tool");
-    assert!(names.contains(&"knowledge"), "Expected knowledge tool");
-    assert!(!names.contains(&"contacts"), "contacts tool must be gone");
-    assert!(!names.contains(&"meals"), "meals tool must be gone");
-    assert!(!names.contains(&"habits"), "habits tool must be gone");
+
+    for expected in [
+        "calendar",
+        "tasks",
+        "weather",
+        "geocode",
+        "reverse_geocode",
+        "search_places",
+        "web_search",
+        "reminders",
+        "get_current_time",
+        "get_current_location",
+        "notes",
+        "unified_search",
+    ] {
+        assert!(names.contains(&expected), "Expected tool {expected}");
+    }
+    for legacy in ["geo", "knowledge", "contacts", "meals", "habits"] {
+        assert!(
+            !names.contains(&legacy),
+            "Legacy tool {legacy} must be gone"
+        );
+    }
 }
 
 #[tokio::test]
@@ -140,14 +154,13 @@ async fn test_toggle_tool_enabled() {
 }
 
 #[tokio::test]
-async fn test_list_tools_includes_new_f5c_tools() {
-    // Given the database is seeded with the F5c domain tools
+async fn test_list_tools_includes_geo_and_time_tools() {
+    // Given the tools table is reconciled from the production registry
     // When GET /api/tools is called
-    // Then the response contains weather and geo, but not the removed meals/habits
+    // Then the real geo and time tool names are present, not the legacy "geo"
     let app = TestApp::new().await;
 
     let resp = app.get("/api/tools").await;
-
     assert_eq!(resp.status(), StatusCode::OK);
     let tools = resp.json::<serde_json::Value>().await;
     let names: Vec<&str> = tools
@@ -156,10 +169,17 @@ async fn test_list_tools_includes_new_f5c_tools() {
         .iter()
         .filter_map(|t| t["name"].as_str())
         .collect();
-    assert!(names.contains(&"weather"), "Expected weather tool");
-    assert!(names.contains(&"geo"), "Expected geo tool");
-    assert!(!names.contains(&"meals"), "meals tool must be gone");
-    assert!(!names.contains(&"habits"), "habits tool must be gone");
+    for expected in [
+        "geocode",
+        "reverse_geocode",
+        "search_places",
+        "web_search",
+        "get_current_time",
+        "get_current_location",
+    ] {
+        assert!(names.contains(&expected), "Expected tool {expected}");
+    }
+    assert!(!names.contains(&"geo"), "geo is not a real tool name");
 }
 
 #[tokio::test]
