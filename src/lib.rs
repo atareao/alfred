@@ -371,6 +371,13 @@ pub fn app_with_state(state: AppState) -> Router {
             "/api/settings",
             get(routes::settings::get_settings).put(routes::settings::update_settings),
         )
+        // Persistent memory (Capa C)
+        .route(
+            "/api/persistent-memory",
+            get(routes::persistent_memory::get_persistent_memory)
+                .put(routes::persistent_memory::update_persistent_memory)
+                .delete(routes::persistent_memory::delete_persistent_memory),
+        )
         // Events
         .merge(routes::events::routes())
         // Tasks

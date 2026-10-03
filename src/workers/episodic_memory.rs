@@ -16,7 +16,7 @@ use crate::llm::provider::{ChatMessage, ChatRequest, LLMProvider};
 use crate::models::message::estimate_markdown_tokens_heuristic;
 use crate::persistent_memory::{
     evaluate_compressed, payload_token_count, resolve_updated_at, validate_payload,
-    CompressionOutcome, PERSISTENT_MEMORY_BUDGET_TOKENS_DEFAULT,
+    CompressionOutcome,
 };
 
 /// A lightweight representation of a message for batch processing.
@@ -754,34 +754,6 @@ impl EpisodicMemoryWorker {
 
     // ─── Capa C: consolidation (budget, ceiling, prompt) ───────────────────
 
-    /// Read the persistent-memory token budget from `settings`.
-    ///
-    /// Missing key or unparseable value fall back to the default (500). A real
-    /// database error is distinguished and warned about, then also falls back.
-    async fn read_persistent_budget(db: &SqlitePool) -> usize {
-        match crate::db::repos::settings::SettingsRepo::get(db, "PERSISTENT_MEMORY_BUDGET_TOKENS")
-            .await
-        {
-            Ok(Some(value)) => value.trim().parse::<usize>().unwrap_or_else(|_| {
-                tracing::warn!(
-                    value = %value,
-                    default = PERSISTENT_MEMORY_BUDGET_TOKENS_DEFAULT,
-                    "PERSISTENT_MEMORY_BUDGET_TOKENS is not a valid usize; using the default"
-                );
-                PERSISTENT_MEMORY_BUDGET_TOKENS_DEFAULT
-            }),
-            Ok(None) => PERSISTENT_MEMORY_BUDGET_TOKENS_DEFAULT,
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    default = PERSISTENT_MEMORY_BUDGET_TOKENS_DEFAULT,
-                    "failed to read PERSISTENT_MEMORY_BUDGET_TOKENS; using the default"
-                );
-                PERSISTENT_MEMORY_BUDGET_TOKENS_DEFAULT
-            }
-        }
-    }
-
     /// Perform one semantic LLM call (consolidation or compression) and record
     /// its stats with `profile_id = NULL`, like every other worker call.
     async fn call_semantic_chat(
@@ -934,7 +906,7 @@ impl EpisodicMemoryWorker {
             validate_payload(&candidate).map_err(|e| ConsolidationError::Invalid(e.to_string()))?;
 
         // Size management: never aborts.
-        let budget = Self::read_persistent_budget(db).await;
+        let budget = crate::persistent_memory::read_budget(db).await;
         let tokens = payload_token_count(&validated);
         if tokens <= budget {
             return Ok(Self::seal_consolidation(previous.as_ref(), validated));

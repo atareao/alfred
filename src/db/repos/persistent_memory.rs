@@ -66,6 +66,18 @@ impl PersistentMemoryRepo {
 
         Ok(())
     }
+
+    /// Delete the single `'global_state'` row.
+    ///
+    /// Idempotent: deleting an absent row is a no-op that still succeeds.
+    pub async fn delete(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM persistent_memory WHERE id = ?1")
+            .bind(GLOBAL_STATE_ID)
+            .execute(pool)
+            .await?;
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -151,6 +163,38 @@ mod tests {
             row_count(&pool).await,
             1,
             "the second upsert must update the row, not add one"
+        );
+    }
+
+    /// `delete` removes the single row and is idempotent: deleting again is a
+    /// no-op that still succeeds.
+    #[tokio::test]
+    async fn test_delete_removes_row_and_is_idempotent() {
+        let pool = setup().await;
+
+        PersistentMemoryRepo::upsert(&pool, r#"{"schema_version":1}"#, "2026-09-01T10:00:00Z")
+            .await
+            .expect("upsert");
+        assert_eq!(row_count(&pool).await, 1);
+
+        PersistentMemoryRepo::delete(&pool).await.expect("delete");
+        assert!(
+            PersistentMemoryRepo::get(&pool)
+                .await
+                .expect("get")
+                .is_none(),
+            "the row must be gone"
+        );
+        assert_eq!(row_count(&pool).await, 0);
+
+        // Idempotent: no row, still no error and no row created.
+        PersistentMemoryRepo::delete(&pool)
+            .await
+            .expect("second delete must succeed");
+        assert_eq!(
+            row_count(&pool).await,
+            0,
+            "deleting an absent row creates nothing"
         );
     }
 }
