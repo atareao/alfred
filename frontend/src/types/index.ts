@@ -163,6 +163,16 @@ export interface MemoryStats {
   messages_total: number;
 }
 
+export interface PersistentMemoryState {
+  payload: Record<string, unknown> | null;
+  updated_at: string | null;
+  token_count: number;
+  budget_tokens: number;
+  ceiling_tokens: number;
+  is_empty: boolean;
+  warning?: string | null;
+}
+
 export interface LastApiCall {
   model: string;
   request_body: string | null;

@@ -12,6 +12,7 @@ import {
 } from "antd";
 import { useSettings } from "../hooks/useSettings";
 import { useProfileContext } from "../contexts/ProfileContext";
+import { PersistentMemoryPanel } from "./PersistentMemoryPanel";
 
 const { TextArea } = Input;
 
@@ -452,6 +453,19 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                   Guardar
                 </Button>
               </Form>
+            ),
+          },
+          {
+            key: "persistent-memory",
+            label: "Memoria persistente",
+            children: settingsLoading ? (
+              renderSettingsLoading()
+            ) : (
+              <PersistentMemoryPanel
+                settings={settings}
+                updateSettings={updateSettings}
+                savingSettings={saving}
+              />
             ),
           },
         ]}

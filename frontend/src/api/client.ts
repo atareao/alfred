@@ -15,9 +15,24 @@ import type {
   RetentionConfig,
   Task,
   UpdateProfile,
+  PersistentMemoryState,
 } from "../types";
 
 export const BASE_URL = "/api";
+
+/**
+ * Error de la API que conserva el código HTTP. Los consumidores que solo
+ * necesitan el mensaje siguen tratándolo como un `Error` normal.
+ */
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const resp = await fetch(`${BASE_URL}${path}`, {
@@ -26,7 +41,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   });
   if (!resp.ok) {
     const error = await resp.json().catch(() => ({ error: resp.statusText }));
-    throw new Error(error.error || `HTTP ${resp.status}`);
+    throw new ApiError(error.error || `HTTP ${resp.status}`, resp.status);
   }
   if (resp.status === 204) return undefined as T;
   return resp.json();
@@ -117,4 +132,22 @@ export const api = {
     }),
   getMemoryStats: () => request<MemoryStats>("/stats/memory"),
   getLastApiCall: () => request<LastApiCall | null>("/stats/llm/last-call"),
+
+  getPersistentMemory: () =>
+    request<PersistentMemoryState>("/persistent-memory"),
+
+  updatePersistentMemory: (
+    payload: Record<string, unknown>,
+    expectedUpdatedAt: string | null,
+  ) =>
+    request<PersistentMemoryState>("/persistent-memory", {
+      method: "PUT",
+      body: JSON.stringify({
+        payload,
+        expected_updated_at: expectedUpdatedAt,
+      }),
+    }),
+
+  clearPersistentMemory: () =>
+    request<void>("/persistent-memory", { method: "DELETE" }),
 };

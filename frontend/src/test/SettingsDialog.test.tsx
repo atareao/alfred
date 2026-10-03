@@ -626,4 +626,9 @@ describe("SettingsDialog", () => {
 
     expect(await screen.findByText("Ajustes guardados")).toBeInTheDocument();
   });
+
+  it("renders the Memoria persistente tab", () => {
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+    expect(screen.getByText("Memoria persistente")).toBeInTheDocument();
+  });
 });
