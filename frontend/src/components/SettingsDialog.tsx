@@ -42,6 +42,9 @@ function isAllowedAvatarUrl(value: string | null | undefined): boolean {
   return false;
 }
 
+// La comparación es EXACTA (incluidos los espacios internos) a propósito:
+// replica el contrato de placeholders que exige el worker en Rust. No
+// normalizar espacios ni el espaciado interior de las llaves.
 const CONSOLIDATOR_PLACEHOLDERS = [
   "{{ ESTADO_ACTUAL }}",
   "{{ BLOQUE_DE_MENSAJES }}",
@@ -89,7 +92,10 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
 
   const [profileForm] = Form.useForm();
   const [settingsForm] = Form.useForm();
-  const consolidatorPrompt = Form.useWatch("consolidator_prompt", settingsForm);
+  const consolidatorPrompt = Form.useWatch<string>(
+    "consolidator_prompt",
+    settingsForm,
+  );
   const missingConsolidatorPlaceholders =
     getMissingConsolidatorPlaceholders(consolidatorPrompt);
   const [resetting, setResetting] = useState(false);
