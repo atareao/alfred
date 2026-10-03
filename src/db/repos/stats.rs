@@ -151,12 +151,8 @@ impl StatsRepo {
     /// internal helper tables).
     pub async fn db_sizes(pool: &SqlitePool) -> Result<Vec<TableSize>, sqlx::Error> {
         let tables = [
-            "contacts",
             "events",
-            "habit_logs",
-            "habits",
             "llm_requests",
-            "meal_plans",
             "memory",
             "message_embeddings",
             "messages",
@@ -164,7 +160,6 @@ impl StatsRepo {
             "profiles",
             "reminders",
             "settings",
-            "shopping_list",
             "tasks",
             "tools",
         ];

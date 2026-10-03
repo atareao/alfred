@@ -13,8 +13,6 @@ Self-hosted and local-first: your data lives in SQLite on your own machine, and 
 - **🫖 Chat with AI**: Orchestrator with a ReAct loop and layered memory (session, episodic, profile)
 - **🕰️ Calendar and Tasks**: Events, tasks and reminders with `shared`/`personal` scope
 - **🗺️ Weather and Geo**: Weather by coordinates, geocoding (Nominatim), place search (Overpass OSM)
-- **🍽️ Meals**: Weekly menu planning and shopping list
-- **🎯 Habits**: Daily and weekly streak tracking
 - **🧐 Unified Search**: FTS5 across every dimension
 - **🗝️ Private**: Local SQLite data, self-hosted, optional PocketID auth
 - **🔔 Proactive**: Morning briefing, conflict detection, travel preparation
@@ -163,7 +161,7 @@ docker compose -f docker-compose.prod.yml up -d
 └──────────────────────────────────────────────────┘
 ```
 
-The orchestrator exposes 14 tools from `src/tools/`: `calendar`, `contacts`, `current_location`, `current_time`, `geo`, `google_places`, `habits`, `knowledge`, `meals`, `reminders`, `tasks`, `unified_search`, `weather`, `web_search`.
+The orchestrator exposes 10 tools from `src/tools/`: `calendar`, `geocode`, `reverse_geocode`, `search_places`, `get_current_time`, `get_current_location`, `reminders`, `tasks`, `weather`, `web_search`.
 
 Background workers in `src/workers/`: `briefing`, `collapse`, `conflict_detector`, `episodic_memory`, `memory_worker`, `pool`, `stats_cleanup`, `travel_prep`.
 

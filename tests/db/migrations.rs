@@ -96,81 +96,37 @@ async fn test_migration_is_idempotent() {
 
 // ── F5c: Tools de Valor — Schema tests ─────────────────────────────────────
 
-/// Asserts that `run_migrations` creates the `meal_plans` table.
+/// Asserts that `run_migrations` does NOT leave the tables of the removed tools.
 #[tokio::test]
-async fn test_migrations_creates_meal_plans_table() {
+async fn test_migrations_drop_removed_tools_tables() {
     let pool = setup().await;
 
-    let has_table: bool = sqlx::query_scalar(
-        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='meal_plans'",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    for table in &[
+        "contacts",
+        "contacts_fts",
+        "meal_plans",
+        "shopping_list",
+        "habits",
+        "habit_logs",
+    ] {
+        let has_table: bool = sqlx::query_scalar(
+            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name=?1",
+        )
+        .bind(table)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
 
-    assert!(
-        has_table,
-        "Expected 'meal_plans' table to exist after migration"
-    );
+        assert!(
+            !has_table,
+            "Expected '{table}' table to be dropped by migration"
+        );
+    }
 }
 
-/// Asserts that `run_migrations` creates the `shopping_list` table.
+/// Asserts that idempotent migrations do NOT recreate the removed tools' tables.
 #[tokio::test]
-async fn test_migrations_creates_shopping_list_table() {
-    let pool = setup().await;
-
-    let has_table: bool = sqlx::query_scalar(
-        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='shopping_list'",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-
-    assert!(
-        has_table,
-        "Expected 'shopping_list' table to exist after migration"
-    );
-}
-
-/// Asserts that `run_migrations` creates the `habits` table.
-#[tokio::test]
-async fn test_migrations_creates_habits_table() {
-    let pool = setup().await;
-
-    let has_table: bool = sqlx::query_scalar(
-        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='habits'",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-
-    assert!(
-        has_table,
-        "Expected 'habits' table to exist after migration"
-    );
-}
-
-/// Asserts that `run_migrations` creates the `habit_logs` table.
-#[tokio::test]
-async fn test_migrations_creates_habit_logs_table() {
-    let pool = setup().await;
-
-    let has_table: bool = sqlx::query_scalar(
-        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='habit_logs'",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-
-    assert!(
-        has_table,
-        "Expected 'habit_logs' table to exist after migration"
-    );
-}
-
-/// Asserts idempotency covers the new F5c tables.
-#[tokio::test]
-async fn test_idempotent_includes_new_tables() {
+async fn test_idempotent_does_not_recreate_removed_tables() {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect_with(
@@ -191,10 +147,17 @@ async fn test_idempotent_includes_new_tables() {
             .await
             .unwrap();
 
-    for table in &["meal_plans", "shopping_list", "habits", "habit_logs"] {
+    for table in &[
+        "contacts",
+        "contacts_fts",
+        "meal_plans",
+        "shopping_list",
+        "habits",
+        "habit_logs",
+    ] {
         assert!(
-            tables.contains(&table.to_string()),
-            "Expected '{table}' table after idempotent migration"
+            !tables.contains(&table.to_string()),
+            "Removed '{table}' table must not be recreated by idempotent migration"
         );
     }
 }

@@ -13,8 +13,6 @@ Auto-hospedado y local-first: tus datos viven en SQLite en tu propia máquina, y
 - **🫖 Chat con IA**: Orquestador con ciclo ReAct y memoria por capas (sesión, episódica, perfil)
 - **🕰️ Agenda y Tareas**: Gestión de eventos, tareas y recordatorios con scope `shared`/`personal`
 - **🗺️ Clima y Geo**: Clima por coordenadas, geocoding (Nominatim), búsqueda de lugares (Overpass OSM)
-- **🍽️ Comidas**: Planificación semanal de menús y lista de la compra
-- **🎯 Hábitos**: Seguimiento de rachas diarias/semanales
 - **🧐 Búsqueda Unificada**: FTS5 en todas las dimensiones
 - **🗝️ Privado**: Datos locales en SQLite, auto-hospedado, con auth PocketID opcional
 - **🔔 Proactivo**: Briefing matutino, detección de conflictos, preparación de viajes
@@ -163,7 +161,7 @@ docker compose -f docker-compose.prod.yml up -d
 └──────────────────────────────────────────────────┘
 ```
 
-El orquestador expone 14 herramientas desde `src/tools/`: `calendar`, `contacts`, `current_location`, `current_time`, `geo`, `google_places`, `habits`, `knowledge`, `meals`, `reminders`, `tasks`, `unified_search`, `weather`, `web_search`.
+El orquestador expone 10 herramientas desde `src/tools/`: `calendar`, `geocode`, `reverse_geocode`, `search_places`, `get_current_time`, `get_current_location`, `reminders`, `tasks`, `weather`, `web_search`.
 
 Workers en segundo plano en `src/workers/`: `briefing`, `collapse`, `conflict_detector`, `episodic_memory`, `memory_worker`, `pool`, `stats_cleanup`, `travel_prep`.
 

@@ -60,13 +60,11 @@ impl UnifiedSearchTool {
             Some("notes") => vec![("notes_fts", "note")],
             Some("events") => vec![("events_fts", "event")],
             Some("tasks") => vec![("tasks_fts", "task")],
-            Some("contacts") => vec![("contacts_fts", "contact")],
             _ => vec![
                 ("messages_fts", "message"),
                 ("notes_fts", "note"),
                 ("events_fts", "event"),
                 ("tasks_fts", "task"),
-                ("contacts_fts", "contact"),
             ],
         };
 
@@ -104,7 +102,7 @@ impl Tool for UnifiedSearchTool {
     }
 
     fn description(&self) -> &'static str {
-        "Buscar en todas las dimensiones (mensajes, notas, eventos, tareas, contactos)"
+        "Buscar en todas las dimensiones (mensajes, notas, eventos, tareas)"
     }
 
     fn parameters(&self) -> Value {
@@ -114,7 +112,7 @@ impl Tool for UnifiedSearchTool {
                 "query": { "type": "string", "description": "Texto a buscar" },
                 "dimensions": {
                     "type": "string",
-                    "enum": ["messages", "notes", "events", "tasks", "contacts"],
+                    "enum": ["messages", "notes", "events", "tasks"],
                     "description": "Limitar a una dimensión específica"
                 },
                 "limit": { "type": "integer", "description": "Máximo de resultados (default: 10)" }
@@ -182,13 +180,6 @@ mod tests {
         sqlx::query(
             "INSERT INTO tasks (id, profile_id, content) \
              VALUES ('t1', 'p1', 'tarea de prueba para buscar')",
-        )
-        .execute(&pool)
-        .await?;
-        // Insert a contact
-        sqlx::query(
-            "INSERT INTO contacts (id, profile_id, name) \
-             VALUES ('c1', 'p1', 'Contacto de Prueba')",
         )
         .execute(&pool)
         .await?;

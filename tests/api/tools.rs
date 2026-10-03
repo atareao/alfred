@@ -59,9 +59,10 @@ async fn test_toggle_tool_not_found() {
 
 #[tokio::test]
 async fn test_list_tools_includes_all_domain_tools() {
-    // Given the database is seeded with the F5b domain tools
+    // Given the database is seeded with the remaining domain tools
     // When GET /api/tools is called
-    // Then the response contains calendar, tasks, reminders, knowledge, contacts
+    // Then the response contains calendar, tasks, reminders, knowledge
+    // and does NOT contain the removed contacts, meals or habits tools
     let app = TestApp::new().await;
 
     let resp = app.get("/api/tools").await;
@@ -78,7 +79,9 @@ async fn test_list_tools_includes_all_domain_tools() {
     assert!(names.contains(&"tasks"), "Expected tasks tool");
     assert!(names.contains(&"reminders"), "Expected reminders tool");
     assert!(names.contains(&"knowledge"), "Expected knowledge tool");
-    assert!(names.contains(&"contacts"), "Expected contacts tool");
+    assert!(!names.contains(&"contacts"), "contacts tool must be gone");
+    assert!(!names.contains(&"meals"), "meals tool must be gone");
+    assert!(!names.contains(&"habits"), "habits tool must be gone");
 }
 
 #[tokio::test]
@@ -140,7 +143,7 @@ async fn test_toggle_tool_enabled() {
 async fn test_list_tools_includes_new_f5c_tools() {
     // Given the database is seeded with the F5c domain tools
     // When GET /api/tools is called
-    // Then the response contains weather, geo, meals, habits
+    // Then the response contains weather and geo, but not the removed meals/habits
     let app = TestApp::new().await;
 
     let resp = app.get("/api/tools").await;
@@ -155,8 +158,8 @@ async fn test_list_tools_includes_new_f5c_tools() {
         .collect();
     assert!(names.contains(&"weather"), "Expected weather tool");
     assert!(names.contains(&"geo"), "Expected geo tool");
-    assert!(names.contains(&"meals"), "Expected meals tool");
-    assert!(names.contains(&"habits"), "Expected habits tool");
+    assert!(!names.contains(&"meals"), "meals tool must be gone");
+    assert!(!names.contains(&"habits"), "habits tool must be gone");
 }
 
 #[tokio::test]
