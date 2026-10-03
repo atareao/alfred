@@ -218,6 +218,11 @@ const EPISODIC_MEMORY_SECTION_TITLE: &str = "# CONTEXTO DE MEMORIA EPISÓDICA (C
 /// non-empty, and omitted entirely otherwise.
 const PERSISTENT_MEMORY_SECTION_TITLE: &str = "# MEMORIA PERSISTENTE (CAPA C)";
 
+/// Title of the code-composed user-name section. It is injected right after the
+/// prompt and before the persistent-memory section, and omitted entirely when
+/// the profile has no real name.
+const USER_NAME_SECTION_TITLE: &str = "# USUARIO";
+
 /// Explicit instruction that the persistent state is stable, permanent context
 /// and not the user's current turn.
 const PERSISTENT_MEMORY_INSTRUCTION: &str = "Estado estable del usuario (perfil y reglas fijadas). Es contexto permanente; NO es el turno actual del usuario.";
@@ -270,26 +275,48 @@ fn compose_persistent_memory_block(payload_json: &str) -> Option<String> {
     ))
 }
 
+/// Compose the user-name section from the profile name, or `None` when it must
+/// not be injected.
+///
+/// The section is composed in code — never from a `settings.system_prompt`
+/// placeholder. A name that is blank after trimming, or that still equals the
+/// default profile name, yields `None`, so no title, guidance or blank line is
+/// ever left behind. The name is trimmed before use.
+fn compose_user_name_section(name: &str) -> Option<String> {
+    let name = name.trim();
+    if name.is_empty() || name == crate::db::repos::profiles::DEFAULT_PROFILE_NAME {
+        return None;
+    }
+    Some(format!(
+        "{USER_NAME_SECTION_TITLE}\nEl nombre del usuario es {name}. Dirígete a él por su nombre cuando sea natural, sin repetirlo en cada respuesta."
+    ))
+}
+
 /// Compose the single `role:"system"` message that opens every request.
 ///
 /// Sections are appended in order and the ones that are present are separated
 /// by a blank line (`\n\n`):
 ///
 ///   1. the prompt (`settings.system_prompt`),
-///   2. the persistent-memory section (Capa C), when the state is non-empty,
-///   3. the episodic-memory section, when there are cards, and
-///   4. the date/time/location section, when the browser sent context.
+///   2. the user-name section, when the profile has a real name,
+///   3. the persistent-memory section (Capa C), when the state is non-empty,
+///   4. the episodic-memory section, when there are cards, and
+///   5. the date/time/location section, when the browser sent context.
 ///
 /// An absent section leaves no trace: no title, marker, separator or stray
 /// blank line. With only the prompt the result is *exactly* the prompt.
 fn compose_system_message(
     prompt: &str,
+    user_name: Option<String>,
     persistent_memory: Option<String>,
     episodic_memory: Option<String>,
     browser_section: Option<String>,
 ) -> String {
-    let mut sections: Vec<String> = Vec::with_capacity(4);
+    let mut sections: Vec<String> = Vec::with_capacity(5);
     sections.push(prompt.to_string());
+    if let Some(section) = user_name {
+        sections.push(section);
+    }
     if let Some(section) = persistent_memory {
         sections.push(section);
     }
@@ -575,12 +602,31 @@ impl Orchestrator {
                 }
             };
 
-        // Single system message: prompt → persistent-memory section (Capa C,
-        // when non-empty) → episodic section → browser context. Absent sections
-        // leave no trace, so with only the prompt the message is exactly the
-        // prompt, and the browser section always closes it.
+        // The user's display name is read from the profile on EVERY request and
+        // composed in code (never from a `system_prompt` placeholder). A blank
+        // name, the default name, a missing profile or a read error all omit
+        // the section without aborting the request.
+        let user_name =
+            match crate::db::repos::profiles::ProfilesRepo::get_by_id(&self.db, profile_id).await {
+                Ok(Some(profile)) => compose_user_name_section(&profile.name),
+                Ok(None) => None,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "failed to read profile; omitting the user-name section"
+                    );
+                    None
+                }
+            };
+
+        // Single system message: prompt → user-name section (when the profile
+        // has a real name) → persistent-memory section (Capa C, when non-empty)
+        // → episodic section → browser context. Absent sections leave no trace,
+        // so with only the prompt the message is exactly the prompt, and the
+        // browser section always closes it.
         let system_content = compose_system_message(
             &system_prompt,
+            user_name,
             persistent_section,
             compose_episodic_memory_block(&ctx.rag_memories),
             browser_section,
@@ -1524,6 +1570,7 @@ mod tests {
         let pool = setup_test_db().await;
         // Remove the value seeded by the migration to force the fallback.
         crate::db::repos::settings::SettingsRepo::delete(&pool, "system_prompt").await?;
+        omit_user_name_section(&pool).await;
 
         let captured: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let orchestrator =
@@ -1700,6 +1747,7 @@ mod tests {
     async fn single_system_message_omits_episodic_without_cards(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let pool = setup_test_db().await;
+        omit_user_name_section(&pool).await;
         // No memory seeded on purpose.
         let prompt = "PROMPT_SIN_FICHAS";
         crate::db::repos::settings::SettingsRepo::set(&pool, "system_prompt", prompt).await?;
@@ -1803,6 +1851,7 @@ mod tests {
     async fn single_system_message_omits_browser_section_without_context(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let pool = setup_test_db().await;
+        omit_user_name_section(&pool).await;
         let prompt = "PROMPT_SIN_CONTEXTO";
         crate::db::repos::settings::SettingsRepo::set(&pool, "system_prompt", prompt).await?;
 
@@ -1843,12 +1892,14 @@ mod tests {
     #[test]
     fn compose_system_message_places_persistent_section_between_prompt_and_episodic() {
         // Absent section: prompt + episodic only, no trace of a placeholder.
-        let empty = compose_system_message("PROMPT", None, Some("EPISODIC".to_string()), None);
+        let empty =
+            compose_system_message("PROMPT", None, None, Some("EPISODIC".to_string()), None);
         assert_eq!(empty, "PROMPT\n\nEPISODIC");
 
         // A present section lands exactly between prompt and episodic.
         let filled = compose_system_message(
             "PROMPT",
+            None,
             Some("PERSISTENT".to_string()),
             Some("EPISODIC".to_string()),
             Some("BROWSER".to_string()),
@@ -1864,6 +1915,7 @@ mod tests {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let pool = setup_test_db().await;
         seed_one_memory(&pool).await;
+        omit_user_name_section(&pool).await;
         let prompt = "PROMPT_SIN_ESTADO";
         crate::db::repos::settings::SettingsRepo::set(&pool, "system_prompt", prompt).await?;
 
@@ -1901,6 +1953,7 @@ mod tests {
     async fn single_system_message_full_section_order() -> Result<(), Box<dyn std::error::Error>> {
         let pool = setup_test_db().await;
         seed_one_memory(&pool).await;
+        omit_user_name_section(&pool).await;
         let prompt = "PROMPT_ORDEN";
         crate::db::repos::settings::SettingsRepo::set(&pool, "system_prompt", prompt).await?;
 
@@ -2053,6 +2106,7 @@ mod tests {
         .await;
 
         let prompt = "PROMPT_EMPTY_PERSIST";
+        omit_user_name_section(&pool).await;
         crate::db::repos::settings::SettingsRepo::set(&pool, "system_prompt", prompt).await?;
 
         let captured: Arc<Mutex<Option<Vec<ChatMessage>>>> = Arc::new(Mutex::new(None));
@@ -3910,6 +3964,22 @@ mod tests {
         pool
     }
 
+    /// Reset the seeded profile name to the default so the code-composed
+    /// user-name section is omitted. The legacy section-ordering tests predate
+    /// the `user-name-in-prompt` change and seed `profile-1` with the real name
+    /// `"Test"`; neutralising the name keeps them focused on the section they
+    /// actually exercise.
+    async fn omit_user_name_section(pool: &SqlitePool) {
+        crate::db::repos::profiles::ProfilesRepo::update(
+            pool,
+            Some(crate::db::repos::profiles::DEFAULT_PROFILE_NAME),
+            None,
+            None,
+        )
+        .await
+        .expect("failed to reset the profile name to the default");
+    }
+
     /// Mock LLM that returns plain text immediately (no tool calls).
     struct SimpleTextLLM;
 
@@ -4167,6 +4237,133 @@ mod tests {
             request.temperature,
             Some(0.7),
             "an unparseable temperature must fall back to 0.7"
+        );
+    }
+
+    // ─── user-name-in-prompt: sección `# USUARIO` (RED, sin implementar) ────
+    //
+    // Note: `captured_chat_request` uses `setup_test_db`, which seeds
+    // `profile-1` with `name = 'Test'`. The user-name section is composed in
+    // code —never from a `system_prompt` placeholder— between the prompt and
+    // the persistent-memory section, and is omitted without trace when the
+    // name is blank or the default `Valet User`.
+
+    /// Scenario: El nombre real se inyecta.
+    #[tokio::test]
+    async fn test_user_name_section_injected_from_profile() {
+        let pool = setup_test_db().await;
+        crate::db::repos::settings::SettingsRepo::set(&pool, "system_prompt", "PROMPT_BASE")
+            .await
+            .unwrap();
+
+        let request = captured_chat_request(pool).await;
+
+        assert_eq!(
+            request.messages[0].role, "system",
+            "the first message must be the system message"
+        );
+        let content = &request.messages[0].content;
+        assert!(
+            content.contains("# USUARIO"),
+            "the system message must contain the `# USUARIO` section, got: {content:?}"
+        );
+        assert!(
+            content.contains(
+                "El nombre del usuario es Test. Dirígete a él por su nombre cuando sea natural, sin repetirlo en cada respuesta."
+            ),
+            "the system message must contain the user-name guidance, got: {content:?}"
+        );
+
+        let prompt_pos = content.find("PROMPT_BASE").expect("prompt must be present");
+        let user_pos = content
+            .find("# USUARIO")
+            .expect("the `# USUARIO` section must be present");
+        assert!(
+            prompt_pos < user_pos,
+            "the prompt must precede the `# USUARIO` section, got: {content:?}"
+        );
+        assert!(
+            content.starts_with("PROMPT_BASE"),
+            "the system message must start with the prompt, got: {content:?}"
+        );
+    }
+
+    /// Scenario: El nombre de usuario precede a la memoria persistente.
+    #[tokio::test]
+    async fn test_user_name_section_before_persistent_memory() {
+        let pool = setup_test_db().await;
+        seed_persistent_state(
+            &pool,
+            r#"{"schema_version":1,"user_profile":{"city":"Madrid"}}"#,
+        )
+        .await;
+
+        let request = captured_chat_request(pool).await;
+        let content = &request.messages[0].content;
+
+        let user_pos = content
+            .find("# USUARIO")
+            .expect("the `# USUARIO` section must be present");
+        let persistent_pos = content
+            .find("# MEMORIA PERSISTENTE (CAPA C)")
+            .expect("the persistent-memory section must be present");
+        assert!(
+            user_pos < persistent_pos,
+            "`# USUARIO` must precede the persistent-memory section, got: {content:?}"
+        );
+    }
+
+    /// Scenario: Nombre vacío no deja rastro.
+    #[tokio::test]
+    async fn test_blank_user_name_omits_section() {
+        let pool = setup_test_db().await;
+        crate::db::repos::profiles::ProfilesRepo::update(&pool, Some("   "), None, None)
+            .await
+            .unwrap();
+
+        let request = captured_chat_request(pool).await;
+        let content = &request.messages[0].content;
+
+        assert!(
+            !content.contains("# USUARIO"),
+            "a blank name must leave no `# USUARIO` trace, got: {content:?}"
+        );
+    }
+
+    /// Scenario: El nombre por defecto no se inyecta.
+    #[tokio::test]
+    async fn test_default_user_name_omits_section() {
+        let pool = setup_test_db().await;
+        crate::db::repos::profiles::ProfilesRepo::update(&pool, Some("Valet User"), None, None)
+            .await
+            .unwrap();
+
+        let request = captured_chat_request(pool).await;
+        let content = &request.messages[0].content;
+
+        assert!(
+            !content.contains("# USUARIO"),
+            "the default `Valet User` name must leave no `# USUARIO` trace, got: {content:?}"
+        );
+    }
+
+    /// Scenario: perfil ausente no aborta la petición.
+    #[tokio::test]
+    async fn test_missing_profile_omits_section_and_succeeds() {
+        let pool = setup_test_db().await;
+        sqlx::query("DELETE FROM profiles WHERE id = 'profile-1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // `captured_chat_request` unwraps `process_message_stream`, so reaching
+        // the assertions below proves the request did not panic.
+        let request = captured_chat_request(pool).await;
+        let content = &request.messages[0].content;
+
+        assert!(
+            !content.contains("# USUARIO"),
+            "a missing profile must leave no `# USUARIO` trace, got: {content:?}"
         );
     }
 }
