@@ -286,7 +286,10 @@ async fn test_migration_respects_custom_system_prompt() {
 #[tokio::test]
 async fn test_migration_semantic_reasoning_is_off_after_migrations() {
     let pool = setup().await;
-    assert_eq!(setting_value(&pool, "GENERATION_SEMANTIC_REASONING").await, "off");
+    assert_eq!(
+        setting_value(&pool, "GENERATION_SEMANTIC_REASONING").await,
+        "off"
+    );
 }
 
 /// A legacy `low` is corrected to `off` by the reliability migration.
@@ -294,10 +297,18 @@ async fn test_migration_semantic_reasoning_is_off_after_migrations() {
 async fn test_consolidator_migration_forces_semantic_reasoning_off() {
     let pool = setup().await;
     sqlx::query("UPDATE settings SET value='low' WHERE key='GENERATION_SEMANTIC_REASONING'")
-        .execute(&pool).await.unwrap();
+        .execute(&pool)
+        .await
+        .unwrap();
     let sql = consolidator_reliability_migration_sql();
-    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str())).execute(&pool).await.unwrap();
-    assert_eq!(setting_value(&pool, "GENERATION_SEMANTIC_REASONING").await, "off");
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        setting_value(&pool, "GENERATION_SEMANTIC_REASONING").await,
+        "off"
+    );
 }
 
 /// Any reasoning value other than `low` is respected.
@@ -305,17 +316,28 @@ async fn test_consolidator_migration_forces_semantic_reasoning_off() {
 async fn test_consolidator_migration_respects_other_reasoning() {
     let pool = setup().await;
     sqlx::query("UPDATE settings SET value='medium' WHERE key='GENERATION_SEMANTIC_REASONING'")
-        .execute(&pool).await.unwrap();
+        .execute(&pool)
+        .await
+        .unwrap();
     let sql = consolidator_reliability_migration_sql();
-    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str())).execute(&pool).await.unwrap();
-    assert_eq!(setting_value(&pool, "GENERATION_SEMANTIC_REASONING").await, "medium");
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        setting_value(&pool, "GENERATION_SEMANTIC_REASONING").await,
+        "medium"
+    );
 }
 
 /// After every migration, the persistent-memory budget is 800.
 #[tokio::test]
 async fn test_migration_bumps_persistent_memory_budget_to_800() {
     let pool = setup().await;
-    assert_eq!(setting_value(&pool, "PERSISTENT_MEMORY_BUDGET_TOKENS").await, "800");
+    assert_eq!(
+        setting_value(&pool, "PERSISTENT_MEMORY_BUDGET_TOKENS").await,
+        "800"
+    );
 }
 
 /// A custom budget (not 500) is respected by the reliability migration.
@@ -323,10 +345,18 @@ async fn test_migration_bumps_persistent_memory_budget_to_800() {
 async fn test_consolidator_migration_respects_custom_budget() {
     let pool = setup().await;
     sqlx::query("UPDATE settings SET value='1200' WHERE key='PERSISTENT_MEMORY_BUDGET_TOKENS'")
-        .execute(&pool).await.unwrap();
+        .execute(&pool)
+        .await
+        .unwrap();
     let sql = consolidator_reliability_migration_sql();
-    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str())).execute(&pool).await.unwrap();
-    assert_eq!(setting_value(&pool, "PERSISTENT_MEMORY_BUDGET_TOKENS").await, "1200");
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        setting_value(&pool, "PERSISTENT_MEMORY_BUDGET_TOKENS").await,
+        "1200"
+    );
 }
 
 /// The seeded consolidator prompt carries the taxonomy, the placeholders and the
@@ -342,7 +372,10 @@ async fn test_migration_seeds_consolidator_prompt_taxonomy() {
         "{{ BLOQUE_DE_MENSAJES }}",
         "consolidador de memoria persistente",
     ] {
-        assert!(value.contains(needle), "consolidator_prompt must contain {needle}");
+        assert!(
+            value.contains(needle),
+            "consolidator_prompt must contain {needle}"
+        );
     }
 }
 
@@ -350,10 +383,17 @@ async fn test_migration_seeds_consolidator_prompt_taxonomy() {
 #[tokio::test]
 async fn test_migration_preserves_custom_consolidator_prompt() {
     let pool = setup().await;
-    sqlx::query("UPDATE settings SET value='Mi consolidador personalizado' WHERE key='consolidator_prompt'")
-        .execute(&pool).await.unwrap();
+    sqlx::query(
+        "UPDATE settings SET value='Mi consolidador personalizado' WHERE key='consolidator_prompt'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     let sql = consolidator_reliability_migration_sql();
-    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str())).execute(&pool).await.unwrap();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
     assert_eq!(
         setting_value(&pool, "consolidator_prompt").await,
         "Mi consolidador personalizado"

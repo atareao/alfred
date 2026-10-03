@@ -81,15 +81,39 @@ const COMPRESSION_CALL_MARKER: &str = "PRESUPUESTO DE MEMORIA PERSISTENTE";
 /// Fallback consolidator prompt template, used only when
 /// `settings.consolidator_prompt` is missing, empty or unreadable. The marker
 /// placeholder is replaced at runtime by [`SEMANTIC_CALL_MARKER`].
-const DEFAULT_CONSOLIDATOR_PROMPT_TEMPLATE: &str = "\
-System: Eres el __SEMANTIC_MARKER__ de Valet.
-Devuelve EXCLUSIVAMENTE un objeto JSON con {\"schema_version\": 1, \"user_profile\": { }, \"system_rules\": [ ]}.
+const DEFAULT_CONSOLIDATOR_PROMPT_TEMPLATE: &str = r#"System: Eres el __SEMANTIC_MARKER__ de Valet. Analizas una conversación reciente entre el usuario y su asistente, y actualizas de forma acumulativa el Perfil de Usuario y las Reglas de Comportamiento.
+
+Devuelve EXCLUSIVAMENTE un objeto JSON válido, sin bloques de código ni texto adicional:
+{
+  "schema_version": 1,
+  "user_profile": { },
+  "system_rules": [ ]
+}
+
+Organiza user_profile con estas secciones, incluyendo ÚNICAMENTE las que tengan contenido real (no emitas secciones vacías):
+- identity: nombre, idioma y ubicación (solo si se afirman explícitamente).
+- preferences_and_tastes: objeto con communication_style (tono, detalle, trato tú/usted, idioma, términos a evitar), technology_and_tools, lifestyle_and_leisure y dislikes_and_dealbreakers (lo que detesta o evita).
+- lifestyle_and_routines: horarios, hábitos y eventos recurrentes.
+- productivity_and_workflow: metodologías y autonomía delegada.
+- interests_and_knowledge: proyectos activos y temas de interés.
+- relationships_and_entities: personas, proyectos o entidades clave.
+
+Reglas de consolidación:
+- Filtro de permanencia: guarda solo preferencias estables; ignora lo efímero de un turno.
+- Registra tanto lo que le gusta como lo que rechaza.
+- Sobrescritura: ante contradicción prevalece lo nuevo; elimina el dato antiguo.
+- No dupliques: si un dato ya está en user_profile, no lo repitas en system_rules ni como regla equivalente.
+- system_rules: SOLO instrucciones explícitas del usuario dirigidas al asistente, en forma imperativa y atómica. El trato, el idioma o los términos a evitar pertenecen a communication_style, no a system_rules.
+- No inventes ni infieras: no añadas datos (p. ej. huso horario) que la conversación no afirme con claridad.
 
 Estado persistente actual:
 {{ ESTADO_ACTUAL }}
 
 Bloque de mensajes:
-{{ BLOQUE_DE_MENSAJES }}";
+{{ BLOQUE_DE_MENSAJES }}"#;
+
+/// Number of attempts for the initial consolidation (one retry).
+const INITIAL_CONSOLIDATION_ATTEMPTS: usize = 2;
 
 /// Compression prompt template for the single compression pass. The marker
 /// placeholder is replaced at runtime by [`COMPRESSION_CALL_MARKER`].
@@ -922,13 +946,10 @@ impl EpisodicMemoryWorker {
             .replace("{{ ESTADO_ACTUAL }}", &current_json)
             .replace("{{ BLOQUE_DE_MENSAJES }}", message_block);
 
-        // Initial consolidation: a failure here aborts the pass.
-        let raw = Self::call_semantic_chat(db, llm_provider, config, system_content).await?;
-        let candidate = Self::extract_json_object(&raw).ok_or_else(|| {
-            ConsolidationError::Invalid("consolidator returned no JSON object".into())
-        })?;
+        // Initial consolidation: a failure here aborts the pass. It gets a
+        // single retry when the model returns no valid state.
         let validated =
-            validate_payload(&candidate).map_err(|e| ConsolidationError::Invalid(e.to_string()))?;
+            Self::initial_consolidation(db, llm_provider, config, &system_content).await?;
 
         // Size management: never aborts.
         let budget = crate::persistent_memory::read_budget(db).await;
@@ -1058,6 +1079,58 @@ impl EpisodicMemoryWorker {
                 None
             }
         }
+    }
+
+    /// Short single-line preview of an LLM response, for diagnostics.
+    fn content_preview(content: &str) -> String {
+        content
+            .chars()
+            .take(200)
+            .collect::<String>()
+            .replace('\n', " ")
+    }
+
+    /// Run the initial consolidation, retrying **once** when the response yields no
+    /// valid state (empty, non-JSON or schema-invalid). An LLM transport error is
+    /// not retried: it propagates immediately.
+    async fn initial_consolidation(
+        db: &SqlitePool,
+        llm_provider: &Arc<dyn LLMProvider>,
+        config: &EpisodicMemoryConfig,
+        system_content: &str,
+    ) -> Result<serde_json::Value, ConsolidationError> {
+        let mut last_error = String::new();
+        for attempt in 1..=INITIAL_CONSOLIDATION_ATTEMPTS {
+            let raw =
+                Self::call_semantic_chat(db, llm_provider, config, system_content.to_string())
+                    .await?;
+            let content_len = raw.len();
+            match Self::extract_json_object(&raw) {
+                Some(candidate) => match validate_payload(&candidate) {
+                    Ok(validated) => return Ok(validated),
+                    Err(e) => {
+                        last_error = format!(
+                            "invalid state (content_len={content_len}, preview=\"{}\"): {e}",
+                            Self::content_preview(&raw)
+                        );
+                    }
+                },
+                None => {
+                    last_error = format!(
+                        "consolidator returned no JSON object (content_len={content_len}, preview=\"{}\")",
+                        Self::content_preview(&raw)
+                    );
+                }
+            }
+            if attempt < INITIAL_CONSOLIDATION_ATTEMPTS {
+                tracing::warn!(
+                    attempt,
+                    content_len,
+                    "initial consolidation produced no valid state; retrying once"
+                );
+            }
+        }
+        Err(ConsolidationError::Invalid(last_error))
     }
 
     /// Tolerantly extract a JSON object from an LLM response (it may be wrapped
@@ -1289,8 +1362,9 @@ mod tests {
         /// Queue per-call consolidator responses (first call first). Falls back to
         /// `state_response` once the queue is exhausted.
         fn state_sequence(mut self, responses: Vec<&str>) -> Self {
-            self.state_sequence =
-                Arc::new(Mutex::new(responses.into_iter().map(String::from).collect()));
+            self.state_sequence = Arc::new(Mutex::new(
+                responses.into_iter().map(String::from).collect(),
+            ));
             self
         }
 
@@ -2634,7 +2708,11 @@ mod tests {
         .expect("the single retry must succeed");
 
         assert!(matches!(outcome, Consolidation::Write { .. }));
-        assert_eq!(calls.lock().unwrap().len(), 2, "empty then valid: exactly two calls");
+        assert_eq!(
+            calls.lock().unwrap().len(),
+            2,
+            "empty then valid: exactly two calls"
+        );
     }
 
     /// Two invalid attempts abort and the error carries the content length.
@@ -2655,7 +2733,10 @@ mod tests {
         .expect_err("two empty attempts must fail");
 
         let msg = err.to_string();
-        assert!(msg.contains("content_len"), "error must include content_len: {msg}");
+        assert!(
+            msg.contains("content_len"),
+            "error must include content_len: {msg}"
+        );
     }
 
     /// An invalid schema on the first attempt is retried too.
@@ -3061,7 +3142,7 @@ mod tests {
         calls[0].clone()
     }
 
-    /// Scenario: El consolidador pide JSON y usa 0.1 / low / 2048 por defecto.
+    /// Scenario: El consolidador pide JSON y usa 0.1 / off / 2048 por defecto.
     #[tokio::test]
     async fn test_consolidator_forces_json_and_uses_semantic_defaults() {
         let db = test_db().await;
@@ -3075,11 +3156,8 @@ mod tests {
         );
         assert_eq!(request.temperature, Some(0.1));
         assert!(
-            matches!(
-                request.reasoning,
-                Some(ReasoningSpec::Effort(ReasoningEffort::Low))
-            ),
-            "default consolidator reasoning must be Effort(Low), got {:?}",
+            matches!(request.reasoning, Some(ReasoningSpec::Off)),
+            "default consolidator reasoning must be Off, got {:?}",
             request.reasoning
         );
         assert_eq!(request.max_tokens, Some(2048));
@@ -3151,11 +3229,8 @@ mod tests {
         );
         assert_eq!(request.temperature, Some(0.1));
         assert!(
-            matches!(
-                request.reasoning,
-                Some(ReasoningSpec::Effort(ReasoningEffort::Low))
-            ),
-            "compression must use Effort(Low) by default, got {:?}",
+            matches!(request.reasoning, Some(ReasoningSpec::Off)),
+            "compression must use Off by default, got {:?}",
             request.reasoning
         );
         assert_eq!(request.max_tokens, Some(2048));

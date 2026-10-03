@@ -245,7 +245,7 @@ mod tests {
             ("GENERATION_MEMORY_REASONING", "off"),
             ("GENERATION_MEMORY_MAX_TOKENS", "1024"),
             ("GENERATION_SEMANTIC_TEMPERATURE", "0.1"),
-            ("GENERATION_SEMANTIC_REASONING", "low"),
+            ("GENERATION_SEMANTIC_REASONING", "off"),
             ("GENERATION_SEMANTIC_MAX_TOKENS", "2048"),
         ];
 

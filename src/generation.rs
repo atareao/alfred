@@ -41,7 +41,7 @@ impl GenerationRole {
             GenerationRole::Chat => (0.7, "", 4096),
             GenerationRole::Collapse => (0.2, "off", 1024),
             GenerationRole::Memory => (0.3, "off", 1024),
-            GenerationRole::Semantic => (0.1, "low", 2048),
+            GenerationRole::Semantic => (0.1, "off", 2048),
         }
     }
 }
