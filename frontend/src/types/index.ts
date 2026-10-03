@@ -27,6 +27,7 @@ export interface Settings {
   system_prompt: string;
   archivist_prompt: string;
   collapse_prompt: string;
+  consolidator_prompt: string;
   [key: string]: string;
 }
 
