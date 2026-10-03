@@ -47,4 +47,4 @@
 - [x] 4.1 `cargo fmt --check` y `cargo clippy --all-targets -- -D warnings` limpios.
 - [x] 4.2 `grep` sin residuos de `geo`/`knowledge` como nombres de tool.
 - [x] 4.3 Revisión con `rust-reviewer`.
-- [ ] 4.4 PR a `development`; tras el merge, PR de archivado (`openspec archive align-tools-registry`).
+- [x] 4.4 PR a `development`; tras el merge, PR de archivado (`openspec archive align-tools-registry`).
