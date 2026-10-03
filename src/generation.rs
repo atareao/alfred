@@ -41,7 +41,7 @@ impl GenerationRole {
             GenerationRole::Chat => (0.7, "", 4096),
             GenerationRole::Collapse => (0.2, "off", 1024),
             GenerationRole::Memory => (0.3, "off", 1024),
-            GenerationRole::Semantic => (0.1, "low", 2048),
+            GenerationRole::Semantic => (0.1, "off", 2048),
         }
     }
 }
@@ -201,11 +201,19 @@ mod tests {
         let pool = db().await;
         let params = read_generation_params(&pool, GenerationRole::Semantic).await;
         assert_eq!(params.temperature, 0.1);
-        assert_eq!(
-            params.reasoning,
-            Some(ReasoningSpec::Effort(ReasoningEffort::Low))
-        );
+        assert_eq!(params.reasoning, Some(ReasoningSpec::Off));
         assert_eq!(params.max_tokens, 2048);
+    }
+
+    /// The code-level default for the Semantic role is `off` when the setting is absent.
+    #[tokio::test]
+    async fn semantic_default_reasoning_is_off_when_missing() {
+        let pool = db().await;
+        crate::db::repos::settings::SettingsRepo::delete(&pool, "GENERATION_SEMANTIC_REASONING")
+            .await
+            .expect("delete");
+        let params = read_generation_params(&pool, GenerationRole::Semantic).await;
+        assert_eq!(params.reasoning, Some(ReasoningSpec::Off));
     }
 
     #[tokio::test]

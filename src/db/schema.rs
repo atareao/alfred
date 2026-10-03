@@ -617,7 +617,8 @@ mod tests {
     }
 
     /// The migration seeds `consolidator_prompt` (with both placeholders) and
-    /// `PERSISTENT_MEMORY_BUDGET_TOKENS = 500`.
+    /// `PERSISTENT_MEMORY_BUDGET_TOKENS = 800` (bumped from 500 by the
+    /// consolidator-reliability migration).
     #[tokio::test]
     async fn test_persistent_memory_settings_seeded() {
         let pool = setup().await;
@@ -638,8 +639,8 @@ mod tests {
 
         assert_eq!(
             settings_value(&pool, "PERSISTENT_MEMORY_BUDGET_TOKENS").await,
-            "500",
-            "the budget knob should default to 500"
+            "800",
+            "the budget knob should default to 800"
         );
     }
 

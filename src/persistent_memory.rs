@@ -13,7 +13,7 @@ pub const CURRENT_SCHEMA_VERSION: i64 = 1;
 
 /// Default token budget for the persistent state when the
 /// `PERSISTENT_MEMORY_BUDGET_TOKENS` setting is missing or unparseable.
-pub const PERSISTENT_MEMORY_BUDGET_TOKENS_DEFAULT: usize = 500;
+pub const PERSISTENT_MEMORY_BUDGET_TOKENS_DEFAULT: usize = 800;
 
 /// The fixed, closed set of allowed top-level payload keys. The LLM cannot add
 /// sections: anything outside this set is discarded.
@@ -248,6 +248,12 @@ mod tests {
     }
 
     // ─── Schema: shape and version ──────────────────────────────────────────
+
+    /// The default budget is 800.
+    #[test]
+    fn budget_default_is_800() {
+        assert_eq!(PERSISTENT_MEMORY_BUDGET_TOKENS_DEFAULT, 800);
+    }
 
     /// A valid version-1 payload is accepted without shape changes.
     #[test]
