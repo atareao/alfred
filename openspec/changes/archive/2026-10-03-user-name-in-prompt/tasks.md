@@ -17,4 +17,4 @@
 ## Bloque 3 — REFACTOR y revisión
 - [x] 3.1 `cargo fmt --check` y `cargo clippy --all-targets -- -D warnings`.
 - [x] 3.2 Revisión con `rust-reviewer`.
-- [ ] 3.3 Verificación final por CLI y PR a `development`.
+- [x] 3.3 Verificación final por CLI y PR a `development`.
