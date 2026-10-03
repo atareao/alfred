@@ -26,6 +26,13 @@ pub fn estimate_json_tokens(json: &str) -> usize {
 
         if in_string {
             if is_escaped {
+                // Aproximación conocida (m2): los escapes NO se decodifican.
+                // `\uXXXX` deja pasar los caracteres literales (`u`, `0`, `0`,
+                // `e`, `9`), de modo que `\u00e9` cuesta 5 caracteres en lugar
+                // de 1. Es deliberado: el JSON que mide la Capa C procede de
+                // `serde_json::to_string`, que emite el no-ASCII en crudo y
+                // nunca lo escapa como `\uXXXX`. No se corrige para no añadir
+                // un decodificador que la entrada real no necesita.
                 current_string.push(c);
                 is_escaped = false;
             } else if c == '\\' {
@@ -167,6 +174,16 @@ mod tests {
         assert_eq!(estimate_json_tokens(r#""a\\b""#), 3);
     }
 
+    /// m2 — los escapes `\uXXXX` no se decodifican: la `u` y los cuatro dígitos
+    /// entran como contenido literal, así que `\u00e9` se cobra como los 5
+    /// caracteres ASCII `u00e9` (ceil(5/4) = 2) más las dos comillas → 4, en
+    /// lugar de los 3 que costaría un `é` ya decodificado. Aproximación
+    /// aceptada y deliberada (ver el comentario de la rama de escapes).
+    #[test]
+    fn unicode_escape_is_counted_verbatim_as_a_known_approximation() {
+        assert_eq!(estimate_json_tokens(r#""\u00e9""#), 4);
+    }
+
     // ─── Cadena vacía ───────────────────────────────────────────────────────
 
     #[test]
@@ -202,6 +219,22 @@ mod tests {
         assert_eq!(estimate_literal_tokens("12"), 1);
         assert_eq!(estimate_literal_tokens("12345"), 2);
         assert_eq!(estimate_literal_tokens("1.5"), 1);
+    }
+
+    /// m4 — signo, decimal y exponente no se interpretan: el estimador solo
+    /// cuenta dígitos (`ceil(dígitos / 2.5)`), así que `-1.5` y `15` colapsan
+    /// a 1 y `1e10` (3 dígitos) sube a 2. Coherente con el enfoque heurístico;
+    /// se fija la intención para que sea deliberado y no accidental.
+    #[test]
+    fn signed_decimal_and_exponent_numbers_use_the_digit_count() {
+        assert_eq!(estimate_literal_tokens("-1.5"), 1);
+        assert_eq!(estimate_literal_tokens("15"), 1);
+        assert_eq!(estimate_literal_tokens("-3"), 1);
+        assert_eq!(estimate_literal_tokens("0.0001"), 2);
+        assert_eq!(estimate_literal_tokens("1e10"), 2);
+
+        // Whole JSON: [ -1.5 , 15 , 1e10 ] → 1 + 1 + 1 + 1 + 1 + 2 + 1 = 8
+        assert_eq!(estimate_json_tokens("[-1.5,15,1e10]"), 8);
     }
 
     // ─── Monotonía ──────────────────────────────────────────────────────────
