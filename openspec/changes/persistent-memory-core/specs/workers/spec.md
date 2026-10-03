@@ -8,7 +8,8 @@ Al procesar un lote de mensajes sin indexar, el `EpisodicMemoryWorker` SHALL: (1
 una sola vez; (2) obtener la ficha episódica (Capa B) y el estado persistente consolidado
 (Capa C) **antes** de escribir nada; y (3) escribir la ficha, escribir el estado y marcar los
 mensajes como indexados en una **única transacción**. `messages.is_indexed = 1` SHALL implicar
-que la ficha y el estado se han escrito.
+que la ficha (Capa B) se ha escrito y que existe un estado de Capa C válido —el recién
+consolidado o, si el tamaño obligó a conservarlo, el anterior—.
 
 **Given** un lote de mensajes sin indexar que cumple las condiciones de procesamiento  
 **When** el worker lo procesa  
@@ -29,10 +30,17 @@ que la ficha y el estado se han escrito.
 **Then** NO SHALL escribir ninguna ficha ni estado  
 **And** NO SHALL llamar al LLM
 
+#### Scenario: El rechazo por techo conserva el estado previo y marca el lote
+**Given** un lote cuya Capa C válida supera el techo absoluto  
+**When** el worker procesa  
+**Then** se persiste la ficha episódica  
+**And** NO se sobrescribe el estado persistente (se conserva el anterior)  
+**And** los mensajes del lote pasan a `is_indexed = 1`
+
 ### Requirement: Un fallo en cualquiera de las dos extracciones SHALL NOT dejar escritura parcial ni marca
 
-Si falla la llamada episódica, la consolidación, la validación del estado o la generación de
-embeddings, el worker SHALL NOT abrir transacción, SHALL NOT marcar los mensajes y SHALL
+Si falla la llamada episódica, la llamada de consolidación, la validación del estado o la
+generación de embeddings, el worker SHALL NOT abrir transacción, SHALL NOT marcar los mensajes y SHALL
 iniciar el cooldown. Al reintentar, SHALL reprocesar el lote completo sin duplicar fichas.
 
 **Given** un lote cuya extracción episódica falla  

@@ -26,9 +26,11 @@ la episódica, e inyectado como bloque plano.
   devuelva el LLM se ignora.
 - **D5 — Presupuesto y techo.** El estado SHALL caber en
   `PERSISTENT_MEMORY_BUDGET_TOKENS` (def. 500), medido sobre el JSON minificado. Si lo
-  supera, una única compresión del LLM. Si aun así supera el **techo absoluto** (el doble,
-  1000 tokens), Rust **rechaza la escritura y conserva el estado anterior**, con un aviso
-  en el log. Nunca borra contenido en silencio.
+  supera, una única compresión del LLM. Si tras comprimir sigue por encima del **techo
+  absoluto** (el doble, 1000 tokens), Rust **rechaza la escritura y conserva el estado
+  anterior**, con un aviso en el log. Si la compresión **falla**, se evalúa el estado sin
+  comprimir contra el techo: si cabe, se guarda con un aviso; si no, se conserva el
+  anterior. Por tamaño **nunca** se aborta la pasada ni se borra contenido en silencio.
 - **D6 — Prompt y modelo configurables.** `settings.consolidator_prompt` (sembrado,
   editable, con fallback) y `SEMANTIC_MODEL` (cae a `MEMORY_MODEL`).
 - **D7 — Una sola pasada, una sola marca. BREAKING (interno).** El worker obtiene la
@@ -63,8 +65,8 @@ la episódica, e inyectado como bloque plano.
 - **Specs**: `persistent-memory` (nueva, 5 requisitos), `workers` (3 añadidos),
   `orchestrator/agent` (2 modificados, 1 eliminado, 1 añadido).
 - **Código**: migración nueva; repo de la Capa C en `src/db/repos/`;
-  `src/workers/episodic_memory.rs` (pasada unificada); `src/orchestrator/agent.rs` y
-  `context_builder.rs` (inyección); `src/config.rs` (`SEMANTIC_MODEL`).
+  `src/workers/episodic_memory.rs` (pasada unificada); `src/orchestrator/agent.rs`
+  (inyección); `src/config.rs` (`SEMANTIC_MODEL`).
 - **Migración**: tabla `persistent_memory` y las claves `consolidator_prompt` y
   `PERSISTENT_MEMORY_BUDGET_TOKENS`.
 - **Sin cambios** en `docker-compose.prod.yml` ni en la API pública (la UI es el change

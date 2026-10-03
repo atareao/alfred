@@ -107,8 +107,11 @@ compresión al modelo del consolidador. SHALL existir además un **techo absolut
 doble del presupuesto. Si tras la compresión el estado cabe bajo el techo pero sigue
 superando el presupuesto, SHALL almacenarse y registrarse un aviso. Si aun así supera el
 techo, la escritura SHALL rechazarse y SHALL conservarse el estado anterior, registrando un
-aviso. Rust SHALL NOT truncar ni descartar contenido en silencio, y el estado almacenado
-SHALL ser siempre JSON válido.
+aviso. Si la compresión falla o no produce un estado válido, el worker SHALL evaluar el
+estado sin comprimir contra el techo: si cabe, SHALL almacenarse con un aviso; si lo supera,
+SHALL conservarse el estado anterior con un aviso. En ningún caso un problema de tamaño SHALL
+abortar la pasada. Rust SHALL NOT truncar ni descartar contenido en silencio, y el estado
+almacenado SHALL ser siempre JSON válido.
 
 **Given** un estado consolidado y el presupuesto configurado  
 **When** el estado cabe en el presupuesto  
@@ -136,6 +139,13 @@ SHALL ser siempre JSON válido.
 **Then** la escritura se rechaza  
 **And** el estado anterior permanece intacto  
 **And** se registra un aviso
+
+#### Scenario: La compresión fallida degrada sin abortar
+**Given** un consolidado que supera el presupuesto y una compresión que falla  
+**When** se aplica el control de tamaño  
+**Then** la pasada NO se aborta  
+**And** si el estado sin comprimir cabe bajo el techo, se almacena con un aviso  
+**And** si lo supera, se conserva el estado anterior con un aviso
 
 ### Requirement: El prompt del consolidador SHALL ser configurable y editable
 
