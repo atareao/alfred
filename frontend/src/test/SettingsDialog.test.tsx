@@ -85,6 +85,28 @@ vi.mock("../hooks/useSettings", () => ({
   })),
 }));
 
+// El panel de memoria persistente monta su propio hook; se mockea para que
+// abrir su pestaña sea determinista y no dispare `api.getPersistentMemory()`.
+vi.mock("../hooks/usePersistentMemory", () => ({
+  usePersistentMemory: vi.fn(() => ({
+    state: {
+      payload: null,
+      updated_at: null,
+      token_count: 0,
+      budget_tokens: 500,
+      ceiling_tokens: 1000,
+      is_empty: true,
+    },
+    loading: false,
+    saving: false,
+    error: null,
+    warning: null,
+    conflict: null,
+    save: vi.fn(),
+    clear: vi.fn(),
+  })),
+}));
+
 import { SettingsDialog } from "../components/SettingsDialog";
 import { ProfileProvider } from "../contexts/ProfileProvider";
 
@@ -647,6 +669,26 @@ describe("SettingsDialog", () => {
     expect(screen.getByText("Memoria persistente")).toBeInTheDocument();
   });
 
+  it("mounts the persistent memory panel only after its tab is reachable", async () => {
+    const user = userEvent.setup();
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    // Escenario del delta: la pestaña es alcanzable. Antes de seleccionarla el
+    // panel (renderizado de forma perezosa por antd) no está montado.
+    expect(
+      screen.queryByLabelText("PERSISTENT_MEMORY_BUDGET_TOKENS"),
+    ).not.toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("tab", { name: "Memoria persistente" }),
+    );
+
+    expect(
+      await screen.findByLabelText("PERSISTENT_MEMORY_BUDGET_TOKENS"),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Estado persistente")).toBeInTheDocument();
+  });
+
   // ════════════════════════════════════════════════════════════════
   // RED phase tests — sub-pestaña "Consolidator" y aviso de placeholders
   // ════════════════════════════════════════════════════════════════
@@ -887,5 +929,80 @@ describe("SettingsDialog", () => {
     });
 
     expect(await screen.findByText("Ajustes guardados")).toBeInTheDocument();
+  });
+
+  // ════════════════════════════════════════════════════════════════
+  // Contract tests — change `settings-dialog-layout`
+  // Requisito: SettingsDialog SHALL organize the Generación roles in
+  // sub-tabs + SHALL fit all its top-level tabs without overflow.
+  // ════════════════════════════════════════════════════════════════
+
+  it("shows the four role sub-tabs inside the Generación tab", async () => {
+    const user = userEvent.setup();
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByText("Generación"));
+
+    // Los roles se exponen como etiquetas de sub-pestaña (role="tab").
+    for (const role of ["Chat", "Colapso", "Fichas", "Consolidación"]) {
+      expect(screen.getByRole("tab", { name: role })).toBeInTheDocument();
+    }
+  });
+
+  it("switching the role sub-tab activates its fields and deactivates the previous ones", async () => {
+    const user = userEvent.setup();
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    // antd deja el Modal con `opacity: 0` por su animación de aparición y jsdom
+    // no emite `transitionend`, así que `toBeVisible()` no sirve aquí (daría
+    // false incluso para el panel activo). La actividad de una sub-pestaña se
+    // comprueba con la señal estándar de rc-tabs: el panel `role="tabpanel"`
+    // lleva `aria-hidden="false"` cuando está activo e `"true"` cuando no. Con
+    // `forceRender` los campos de todos los paneles existen en el DOM.
+    const panelOf = (labelText: string) =>
+      screen.getByLabelText(labelText).closest('[role="tabpanel"]');
+    const expectActive = (labelText: string) => {
+      const panel = panelOf(labelText);
+      expect(panel).not.toBeNull();
+      expect(panel).toHaveAttribute("aria-hidden", "false");
+    };
+    const expectInactive = (labelText: string) => {
+      const panel = panelOf(labelText);
+      expect(panel).not.toBeNull();
+      expect(panel).toHaveAttribute("aria-hidden", "true");
+    };
+
+    await user.click(screen.getByText("Generación"));
+
+    // «Chat» es la sub-pestaña activa por defecto y sus campos cuelgan del
+    // panel activo.
+    expect(screen.getByRole("tab", { name: "Chat" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expectActive("GENERATION_CHAT_TEMPERATURE");
+
+    await user.click(screen.getByRole("tab", { name: "Colapso" }));
+
+    expect(screen.getByRole("tab", { name: "Colapso" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expectActive("GENERATION_COLLAPSE_TEMPERATURE");
+    expectActive("GENERATION_COLLAPSE_REASONING");
+    expectActive("GENERATION_COLLAPSE_MAX_TOKENS");
+
+    // Los campos de «Chat» ya no están en el panel activo.
+    expectInactive("GENERATION_CHAT_TEMPERATURE");
+  });
+
+  it("renders the settings modal with a width of at least 860px", () => {
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    // antd v5 aplica el `width` como `style` inline del elemento `.ant-modal`,
+    // que además es el que lleva role="dialog". Se lee el style inline para no
+    // depender de getComputedStyle con pseudo-elementos (jsdom no lo implementa).
+    const dialog = screen.getByRole("dialog") as HTMLElement;
+    expect(parseFloat(dialog.style.width)).toBeGreaterThanOrEqual(860);
   });
 });

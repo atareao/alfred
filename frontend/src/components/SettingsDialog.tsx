@@ -61,13 +61,14 @@ function getMissingConsolidatorPlaceholders(
 }
 
 // Los cuatro roles de generación y el prefijo de sus tres claves en `settings`.
-// El bloque visible es el heading; el prefijo compone los `name`/`id` del form
-// (que son la clave cruda, como en la pestaña "Memoria").
+// El `heading` es la etiqueta de la sub-pestaña; el `key` es su identificador
+// estable; el `prefix` compone los `name`/`id` del form (que son la clave cruda,
+// como en la pestaña "Memoria").
 const GENERATION_BLOCKS = [
-  { heading: "Chat", prefix: "GENERATION_CHAT" },
-  { heading: "Colapso", prefix: "GENERATION_COLLAPSE" },
-  { heading: "Fichas", prefix: "GENERATION_MEMORY" },
-  { heading: "Consolidación", prefix: "GENERATION_SEMANTIC" },
+  { key: "chat", heading: "Chat", prefix: "GENERATION_CHAT" },
+  { key: "collapse", heading: "Colapso", prefix: "GENERATION_COLLAPSE" },
+  { key: "memory", heading: "Fichas", prefix: "GENERATION_MEMORY" },
+  { key: "semantic", heading: "Consolidación", prefix: "GENERATION_SEMANTIC" },
 ] as const;
 
 // `default` (vacío) significa "no enviar razonamiento" y deja decidir al modelo.
@@ -363,7 +364,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
       onCancel={onClose}
       closable={false}
       footer={null}
-      width={600}
+      width={900}
     >
       <Tabs
         items={[
@@ -630,42 +631,49 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                 layout="vertical"
                 onFinish={handleSettingsSubmit}
               >
-                {GENERATION_BLOCKS.map((block) => (
-                  <div key={block.prefix} style={{ marginBottom: 16 }}>
-                    <h4 style={{ margin: "0 0 8px" }}>{block.heading}</h4>
-                    <Form.Item
-                      label={`${block.prefix}_TEMPERATURE`}
-                      name={`${block.prefix}_TEMPERATURE`}
-                    >
-                      <InputNumber
-                        min={0}
-                        max={2}
-                        step={0.05}
-                        style={{ width: "100%" }}
-                      />
-                    </Form.Item>
-                    <Form.Item
-                      label={`${block.prefix}_REASONING`}
-                      name={`${block.prefix}_REASONING`}
-                    >
-                      <Select
-                        virtual={false}
-                        options={GENERATION_REASONING_OPTIONS}
-                      />
-                    </Form.Item>
-                    <Form.Item
-                      label={`${block.prefix}_MAX_TOKENS`}
-                      name={`${block.prefix}_MAX_TOKENS`}
-                    >
-                      <InputNumber
-                        min={1}
-                        max={1000000}
-                        step={1}
-                        style={{ width: "100%" }}
-                      />
-                    </Form.Item>
-                  </div>
-                ))}
+                <Tabs
+                  aria-label="Rol de generación"
+                  items={GENERATION_BLOCKS.map((block) => ({
+                    key: block.key,
+                    label: block.heading,
+                    forceRender: true,
+                    children: (
+                      <>
+                        <Form.Item
+                          label={`${block.prefix}_TEMPERATURE`}
+                          name={`${block.prefix}_TEMPERATURE`}
+                        >
+                          <InputNumber
+                            min={0}
+                            max={2}
+                            step={0.05}
+                            style={{ width: "100%" }}
+                          />
+                        </Form.Item>
+                        <Form.Item
+                          label={`${block.prefix}_REASONING`}
+                          name={`${block.prefix}_REASONING`}
+                        >
+                          <Select
+                            virtual={false}
+                            options={GENERATION_REASONING_OPTIONS}
+                          />
+                        </Form.Item>
+                        <Form.Item
+                          label={`${block.prefix}_MAX_TOKENS`}
+                          name={`${block.prefix}_MAX_TOKENS`}
+                        >
+                          <InputNumber
+                            min={1}
+                            max={1000000}
+                            step={1}
+                            style={{ width: "100%" }}
+                          />
+                        </Form.Item>
+                      </>
+                    ),
+                  }))}
+                />
                 <Button type="primary" htmlType="submit" loading={saving}>
                   Guardar
                 </Button>
