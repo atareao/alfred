@@ -15,4 +15,4 @@
 
 ## Bloque 3 — REFACTOR y revisión
 - [x] 3.1 Revisión con `react-reviewer` (sin blockers).
-- [ ] 3.2 Verificación final por CLI y PR a `development`.
+- [x] 3.2 Verificación final por CLI y PR a `development`.
