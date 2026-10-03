@@ -3,6 +3,12 @@ use sqlx::{Row, SqlitePool};
 use crate::models::PersistentMemory;
 use crate::persistent_memory::GLOBAL_STATE_ID;
 
+/// Upsert of the single `'global_state'` row. Shared by [`PersistentMemoryRepo::upsert`]
+/// and [`PersistentMemoryRepo::upsert_in_tx`] so the SQL exists only once.
+const UPSERT_SQL: &str =
+    "INSERT INTO persistent_memory (id, payload, updated_at) VALUES (?1, ?2, ?3) \
+     ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at";
+
 /// Repository for the Capa C `persistent_memory` table: a single logical row
 /// (`id = 'global_state'`) holding the versioned JSON state.
 pub struct PersistentMemoryRepo;
@@ -14,15 +20,12 @@ impl PersistentMemoryRepo {
         payload: &str,
         updated_at: &str,
     ) -> Result<(), sqlx::Error> {
-        sqlx::query(
-            "INSERT INTO persistent_memory (id, payload, updated_at) VALUES (?1, ?2, ?3) \
-             ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at",
-        )
-        .bind(GLOBAL_STATE_ID)
-        .bind(payload)
-        .bind(updated_at)
-        .execute(&mut **tx)
-        .await?;
+        sqlx::query(UPSERT_SQL)
+            .bind(GLOBAL_STATE_ID)
+            .bind(payload)
+            .bind(updated_at)
+            .execute(&mut **tx)
+            .await?;
 
         Ok(())
     }
@@ -54,15 +57,12 @@ impl PersistentMemoryRepo {
         payload: &str,
         updated_at: &str,
     ) -> Result<(), sqlx::Error> {
-        sqlx::query(
-            "INSERT INTO persistent_memory (id, payload, updated_at) VALUES (?1, ?2, ?3) \
-             ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at",
-        )
-        .bind(GLOBAL_STATE_ID)
-        .bind(payload)
-        .bind(updated_at)
-        .execute(pool)
-        .await?;
+        sqlx::query(UPSERT_SQL)
+            .bind(GLOBAL_STATE_ID)
+            .bind(payload)
+            .bind(updated_at)
+            .execute(pool)
+            .await?;
 
         Ok(())
     }

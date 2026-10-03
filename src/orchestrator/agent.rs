@@ -214,6 +214,10 @@ const EPISODIC_MEMORY_SECTION_TITLE: &str = "# CONTEXTO DE MEMORIA EPISÓDICA (C
 /// non-empty, and omitted entirely otherwise.
 const PERSISTENT_MEMORY_SECTION_TITLE: &str = "# MEMORIA PERSISTENTE (CAPA C)";
 
+/// Explicit instruction that the persistent state is stable, permanent context
+/// and not the user's current turn.
+const PERSISTENT_MEMORY_INSTRUCTION: &str = "Estado estable del usuario (perfil y reglas fijadas). Es contexto permanente; NO es el turno actual del usuario.";
+
 /// Explicit instruction that the recovered cards are background, not the turn
 /// currently being answered. Without it the model can reply to a memory as if
 /// it were the user's current message.
@@ -247,17 +251,17 @@ fn compose_episodic_memory_block(memories: &[String]) -> Option<String> {
 /// Compose the persistent-memory section (Layer C) from the raw stored JSON
 /// payload, or `None` when there is nothing to inject.
 ///
-/// The payload is re-serialized in its **minified** form and prefixed with a
-/// short header. An empty state — or an unparseable payload — yields `None`, so
-/// no header, marker or blank line is ever left behind. The state is read in
-/// every request construction by the caller.
+/// The payload is re-serialized in its **minified** form, preceded by a short
+/// header and a one-line purpose. An empty state — or an unparseable payload —
+/// yields `None`, so no header, marker or blank line is ever left behind. The
+/// state is read in every request construction by the caller.
 fn compose_persistent_memory_block(payload_json: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(payload_json).ok()?;
     if crate::persistent_memory::is_empty_state(&value) {
         return None;
     }
     Some(format!(
-        "{PERSISTENT_MEMORY_SECTION_TITLE}\n{}",
+        "{PERSISTENT_MEMORY_SECTION_TITLE}\n{PERSISTENT_MEMORY_INSTRUCTION}\n{}",
         crate::persistent_memory::minified_json(&value)
     ))
 }
@@ -268,7 +272,7 @@ fn compose_persistent_memory_block(payload_json: &str) -> Option<String> {
 /// by a blank line (`\n\n`):
 ///
 ///   1. the prompt (`settings.system_prompt`),
-///   2. the reserved persistent-memory slot (empty today; insertion point),
+///   2. the persistent-memory section (Capa C), when the state is non-empty,
 ///   3. the episodic-memory section, when there are cards, and
 ///   4. the date/time/location section, when the browser sent context.
 ///
@@ -1815,19 +1819,18 @@ mod tests {
         Ok(())
     }
 
-    // ─── unified-system-message block 4: reserved persistent-memory slot ──────
+    // ─── unified-system-message: persistent-memory section (Capa C) ──────────
 
-    /// 4.1 — the composer accepts an OPTIONAL persistent-memory section placed
-    /// between the prompt and the episodic one. With the slot empty (`None`,
-    /// today's only value) it emits nothing: no title, marker, comment,
-    /// separator or stray blank line.
+    /// The composer accepts an OPTIONAL persistent-memory section placed
+    /// between the prompt and the episodic one. When it is absent (`None`) it
+    /// emits nothing: no title, marker, comment, separator or stray blank line.
     #[test]
-    fn compose_system_message_reserves_persistent_slot_without_text() {
-        // Empty slot: prompt + episodic only, no trace of the reservation.
+    fn compose_system_message_places_persistent_section_between_prompt_and_episodic() {
+        // Absent section: prompt + episodic only, no trace of a placeholder.
         let empty = compose_system_message("PROMPT", None, Some("EPISODIC".to_string()), None);
         assert_eq!(empty, "PROMPT\n\nEPISODIC");
 
-        // A future section would land exactly between prompt and episodic.
+        // A present section lands exactly between prompt and episodic.
         let filled = compose_system_message(
             "PROMPT",
             Some("PERSISTENT".to_string()),
@@ -1837,14 +1840,15 @@ mod tests {
         assert_eq!(filled, "PROMPT\n\nPERSISTENT\n\nEPISODIC\n\nBROWSER");
     }
 
-    /// 4.1 (request level) — the assembled request carries no persistent-memory
-    /// section at all: the prompt and the episodic section are adjacent, with no
-    /// marker between them.
+    /// Request level — with no persistent state, the assembled request carries
+    /// no persistent-memory section at all: the prompt and the episodic section
+    /// are adjacent, with no marker between them.
     #[tokio::test]
-    async fn request_has_no_persistent_memory_section() -> Result<(), Box<dyn std::error::Error>> {
+    async fn request_without_persistent_state_has_no_section(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let pool = setup_test_db().await;
         seed_one_memory(&pool).await;
-        let prompt = "PROMPT_HUECO";
+        let prompt = "PROMPT_SIN_ESTADO";
         crate::db::repos::settings::SettingsRepo::set(&pool, "system_prompt", prompt).await?;
 
         let captured: Arc<Mutex<Option<Vec<ChatMessage>>>> = Arc::new(Mutex::new(None));
@@ -1875,8 +1879,8 @@ mod tests {
         Ok(())
     }
 
-    /// 4.3 — full order with prompt, cards and browser context:
-    /// prompt → (empty persistent slot) → episodic → date/time/location.
+    /// Full order with prompt, cards and browser context (no persistent state):
+    /// prompt → episodic → date/time/location.
     #[tokio::test]
     async fn single_system_message_full_section_order() -> Result<(), Box<dyn std::error::Error>> {
         let pool = setup_test_db().await;
@@ -1924,7 +1928,7 @@ mod tests {
         assert!(content.ends_with("Ubicación: Madrid (40.4168, -3.7038)."));
         assert!(
             content.starts_with(&format!("{prompt}\n\n{EPISODIC_MEMORY_SECTION_TITLE}")),
-            "the empty persistent slot leaves no text between prompt and episodic"
+            "the absent persistent section leaves no text between prompt and episodic"
         );
 
         Ok(())
@@ -1943,6 +1947,10 @@ mod tests {
         assert!(
             non_empty.starts_with(PERSISTENT_MEMORY_SECTION_TITLE),
             "the section starts with its title, got {non_empty:?}"
+        );
+        assert!(
+            non_empty.contains(PERSISTENT_MEMORY_INSTRUCTION),
+            "the section states its purpose, got {non_empty:?}"
         );
         assert!(
             non_empty.contains(r#""user_profile":{"city":"Madrid"}"#),

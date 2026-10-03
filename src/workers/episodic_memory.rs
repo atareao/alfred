@@ -131,6 +131,22 @@ struct PersistentWrite {
     updated_at: String,
 }
 
+/// Failure of the **initial** consolidation step (the one that produces the
+/// Layer C state). Any of these aborts the pass: nothing is written, nothing is
+/// marked, and the cooldown starts.
+///
+/// Size management is deliberately **not** represented here: a compression
+/// failure is never a pass failure, it degrades (see `consolidate_state`).
+#[derive(Debug, thiserror::Error)]
+enum ConsolidationError {
+    #[error("persistent-memory database error: {0}")]
+    Database(#[from] sqlx::Error),
+    #[error("consolidator LLM call failed: {0}")]
+    Llm(String),
+    #[error("consolidator returned an invalid state: {0}")]
+    Invalid(String),
+}
+
 /// Compute the cooldown (in seconds) applied after a failed LLM attempt.
 ///
 /// Per spec this is `max(poll_interval / 2, 30s)`.
@@ -208,7 +224,7 @@ impl EpisodicMemoryWorker {
         last_llm_attempt: &Arc<AtomicI64>,
     ) {
         // 1. Query unindexed messages
-        let unindexed = match Self::query_unindexed_messages(db, config.batch_tokens).await {
+        let unindexed = match Self::query_unindexed_messages(db).await {
             Ok(msgs) => msgs,
             Err(e) => {
                 tracing::error!(error = %e, "EpisodicMemoryWorker: failed to query unindexed messages");
@@ -258,22 +274,13 @@ impl EpisodicMemoryWorker {
         let cooldown = cooldown_secs(config);
 
         if now_ts - last_attempt < cooldown && last_attempt > 0 {
-            let unindexed_count: i64 =
-                sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE is_indexed = 0")
-                    .fetch_one(db)
-                    .await
-                    .unwrap_or(0);
-
-            // Also check that the same messages are still unindexed
-            // (count hasn't changed since last attempt)
-            if unindexed_count > 0 {
-                tracing::warn!(
-                    unindexed_count = %unindexed_count,
-                    seconds_since_last_attempt = %(now_ts - last_attempt),
-                    "EpisodicMemoryWorker: skipping LLM call (rate-limited after previous failure)"
-                );
-                return;
-            }
+            // We already know `unindexed` is non-empty (checked at the top), so
+            // the batch is still waiting: skip the LLM call.
+            tracing::warn!(
+                seconds_since_last_attempt = %(now_ts - last_attempt),
+                "EpisodicMemoryWorker: skipping LLM call (rate-limited after previous failure)"
+            );
+            return;
         }
 
         // 5b. Extraction 1/2: the episodic card (Layer B).
@@ -347,7 +354,6 @@ impl EpisodicMemoryWorker {
     /// Uses a conservative limit to avoid loading too many at once.
     async fn query_unindexed_messages(
         db: &SqlitePool,
-        _batch_tokens: usize,
     ) -> Result<Vec<UnindexedMessage>, sqlx::Error> {
         let rows = sqlx::query(
             "SELECT id, role, content, tokens_count, created_at
@@ -748,15 +754,32 @@ impl EpisodicMemoryWorker {
 
     // ─── Capa C: consolidation (budget, ceiling, prompt) ───────────────────
 
-    /// Read the persistent-memory token budget from `settings`, falling back to
-    /// the default (500) when the key is missing or unparseable.
+    /// Read the persistent-memory token budget from `settings`.
+    ///
+    /// Missing key or unparseable value fall back to the default (500). A real
+    /// database error is distinguished and warned about, then also falls back.
     async fn read_persistent_budget(db: &SqlitePool) -> usize {
-        crate::db::repos::settings::SettingsRepo::get(db, "PERSISTENT_MEMORY_BUDGET_TOKENS")
+        match crate::db::repos::settings::SettingsRepo::get(db, "PERSISTENT_MEMORY_BUDGET_TOKENS")
             .await
-            .ok()
-            .flatten()
-            .and_then(|v| v.trim().parse::<usize>().ok())
-            .unwrap_or(PERSISTENT_MEMORY_BUDGET_TOKENS_DEFAULT)
+        {
+            Ok(Some(value)) => value.trim().parse::<usize>().unwrap_or_else(|_| {
+                tracing::warn!(
+                    value = %value,
+                    default = PERSISTENT_MEMORY_BUDGET_TOKENS_DEFAULT,
+                    "PERSISTENT_MEMORY_BUDGET_TOKENS is not a valid usize; using the default"
+                );
+                PERSISTENT_MEMORY_BUDGET_TOKENS_DEFAULT
+            }),
+            Ok(None) => PERSISTENT_MEMORY_BUDGET_TOKENS_DEFAULT,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    default = PERSISTENT_MEMORY_BUDGET_TOKENS_DEFAULT,
+                    "failed to read PERSISTENT_MEMORY_BUDGET_TOKENS; using the default"
+                );
+                PERSISTENT_MEMORY_BUDGET_TOKENS_DEFAULT
+            }
+        }
     }
 
     /// Perform one semantic LLM call (consolidation or compression) and record
@@ -766,7 +789,7 @@ impl EpisodicMemoryWorker {
         llm_provider: &Arc<dyn LLMProvider>,
         config: &EpisodicMemoryConfig,
         system_content: String,
-    ) -> Result<String, Box<dyn std::error::Error>> {
+    ) -> Result<String, ConsolidationError> {
         let request = ChatRequest {
             model: config.semantic_model.clone(),
             messages: vec![ChatMessage {
@@ -805,7 +828,9 @@ impl EpisodicMemoryWorker {
                     None,
                 )
                 .await;
-                return Err(format!("semantic LLM call failed: {e}").into());
+                return Err(ConsolidationError::Llm(format!(
+                    "semantic LLM call failed: {e}"
+                )));
             }
         };
 
@@ -854,16 +879,20 @@ impl EpisodicMemoryWorker {
     /// Consolidate the Layer C state from the same batch used for the episodic
     /// card.
     ///
-    /// Returns `Err` on any LLM/parse/validation failure (the caller must abort
-    /// the whole pass), or `KeepPrevious` when the compressed state still
-    /// exceeds the absolute ceiling (the caller continues, keeping the old
-    /// state). The state is never truncated in silence.
+    /// Returns `Err(ConsolidationError)` only when the **initial** consolidation
+    /// fails (LLM error, non-JSON, invalid schema or DB error); the caller then
+    /// aborts the whole pass.
+    ///
+    /// Size management never aborts: if the state exceeds the budget, a single
+    /// compression is attempted, and if that fails or still exceeds the ceiling,
+    /// the uncompressed state is evaluated against the ceiling — stored when it
+    /// fits (with a warning) or the previous state is kept (with a warning).
     async fn consolidate_state(
         db: &SqlitePool,
         llm_provider: &Arc<dyn LLMProvider>,
         config: &EpisodicMemoryConfig,
         message_block: &str,
-    ) -> Result<Consolidation, Box<dyn std::error::Error>> {
+    ) -> Result<Consolidation, ConsolidationError> {
         // Previous state; its absence is a valid empty state.
         let previous = PersistentMemoryRepo::get(db).await?;
         let current_payload = previous
@@ -890,63 +919,148 @@ impl EpisodicMemoryWorker {
                     default_consolidator_prompt()
                 }
             };
+        let current_json = serde_json::to_string(&current_payload)
+            .map_err(|e| ConsolidationError::Invalid(e.to_string()))?;
         let system_content = prompt
-            .replace(
-                "{{ ESTADO_ACTUAL }}",
-                &serde_json::to_string(&current_payload)?,
-            )
+            .replace("{{ ESTADO_ACTUAL }}", &current_json)
             .replace("{{ BLOQUE_DE_MENSAJES }}", message_block);
 
+        // Initial consolidation: a failure here aborts the pass.
         let raw = Self::call_semantic_chat(db, llm_provider, config, system_content).await?;
-        let candidate =
-            Self::extract_json_object(&raw).ok_or("consolidator returned no JSON object")?;
-        let mut validated = validate_payload(&candidate)?;
+        let candidate = Self::extract_json_object(&raw).ok_or_else(|| {
+            ConsolidationError::Invalid("consolidator returned no JSON object".into())
+        })?;
+        let validated =
+            validate_payload(&candidate).map_err(|e| ConsolidationError::Invalid(e.to_string()))?;
 
-        // Budget and (at most) one compression pass.
+        // Size management: never aborts.
         let budget = Self::read_persistent_budget(db).await;
         let tokens = payload_token_count(&validated);
-        if tokens > budget {
-            tracing::warn!(
-                tokens,
-                budget,
-                "persistent memory exceeds the token budget; requesting one compression"
-            );
-            let compression_prompt = compression_prompt()
-                .replace("{{ ESTADO_ACTUAL }}", &serde_json::to_string(&validated)?);
-            let raw_compressed =
-                Self::call_semantic_chat(db, llm_provider, config, compression_prompt).await?;
-            let compressed_candidate = Self::extract_json_object(&raw_compressed)
-                .ok_or("compression returned no JSON object")?;
-            validated = validate_payload(&compressed_candidate)?;
-
-            let compressed_tokens = payload_token_count(&validated);
-            match evaluate_compressed(compressed_tokens, budget) {
-                CompressionOutcome::Reject => {
-                    tracing::warn!(
-                        tokens = compressed_tokens,
-                        budget,
-                        ceiling = crate::persistent_memory::absolute_ceiling(budget),
-                        "persistent memory exceeds the absolute ceiling; keeping the previous state"
-                    );
-                    return Ok(Consolidation::KeepPrevious);
-                }
-                CompressionOutcome::StoreWithWarning => {
-                    tracing::warn!(
-                        tokens = compressed_tokens,
-                        budget,
-                        "persistent memory still exceeds the budget after compression; storing with warning"
-                    );
-                }
-                CompressionOutcome::Store => {}
-            }
+        if tokens <= budget {
+            return Ok(Self::seal_consolidation(previous.as_ref(), validated));
         }
 
+        tracing::warn!(
+            tokens,
+            budget,
+            "persistent memory exceeds the token budget; requesting one compression"
+        );
+
+        match Self::try_compress(db, llm_provider, config, &validated).await {
+            Some(compressed) => {
+                let compressed_tokens = payload_token_count(&compressed);
+                match evaluate_compressed(compressed_tokens, budget) {
+                    CompressionOutcome::Reject => {
+                        tracing::warn!(
+                            tokens = compressed_tokens,
+                            budget,
+                            ceiling = crate::persistent_memory::absolute_ceiling(budget),
+                            "the compressed state exceeds the absolute ceiling; keeping the previous state"
+                        );
+                        Ok(Consolidation::KeepPrevious)
+                    }
+                    CompressionOutcome::StoreWithWarning => {
+                        tracing::warn!(
+                            tokens = compressed_tokens,
+                            budget,
+                            "the compressed state still exceeds the budget; storing with warning"
+                        );
+                        Ok(Self::seal_consolidation(previous.as_ref(), compressed))
+                    }
+                    CompressionOutcome::Store => {
+                        Ok(Self::seal_consolidation(previous.as_ref(), compressed))
+                    }
+                }
+            }
+            None => {
+                // The compression failed or produced nothing usable. Size
+                // management must NOT abort the pass: evaluate the uncompressed
+                // state against the ceiling instead.
+                match evaluate_compressed(tokens, budget) {
+                    CompressionOutcome::Reject => {
+                        tracing::warn!(
+                            tokens,
+                            budget,
+                            ceiling = crate::persistent_memory::absolute_ceiling(budget),
+                            "compression failed and the uncompressed state exceeds the ceiling; keeping the previous state"
+                        );
+                        Ok(Consolidation::KeepPrevious)
+                    }
+                    CompressionOutcome::StoreWithWarning => {
+                        tracing::warn!(
+                            tokens,
+                            budget,
+                            "compression failed; storing the uncompressed state with warning"
+                        );
+                        Ok(Self::seal_consolidation(previous.as_ref(), validated))
+                    }
+                    CompressionOutcome::Store => {
+                        // Unreachable in practice (`tokens > budget`): kept so
+                        // the classification stays exhaustive.
+                        Ok(Self::seal_consolidation(previous.as_ref(), validated))
+                    }
+                }
+            }
+        }
+    }
+
+    /// Build a `Consolidation::Write` for `payload`, resolving the Rust-owned
+    /// `updated_at` against the previous state.
+    fn seal_consolidation(
+        previous: Option<&crate::models::PersistentMemory>,
+        payload: serde_json::Value,
+    ) -> Consolidation {
         let now = chrono::Utc::now().to_rfc3339();
-        let updated_at = resolve_updated_at(previous.as_ref(), &validated, &now);
-        Ok(Consolidation::Write {
-            payload: validated,
+        let updated_at = resolve_updated_at(previous, &payload, &now);
+        Consolidation::Write {
+            payload,
             updated_at,
-        })
+        }
+    }
+
+    /// One compression attempt. Returns `None` on any failure — LLM error,
+    /// non-JSON response, invalid schema — because size management must never
+    /// abort the pass (the caller degrades to the uncompressed state).
+    async fn try_compress(
+        db: &SqlitePool,
+        llm_provider: &Arc<dyn LLMProvider>,
+        config: &EpisodicMemoryConfig,
+        state: &serde_json::Value,
+    ) -> Option<serde_json::Value> {
+        let serialized = serde_json::to_string(state).ok()?;
+        let prompt = compression_prompt().replace("{{ ESTADO_ACTUAL }}", &serialized);
+
+        let raw = match Self::call_semantic_chat(db, llm_provider, config, prompt).await {
+            Ok(raw) => raw,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "compression LLM call failed; degrading to the uncompressed state"
+                );
+                return None;
+            }
+        };
+
+        let candidate = match Self::extract_json_object(&raw) {
+            Some(candidate) => candidate,
+            None => {
+                tracing::warn!(
+                    "compression returned no JSON object; degrading to the uncompressed state"
+                );
+                return None;
+            }
+        };
+
+        match validate_payload(&candidate) {
+            Ok(validated) => Some(validated),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "compression returned an invalid state; degrading to the uncompressed state"
+                );
+                None
+            }
+        }
     }
 
     /// Tolerantly extract a JSON object from an LLM response (it may be wrapped
@@ -2374,27 +2488,82 @@ mod tests {
         }
     }
 
+    /// M1(a) — a compression failure with an uncompressed state that still fits
+    /// under the ceiling: store the uncompressed state (with a warning) and
+    /// never abort.
     #[tokio::test]
-    async fn test_consolidate_invalid_compression_is_failure() {
+    async fn test_compression_failure_under_ceiling_stores_uncompressed() {
         let db = test_db().await;
-        set_persistent_budget(&db, "1").await; // forces the compression pass
+        let state: serde_json::Value = serde_json::from_str(&big_state()).unwrap();
+        let tokens = payload_token_count(&state);
+        // Budget in (tokens/2, tokens): over budget, but the uncompressed state
+        // fits under the ceiling (2× budget).
+        let budget = tokens * 3 / 4;
+        assert!(tokens > budget, "precondition: over budget");
+        assert!(
+            tokens <= crate::persistent_memory::absolute_ceiling(budget),
+            "precondition: uncompressed fits under the ceiling"
+        );
+        set_persistent_budget(&db, &budget.to_string()).await;
 
         let mock = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE)
             .semantic(&big_state())
             .compression("esto no es JSON");
         let provider = mock.wrap();
 
-        let result = EpisodicMemoryWorker::consolidate_state(
+        let outcome = EpisodicMemoryWorker::consolidate_state(
             &db,
             &provider,
             &EpisodicMemoryConfig::default(),
             "BLOQUE",
         )
-        .await;
+        .await
+        .expect("size management must never abort the pass");
+
+        match outcome {
+            Consolidation::Write { payload, .. } => assert_eq!(payload, state),
+            other => panic!("expected the uncompressed state to be stored, got {other:?}"),
+        }
+    }
+
+    /// M1(b) — a compression failure with an uncompressed state above the
+    /// ceiling: keep the previous state (with a warning) and never abort.
+    #[tokio::test]
+    async fn test_compression_failure_over_ceiling_keeps_previous() {
+        let db = test_db().await;
+        PersistentMemoryRepo::upsert(&db, DEFAULT_STATE_RESPONSE, "2026-09-01T10:00:00Z")
+            .await
+            .unwrap();
+        let state: serde_json::Value = serde_json::from_str(&big_state()).unwrap();
+        let tokens = payload_token_count(&state);
+        let budget = tokens / 4; // ceiling = tokens/2, below the uncompressed size
         assert!(
-            result.is_err(),
-            "an unparseable compression must be a consolidation failure"
+            tokens > crate::persistent_memory::absolute_ceiling(budget),
+            "precondition: uncompressed exceeds the ceiling"
         );
+        set_persistent_budget(&db, &budget.to_string()).await;
+
+        let mock = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE)
+            .semantic(&big_state())
+            .compression("esto no es JSON");
+        let provider = mock.wrap();
+
+        let outcome = EpisodicMemoryWorker::consolidate_state(
+            &db,
+            &provider,
+            &EpisodicMemoryConfig::default(),
+            "BLOQUE",
+        )
+        .await
+        .expect("size management must never abort the pass");
+
+        assert_eq!(outcome, Consolidation::KeepPrevious);
+        let stored = PersistentMemoryRepo::get(&db).await.unwrap().unwrap();
+        assert_eq!(
+            stored.payload, DEFAULT_STATE_RESPONSE,
+            "previous state kept"
+        );
+        assert_eq!(stored.updated_at, "2026-09-01T10:00:00Z");
     }
 
     #[tokio::test]
@@ -2470,6 +2639,41 @@ mod tests {
             2,
             "the pass makes two extractions (B and C)"
         );
+    }
+
+    /// M1(c) — a ceiling rejection at pass level keeps the previous state but
+    /// still writes the episodic card and marks the batch.
+    #[tokio::test]
+    async fn test_ceiling_rejection_still_writes_card_and_marks_batch() {
+        let db = test_db().await;
+        // Budget 1 ⇒ ceiling 2: any consolidated state is rejected, but the
+        // pass must continue.
+        set_persistent_budget(&db, "1").await;
+        let now = chrono::Utc::now().to_rfc3339();
+        for i in 0..5 {
+            insert_message(&db, "user", &format!("Mensaje {i}"), 100, false, &now).await;
+        }
+
+        let mock = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE);
+        EpisodicMemoryWorker::evaluate(
+            &db,
+            mock.wrap(),
+            embedding_provider(),
+            &EpisodicMemoryConfig {
+                inactivity_minutes: 0,
+                ..Default::default()
+            },
+            &no_attempt(),
+        )
+        .await;
+
+        assert_eq!(count_memory(&db).await, 1, "the episodic card is written");
+        assert_eq!(
+            count_persistent_memory(&db).await,
+            0,
+            "the state is rejected: nothing overwritten"
+        );
+        assert_eq!(count_unindexed(&db).await, 0, "the batch is marked");
     }
 
     #[tokio::test]

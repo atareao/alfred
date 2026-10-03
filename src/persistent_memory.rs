@@ -99,7 +99,8 @@ pub fn content_hash(payload: &serde_json::Value) -> String {
     // key-sorted and deterministic for a given logical value.
     let serialized = serde_json::to_string(&canonical).unwrap_or_default();
 
-    // FNV-1a (64-bit): tiny, stable and dependency-free.
+    // FNV-1a (64-bit): a fast, non-cryptographic hash used **only** for change
+    // detection between consolidations. It must not be used for security.
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in serialized.as_bytes() {
         hash ^= u64::from(*byte);
@@ -139,10 +140,16 @@ pub fn minified_json(payload: &serde_json::Value) -> String {
 
 /// Token count of the state, measured over its minified JSON form.
 ///
-/// Reuses the project's markdown-aware heuristic counter
-/// ([`crate::models::message::estimate_markdown_tokens_heuristic`]).
+/// Approximation, not a real tokenizer (the project has none). It takes the
+/// project's markdown-aware heuristic
+/// ([`crate::models::message::estimate_markdown_tokens_heuristic`]) but never
+/// trusts it below a `chars / 4` lower bound: the heuristic undercounts long
+/// strings without whitespace, and undercounting would silently overrun the
+/// budget.
 pub fn payload_token_count(payload: &serde_json::Value) -> usize {
-    crate::models::message::estimate_markdown_tokens_heuristic(&minified_json(payload))
+    let minified = minified_json(payload);
+    let heuristic = crate::models::message::estimate_markdown_tokens_heuristic(&minified);
+    heuristic.max(minified.chars().count() / 4)
 }
 
 /// Whether the state carries no meaningful content.
@@ -472,16 +479,32 @@ mod tests {
         assert_eq!(reparsed, value);
     }
 
-    /// The token count is measured over the **minified** JSON, reusing the
-    /// project's heuristic counter.
+    /// The token count is measured over the minified JSON and never falls below
+    /// a `chars / 4` lower bound (the heuristic undercounts long spaceless
+    /// strings).
     #[test]
-    fn payload_token_count_measures_the_minified_json() {
+    fn payload_token_count_measures_the_minified_json_with_a_lower_bound() {
         let value = json!({"schema_version": 1, "user_profile": {"a": 1}});
-        assert_eq!(
-            payload_token_count(&value),
-            estimate_markdown_tokens_heuristic(&minified_json(&value))
-        );
+        let minified = minified_json(&value);
+        let expected =
+            estimate_markdown_tokens_heuristic(&minified).max(minified.chars().count() / 4);
+        assert_eq!(payload_token_count(&value), expected);
         assert!(payload_token_count(&value) > 0);
+
+        // A long, spaceless blob: the heuristic badly undercounts it, so the
+        // character lower bound takes over.
+        let blob = "a".repeat(4000);
+        let long = json!({"schema_version": 1, "user_profile": {"blob": blob}});
+        let long_minified = minified_json(&long);
+        let heuristic = estimate_markdown_tokens_heuristic(&long_minified);
+        assert!(
+            payload_token_count(&long) > heuristic,
+            "the lower bound must exceed the heuristic for a spaceless blob"
+        );
+        assert!(
+            payload_token_count(&long) >= long_minified.chars().count() / 4,
+            "the count must never fall below chars / 4"
+        );
     }
 
     /// `is_empty_state` is true only when neither `user_profile` nor
