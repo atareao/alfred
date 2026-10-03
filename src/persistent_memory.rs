@@ -140,16 +140,15 @@ pub fn minified_json(payload: &serde_json::Value) -> String {
 
 /// Token count of the state, measured over its minified JSON form.
 ///
-/// Approximation, not a real tokenizer (the project has none). It takes the
-/// project's markdown-aware heuristic
-/// ([`crate::models::message::estimate_markdown_tokens_heuristic`]) but never
-/// trusts it below a `chars / 4` lower bound: the heuristic undercounts long
-/// strings without whitespace, and undercounting would silently overrun the
-/// budget.
+/// Uses the project's own deterministic JSON estimator
+/// ([`crate::token_estimate::estimate_json_tokens`]): it walks the minified
+/// state as JSON, so it does not undercount long, spaceless string values the
+/// way a prose heuristic would. This is the measure the budget and the absolute
+/// ceiling are enforced against. Chat-message measurement is unrelated and is
+/// not affected.
 pub fn payload_token_count(payload: &serde_json::Value) -> usize {
     let minified = minified_json(payload);
-    let heuristic = crate::models::message::estimate_markdown_tokens_heuristic(&minified);
-    heuristic.max(minified.chars().count() / 4)
+    crate::token_estimate::estimate_json_tokens(&minified)
 }
 
 /// Whether the state carries no meaningful content.
@@ -206,8 +205,8 @@ pub fn evaluate_compressed(compressed_tokens: usize, budget_tokens: usize) -> Co
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::message::estimate_markdown_tokens_heuristic;
     use crate::models::PersistentMemory;
+    use crate::token_estimate::estimate_json_tokens;
     use serde_json::json;
 
     fn prev(payload: serde_json::Value, updated_at: &str) -> PersistentMemory {
@@ -479,31 +478,38 @@ mod tests {
         assert_eq!(reparsed, value);
     }
 
-    /// The token count is measured over the minified JSON and never falls below
-    /// a `chars / 4` lower bound (the heuristic undercounts long spaceless
-    /// strings).
+    /// The token count is measured over the minified JSON with the JSON
+    /// estimator: `payload_token_count` is exactly `estimate_json_tokens` of the
+    /// minified form, for small and spaceless-blob states alike.
     #[test]
-    fn payload_token_count_measures_the_minified_json_with_a_lower_bound() {
-        let value = json!({"schema_version": 1, "user_profile": {"a": 1}});
-        let minified = minified_json(&value);
-        let expected =
-            estimate_markdown_tokens_heuristic(&minified).max(minified.chars().count() / 4);
-        assert_eq!(payload_token_count(&value), expected);
-        assert!(payload_token_count(&value) > 0);
+    fn payload_token_count_uses_the_json_estimator_on_the_minified_json() {
+        let values = [
+            json!({"schema_version": 1, "user_profile": {"a": 1}}),
+            json!({"schema_version": 1, "user_profile": {"blob": "a".repeat(4000)}}),
+            json!({"schema_version": 1, "system_rules": ["sé breve", "no inventes"]}),
+        ];
 
-        // A long, spaceless blob: the heuristic badly undercounts it, so the
-        // character lower bound takes over.
-        let blob = "a".repeat(4000);
-        let long = json!({"schema_version": 1, "user_profile": {"blob": blob}});
-        let long_minified = minified_json(&long);
-        let heuristic = estimate_markdown_tokens_heuristic(&long_minified);
-        assert!(
-            payload_token_count(&long) > heuristic,
-            "the lower bound must exceed the heuristic for a spaceless blob"
-        );
-        assert!(
-            payload_token_count(&long) >= long_minified.chars().count() / 4,
-            "the count must never fall below chars / 4"
+        for value in values {
+            let minified = minified_json(&value);
+            assert_eq!(
+                payload_token_count(&value),
+                estimate_json_tokens(&minified),
+                "Layer C must measure with estimate_json_tokens over the minified JSON"
+            );
+        }
+
+        assert!(payload_token_count(&json!({"schema_version": 1, "user_profile": {"a": 1}})) > 0);
+
+        // The old metric (markdown heuristic floored at chars/4) must no longer
+        // be what Layer C uses: for a spaceless blob the estimator differs.
+        let blob = json!({"schema_version": 1, "user_profile": {"blob": "a".repeat(4000)}});
+        let blob_minified = minified_json(&blob);
+        let old_metric = crate::models::message::estimate_markdown_tokens_heuristic(&blob_minified)
+            .max(blob_minified.chars().count() / 4);
+        assert_ne!(
+            payload_token_count(&blob),
+            old_metric,
+            "the markdown heuristic must not be used for Layer C"
         );
     }
 

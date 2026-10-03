@@ -11,6 +11,7 @@ pub mod persistent_memory;
 pub mod routes;
 pub mod services;
 pub mod telemetry;
+pub mod token_estimate;
 pub mod tools;
 pub mod workers;
 
