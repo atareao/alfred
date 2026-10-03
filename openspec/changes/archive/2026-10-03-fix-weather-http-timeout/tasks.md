@@ -18,4 +18,4 @@
 ## Bloque 3 — REFACTOR y cierre
 - [x] 3.1 `cargo fmt --check` y `cargo clippy --all-targets -- -D warnings` limpios.
 - [x] 3.2 Revisión con `rust-reviewer`.
-- [ ] 3.3 PR a `development`; tras el merge, PR de archivado (`openspec archive fix-weather-http-timeout`).
+- [x] 3.3 PR a `development`; tras el merge, PR de archivado (`openspec archive fix-weather-http-timeout`).
