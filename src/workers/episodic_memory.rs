@@ -2737,6 +2737,72 @@ mod tests {
             msg.contains("content_len"),
             "error must include content_len: {msg}"
         );
+        assert!(
+            msg.contains("content_len=0"),
+            "the empty attempt must report its length: {msg}"
+        );
+        assert!(
+            msg.contains("preview="),
+            "the error must include a preview: {msg}"
+        );
+    }
+
+    /// A non-empty but non-JSON response is retried and its text appears in the preview.
+    #[tokio::test]
+    async fn test_consolidate_error_preview_includes_content() {
+        let db = test_db().await;
+        set_persistent_budget(&db, "100000").await;
+        let mock = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE)
+            .state_sequence(vec!["lo siento, no puedo", "lo siento, no puedo"]);
+        let provider = mock.wrap();
+
+        let err = EpisodicMemoryWorker::consolidate_state(
+            &db,
+            &provider,
+            &EpisodicMemoryConfig::default(),
+            "BLOQUE",
+        )
+        .await
+        .expect_err("a non-JSON response must fail after the retry");
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("content_len="),
+            "the error must report content_len: {msg}"
+        );
+        assert!(
+            msg.contains("lo siento, no puedo"),
+            "the preview must include the raw content: {msg}"
+        );
+    }
+
+    /// An LLM transport error is not retried: it propagates on the first attempt.
+    #[tokio::test]
+    async fn test_consolidate_transport_error_is_not_retried() {
+        let db = test_db().await;
+        set_persistent_budget(&db, "100000").await;
+        let mock = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE).failing_semantic();
+        let calls = mock.chat_calls.clone();
+        let provider = mock.wrap();
+
+        let err = EpisodicMemoryWorker::consolidate_state(
+            &db,
+            &provider,
+            &EpisodicMemoryConfig::default(),
+            "BLOQUE",
+        )
+        .await
+        .expect_err("a transport error must abort the consolidation");
+
+        assert!(
+            matches!(err, ConsolidationError::Llm(_)),
+            "expected a transport error, got {err}"
+        );
+        assert_eq!(
+            calls.lock().unwrap().len(),
+            1,
+            "a transport error must not be retried"
+        );
     }
 
     /// An invalid schema on the first attempt is retried too.
