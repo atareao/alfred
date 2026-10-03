@@ -10,7 +10,7 @@ async fn setup() -> (sqlx::SqlitePool, TestApp) {
     let state = valet::AppState::new_in_memory_empty().await;
     let db = state.db.clone();
     let router = valet::app_with_state(state);
-    (db, TestApp { router })
+    (db.clone(), TestApp { router, db })
 }
 
 // ── 1. GET /api/stats/llm/summary — sin datos ─────────────────────────────

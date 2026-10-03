@@ -179,6 +179,36 @@ pub fn absolute_ceiling(budget_tokens: usize) -> usize {
     budget_tokens.saturating_mul(2)
 }
 
+/// Read the persistent-memory token budget from `settings`.
+///
+/// Missing key or unparseable value fall back to
+/// [`PERSISTENT_MEMORY_BUDGET_TOKENS_DEFAULT`]. A real database error is
+/// distinguished and warned about, then also falls back. Shared by the
+/// consolidation worker and the HTTP surface so both enforce the same budget.
+pub async fn read_budget(pool: &sqlx::SqlitePool) -> usize {
+    match crate::db::repos::settings::SettingsRepo::get(pool, "PERSISTENT_MEMORY_BUDGET_TOKENS")
+        .await
+    {
+        Ok(Some(value)) => value.trim().parse::<usize>().unwrap_or_else(|_| {
+            tracing::warn!(
+                value = %value,
+                default = PERSISTENT_MEMORY_BUDGET_TOKENS_DEFAULT,
+                "PERSISTENT_MEMORY_BUDGET_TOKENS is not a valid usize; using the default"
+            );
+            PERSISTENT_MEMORY_BUDGET_TOKENS_DEFAULT
+        }),
+        Ok(None) => PERSISTENT_MEMORY_BUDGET_TOKENS_DEFAULT,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                default = PERSISTENT_MEMORY_BUDGET_TOKENS_DEFAULT,
+                "failed to read PERSISTENT_MEMORY_BUDGET_TOKENS; using the default"
+            );
+            PERSISTENT_MEMORY_BUDGET_TOKENS_DEFAULT
+        }
+    }
+}
+
 /// How a state that went through a single compression relates to the budget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompressionOutcome {
@@ -534,6 +564,72 @@ mod tests {
     fn absolute_ceiling_is_twice_the_budget() {
         assert_eq!(absolute_ceiling(500), 1000);
         assert_eq!(absolute_ceiling(0), 0);
+    }
+
+    // ─── Bloque 1.1: lectura compartida del presupuesto ──────────────────────
+
+    async fn budget_db() -> sqlx::SqlitePool {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(":memory:")
+                    .create_if_missing(true),
+            )
+            .await
+            .expect("in-memory pool");
+        crate::db::schema::run_migrations(&pool)
+            .await
+            .expect("migrations");
+        pool
+    }
+
+    /// A configured value is read as-is.
+    #[tokio::test]
+    async fn read_budget_returns_the_configured_value() {
+        let pool = budget_db().await;
+        crate::db::repos::settings::SettingsRepo::set(
+            &pool,
+            "PERSISTENT_MEMORY_BUDGET_TOKENS",
+            "800",
+        )
+        .await
+        .expect("set");
+
+        assert_eq!(read_budget(&pool).await, 800);
+    }
+
+    /// A missing key falls back to the default.
+    #[tokio::test]
+    async fn read_budget_falls_back_when_missing() {
+        let pool = budget_db().await;
+        crate::db::repos::settings::SettingsRepo::delete(&pool, "PERSISTENT_MEMORY_BUDGET_TOKENS")
+            .await
+            .expect("delete");
+
+        assert_eq!(
+            read_budget(&pool).await,
+            PERSISTENT_MEMORY_BUDGET_TOKENS_DEFAULT
+        );
+    }
+
+    /// An unparseable value falls back to the default.
+    #[tokio::test]
+    async fn read_budget_falls_back_when_unparseable() {
+        let pool = budget_db().await;
+        crate::db::repos::settings::SettingsRepo::set(
+            &pool,
+            "PERSISTENT_MEMORY_BUDGET_TOKENS",
+            "not-a-number",
+        )
+        .await
+        .expect("set");
+
+        assert_eq!(
+            read_budget(&pool).await,
+            PERSISTENT_MEMORY_BUDGET_TOKENS_DEFAULT
+        );
     }
 
     /// After a (single) compression: within budget ⇒ store; over budget but
