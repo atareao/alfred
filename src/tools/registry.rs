@@ -1,5 +1,5 @@
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, RwLock};
 
 use crate::llm::provider::ToolDef;
 use crate::tools::permission::Permission;
@@ -12,12 +12,16 @@ use crate::tools::r#trait::{Tool, ToolError, ToolResult};
 #[derive(Clone)]
 pub struct ToolRegistry {
     tools: Arc<HashMap<String, Arc<dyn Tool>>>,
+    /// Names of tools that are disabled in the database. Disabled tools are
+    /// neither advertised to the model nor executable.
+    disabled: Arc<RwLock<HashSet<String>>>,
 }
 
 impl ToolRegistry {
     pub fn new() -> Self {
         Self {
             tools: Arc::new(HashMap::new()),
+            disabled: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 
@@ -35,9 +39,29 @@ impl ToolRegistry {
         self.tools.get(name).map(|t| t.as_ref())
     }
 
+    /// Replace the set of disabled tool names.
+    pub fn set_disabled(&self, names: impl IntoIterator<Item = String>) {
+        let mut disabled = self
+            .disabled
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        disabled.clear();
+        disabled.extend(names);
+    }
+
+    /// Returns `true` when the tool is not present in the disabled set.
+    pub fn is_enabled(&self, name: &str) -> bool {
+        let disabled = self
+            .disabled
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        !disabled.contains(name)
+    }
+
     pub fn definitions(&self) -> Vec<ToolDef> {
         self.tools
             .values()
+            .filter(|t| self.is_enabled(t.name()))
             .map(|t| ToolDef {
                 name: t.name().to_string(),
                 description: t.description().to_string(),
@@ -51,6 +75,11 @@ impl ToolRegistry {
         name: &str,
         args: serde_json::Value,
     ) -> Result<ToolResult, ToolError> {
+        if !self.is_enabled(name) {
+            return Err(ToolError::PermissionDenied(format!(
+                "tool '{name}' is disabled"
+            )));
+        }
         match self.tools.get(name) {
             Some(tool) => tool.execute(args).await,
             None => Err(ToolError::NotFound(name.to_string())),
@@ -138,6 +167,29 @@ mod tests {
         let reg = ToolRegistry::new();
         let result = reg.execute("unknown", serde_json::json!({})).await;
         assert!(matches!(result, Err(ToolError::NotFound(_))));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_disabled_tool_is_hidden_and_rejected() -> Result<(), Box<dyn std::error::Error>> {
+        let mut reg = ToolRegistry::new();
+        reg.register(Box::new(DummyTool));
+
+        reg.set_disabled(["dummy".to_string()]);
+        assert!(
+            reg.definitions().is_empty(),
+            "disabled tool must not be advertised"
+        );
+        assert!(!reg.is_enabled("dummy"));
+        let result = reg.execute("dummy", serde_json::json!({})).await;
+        assert!(matches!(result, Err(ToolError::PermissionDenied(_))));
+
+        // Re-enabling restores both advertisement and execution.
+        reg.set_disabled(Vec::new());
+        assert!(reg.is_enabled("dummy"));
+        assert_eq!(reg.definitions().len(), 1);
+        let result = reg.execute("dummy", serde_json::json!({})).await.unwrap();
+        assert!(result.success);
         Ok(())
     }
 

@@ -47,6 +47,41 @@ pub struct AppState {
     pub last_api_call: Arc<RwLock<Option<crate::models::stats::LastApiCall>>>,
 }
 
+/// Build the production tool registry with all 12 built-in tools.
+fn build_tool_registry(pool: &SqlitePool) -> ToolRegistry {
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(crate::tools::weather::WeatherTool::new(
+        pool.clone(),
+        std::env::var("OPENWEATHER_API_KEY").unwrap_or_default(),
+    )));
+    registry.register(Box::new(crate::tools::geo::GeocodeTool::new()));
+    registry.register(Box::new(crate::tools::geo::ReverseGeocodeTool::new()));
+    registry.register(Box::new(
+        crate::tools::google_places::SearchPlacesTool::new(pool.clone()),
+    ));
+    registry.register(Box::new(crate::tools::web_search::WebSearchTool::new(
+        pool.clone(),
+    )));
+    registry.register(Box::new(crate::tools::calendar::CalendarTool::new(
+        pool.clone(),
+    )));
+    registry.register(Box::new(crate::tools::tasks::TasksTool::new(pool.clone())));
+    registry.register(Box::new(crate::tools::reminders::RemindersTool::new(
+        pool.clone(),
+    )));
+    registry.register(Box::new(crate::tools::current_time::CurrentTimeTool::new(
+        pool.clone(),
+    )));
+    registry.register(Box::new(
+        crate::tools::current_location::CurrentLocationTool::new(pool.clone()),
+    ));
+    registry.register(Box::new(crate::tools::notes::NotesTool::new(pool.clone())));
+    registry.register(Box::new(
+        crate::tools::unified_search::UnifiedSearchTool::new(pool.clone()),
+    ));
+    registry
+}
+
 impl AppState {
     /// Create a new AppState with an in-memory SQLite database and no seed data.
     /// Used by integration tests that need a clean state.
@@ -65,12 +100,17 @@ impl AppState {
             .await
             .expect("Failed to run migrations on in-memory database");
         let _ = db::fts::create_fts_triggers(&pool).await;
-        let _ = db::repos::tools::ToolsRepo::seed_defaults(&pool).await;
+        let registry = build_tool_registry(&pool);
+        let _ =
+            db::repos::tools::ToolsRepo::sync_from_registry(&pool, &registry.definitions()).await;
+        if let Ok(disabled) = db::repos::tools::ToolsRepo::disabled_names(&pool).await {
+            registry.set_disabled(disabled);
+        }
         Self {
             db: pool,
             orchestrator: None,
             guardrails: None,
-            tool_registry: None,
+            tool_registry: Some(Arc::new(registry)),
             auth_config: None,
             collapse_tx: None,
             collapse_threshold_tokens: 2000,
@@ -97,14 +137,19 @@ impl AppState {
             .await
             .expect("Failed to run migrations on in-memory database");
         let _ = db::fts::create_fts_triggers(&pool).await;
-        let _ = db::repos::tools::ToolsRepo::seed_defaults(&pool).await;
+        let registry = build_tool_registry(&pool);
+        let _ =
+            db::repos::tools::ToolsRepo::sync_from_registry(&pool, &registry.definitions()).await;
+        if let Ok(disabled) = db::repos::tools::ToolsRepo::disabled_names(&pool).await {
+            registry.set_disabled(disabled);
+        }
         // Seed test data with known IDs expected by integration tests
         let _ = Self::seed_test_data(&pool).await;
         Self {
             db: pool,
             orchestrator: None,
             guardrails: None,
-            tool_registry: None,
+            tool_registry: Some(Arc::new(registry)),
             auth_config: None,
             collapse_tx: None,
             collapse_threshold_tokens: 2000,
@@ -124,35 +169,14 @@ impl AppState {
         // 1. Open database connection pool
         let pool = db::init_db(&config.database_url).await?;
 
-        // 2. Create tool registry
-        let mut tool_registry = ToolRegistry::new();
-        // Register built-in tools
-        tool_registry.register(Box::new(crate::tools::weather::WeatherTool::new(
-            pool.clone(),
-            std::env::var("OPENWEATHER_API_KEY").unwrap_or_default(),
-        )));
-        tool_registry.register(Box::new(crate::tools::geo::GeocodeTool::new()));
-        tool_registry.register(Box::new(crate::tools::geo::ReverseGeocodeTool::new()));
-        tool_registry.register(Box::new(
-            crate::tools::google_places::SearchPlacesTool::new(pool.clone()),
-        ));
-        tool_registry.register(Box::new(crate::tools::web_search::WebSearchTool::new(
-            pool.clone(),
-        )));
-        tool_registry.register(Box::new(crate::tools::calendar::CalendarTool::new(
-            pool.clone(),
-        )));
-        tool_registry.register(Box::new(crate::tools::tasks::TasksTool::new(pool.clone())));
-        tool_registry.register(Box::new(crate::tools::reminders::RemindersTool::new(
-            pool.clone(),
-        )));
-        tool_registry.register(Box::new(crate::tools::current_time::CurrentTimeTool::new(
-            pool.clone(),
-        )));
-        tool_registry.register(Box::new(
-            crate::tools::current_location::CurrentLocationTool::new(pool.clone()),
-        ));
-        let tool_registry = Arc::new(tool_registry);
+        // 2. Create tool registry and reconcile the tools table with it
+        let registry = build_tool_registry(&pool);
+        crate::db::repos::tools::ToolsRepo::sync_from_registry(&pool, &registry.definitions())
+            .await?;
+        if let Ok(disabled) = crate::db::repos::tools::ToolsRepo::disabled_names(&pool).await {
+            registry.set_disabled(disabled);
+        }
+        let tool_registry = Arc::new(registry);
 
         // 3. Create guardrails
         let guardrails = Arc::new(Guardrails::new(tool_registry.clone()));
@@ -410,13 +434,17 @@ pub async fn app() -> Router {
         .await
         .expect("Failed to run migrations on in-memory database");
     let _ = db::fts::create_fts_triggers(&pool).await;
-    let _ = db::repos::tools::ToolsRepo::seed_defaults(&pool).await;
+    let registry = build_tool_registry(&pool);
+    let _ = db::repos::tools::ToolsRepo::sync_from_registry(&pool, &registry.definitions()).await;
+    if let Ok(disabled) = db::repos::tools::ToolsRepo::disabled_names(&pool).await {
+        registry.set_disabled(disabled);
+    }
     let _ = AppState::seed_test_data(&pool).await;
     let state = AppState {
         db: pool,
         orchestrator: None,
         guardrails: None,
-        tool_registry: None,
+        tool_registry: Some(Arc::new(registry)),
         auth_config: None,
         collapse_tx: None,
         collapse_threshold_tokens: 2000,

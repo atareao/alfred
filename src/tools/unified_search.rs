@@ -43,6 +43,7 @@ impl UnifiedSearchTool {
         for row in rows {
             results.push(serde_json::json!({
                 "source": row.try_get::<String, _>(0).map_err(|e| e.to_string())?,
+                "rank": row.try_get::<f64, _>(1).map_err(|e| e.to_string())?,
                 "snippet": row.try_get::<String, _>(2).map_err(|e| e.to_string())?,
             }));
         }
@@ -206,6 +207,40 @@ mod tests {
         assert!(result.success);
         let results = result.data.as_array().unwrap();
         assert!(!results.is_empty(), "Should find at least one result");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_search_results_expose_rank_and_are_sorted(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Given several matches with different relevance
+        // When unified_search runs
+        // Then every result exposes a numeric `rank`
+        // And the sequence of `rank` is ascending (lower = more relevant)
+        let tool = setup().await?;
+        let result = tool
+            .execute(serde_json::json!({"query": "prueba", "limit": 10}))
+            .await
+            .unwrap();
+        assert!(result.success);
+        let results = result.data.as_array().unwrap();
+        assert!(!results.is_empty(), "Should find at least one result");
+
+        let ranks: Vec<f64> = results
+            .iter()
+            .map(|r| {
+                r["rank"]
+                    .as_f64()
+                    .expect("each result must expose a numeric `rank`")
+            })
+            .collect();
+
+        for pair in ranks.windows(2) {
+            assert!(
+                pair[0] <= pair[1],
+                "results must be sorted ascending by rank, got {ranks:?}"
+            );
+        }
         Ok(())
     }
 

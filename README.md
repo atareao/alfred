@@ -161,7 +161,7 @@ docker compose -f docker-compose.prod.yml up -d
 └──────────────────────────────────────────────────┘
 ```
 
-The orchestrator exposes 10 tools from `src/tools/`: `calendar`, `geocode`, `reverse_geocode`, `search_places`, `get_current_time`, `get_current_location`, `reminders`, `tasks`, `weather`, `web_search`.
+The orchestrator exposes 12 tools from `src/tools/`: `calendar`, `geocode`, `get_current_location`, `get_current_time`, `notes`, `reminders`, `reverse_geocode`, `search_places`, `tasks`, `unified_search`, `weather`, `web_search`.
 
 Background workers in `src/workers/`: `briefing`, `collapse`, `conflict_detector`, `episodic_memory`, `memory_worker`, `pool`, `stats_cleanup`, `travel_prep`.
 
