@@ -595,13 +595,23 @@ describe("SettingsDialog", () => {
 
   // ════════════════════════════════════════════════════════════════
   // RED phase tests — pestaña "Memoria" (cuatro mandos numéricos)
+  // change `settings-memory-tabs`: los mandos viven en la sub-pestaña
+  // «Episódica» del Tabs anidado que agrupa «Memoria».
   // ════════════════════════════════════════════════════════════════
+
+  // Abre la pestaña superior «Memoria» y activa la sub-pestaña «Episódica».
+  const openEpisodicMemory = async (
+    user: ReturnType<typeof userEvent.setup>,
+  ) => {
+    await user.click(screen.getByRole("tab", { name: "Memoria" }));
+    await user.click(screen.getByRole("tab", { name: "Episódica" }));
+  };
 
   it("renders the Memoria tab with the four memory knobs", async () => {
     const user = userEvent.setup();
     renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
-    await user.click(screen.getByText("Memoria"));
+    await openEpisodicMemory(user);
 
     expect(screen.getByLabelText("MEMORY_HALF_LIFE_DAYS")).toBeInTheDocument();
     expect(screen.getByLabelText("SIMILARITY_THRESHOLD")).toBeInTheDocument();
@@ -618,7 +628,7 @@ describe("SettingsDialog", () => {
     };
     renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
-    await user.click(screen.getByText("Memoria"));
+    await openEpisodicMemory(user);
 
     expect(screen.getByLabelText("MEMORY_HALF_LIFE_DAYS")).toHaveValue("90");
     expect(screen.getByLabelText("RAG_BUDGET_TOKENS")).toHaveValue("800");
@@ -629,7 +639,7 @@ describe("SettingsDialog", () => {
     mockUpdateSettings.mockResolvedValue(undefined);
     renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
-    await user.click(screen.getByText("Memoria"));
+    await openEpisodicMemory(user);
 
     const halfLife = screen.getByLabelText("MEMORY_HALF_LIFE_DAYS");
     await user.clear(halfLife);
@@ -664,29 +674,111 @@ describe("SettingsDialog", () => {
     expect(await screen.findByText("Ajustes guardados")).toBeInTheDocument();
   });
 
-  it("renders the Memoria persistente tab", () => {
+  it("renders the Episódica and Persistente sub-tabs inside Memoria", async () => {
+    const user = userEvent.setup();
     renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
-    expect(screen.getByText("Memoria persistente")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Memoria" }));
+
+    expect(screen.getByRole("tab", { name: "Episódica" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Persistente" })).toBeInTheDocument();
+  });
+
+  it("shows the nested memory Tabs inside a labelled region", async () => {
+    const user = userEvent.setup();
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Memoria" }));
+
+    const region = screen.getByRole("region", { name: "Tipo de memoria" });
+    expect(region).toBeInTheDocument();
+    expect(within(region).getByRole("tab", { name: "Episódica" })).toBeInTheDocument();
+    expect(within(region).getByRole("tab", { name: "Persistente" })).toBeInTheDocument();
+  });
+
+  it("switching the memory sub-tab activates the persistent panel and deactivates Episódica", async () => {
+    const user = userEvent.setup();
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    // «Episódica» es la sub-pestaña activa por defecto. La actividad se
+    // comprueba con `closest('[role="tabpanel"]')` + `aria-hidden` (jsdom no
+    // emite `transitionend` y `toBeVisible()` daría false por la animación).
+    await user.click(screen.getByRole("tab", { name: "Memoria" }));
+
+    expect(screen.getByRole("tab", { name: "Episódica" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Persistente" }));
+
+    expect(screen.getByRole("tab", { name: "Persistente" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+
+    const persistentBudget = await screen.findByLabelText(
+      "PERSISTENT_MEMORY_BUDGET_TOKENS",
+    );
+    expect(persistentBudget.closest('[role="tabpanel"]')).toHaveAttribute(
+      "aria-hidden",
+      "false",
+    );
+
+    // El panel de «Episódica» queda desactivado aunque sus campos sigan en el
+    // DOM (rc-tabs los conserva): el panel `role="tabpanel"` lleva
+    // `aria-hidden="true"` cuando su sub-pestaña deja de estar seleccionada.
+    const episodicPanel = screen
+      .getByLabelText("MEMORY_HALF_LIFE_DAYS")
+      .closest('[role="tabpanel"]');
+    expect(episodicPanel).not.toBeNull();
+    expect(episodicPanel).toHaveAttribute("aria-hidden", "true");
   });
 
   it("mounts the persistent memory panel only after its tab is reachable", async () => {
     const user = userEvent.setup();
     renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
-    // Escenario del delta: la pestaña es alcanzable. Antes de seleccionarla el
-    // panel (renderizado de forma perezosa por antd) no está montado.
+    await user.click(screen.getByRole("tab", { name: "Memoria" }));
+
+    // Escenario del delta: el panel solo se monta de forma perezosa al
+    // seleccionar la sub-pestaña «Persistente».
     expect(
       screen.queryByLabelText("PERSISTENT_MEMORY_BUDGET_TOKENS"),
     ).not.toBeInTheDocument();
 
-    await user.click(
-      screen.getByRole("tab", { name: "Memoria persistente" }),
-    );
+    await user.click(screen.getByRole("tab", { name: "Persistente" }));
 
     expect(
       await screen.findByLabelText("PERSISTENT_MEMORY_BUDGET_TOKENS"),
     ).toBeInTheDocument();
     expect(screen.getByLabelText("Estado persistente")).toBeInTheDocument();
+  });
+
+  // ════════════════════════════════════════════════════════════════
+  // RED phase tests — change `settings-memory-tabs`: pestañas superiores
+  // ════════════════════════════════════════════════════════════════
+
+  it("shows exactly six top-level tabs and no Memoria persistente tab", () => {
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    const topTabs = screen.getAllByRole("tab");
+
+    expect(topTabs).toHaveLength(6);
+    for (const name of [
+      "Perfil",
+      "Interfaz",
+      "Prompts",
+      "API Keys",
+      "Memoria",
+      "Generación",
+    ]) {
+      expect(screen.getByRole("tab", { name })).toBeInTheDocument();
+    }
+    // La antigua pestaña superior «Memoria persistente» ya no existe.
+    expect(
+      screen.queryByRole("tab", { name: "Memoria persistente" }),
+    ).not.toBeInTheDocument();
   });
 
   // ════════════════════════════════════════════════════════════════
