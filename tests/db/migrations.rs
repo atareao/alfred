@@ -172,6 +172,14 @@ fn prompts_migration_sql() -> String {
         .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()))
 }
 
+/// Reads the consolidator-reliability migration SQL from disk.
+fn consolidator_reliability_migration_sql() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("migrations/20261003000003_consolidator_reliability.sql");
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()))
+}
+
 /// Reads a single setting value, panicking if the key is missing.
 async fn setting_value(pool: &SqlitePool, key: &str) -> String {
     sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?1")
@@ -269,6 +277,86 @@ async fn test_migration_respects_custom_system_prompt() {
     assert_eq!(
         value, "Mi prompt personalizado",
         "A non-empty custom system_prompt must be preserved"
+    );
+}
+
+// ── Consolidator reliability (20261003000003_consolidator_reliability.sql) ──
+
+/// After every migration, the Semantic generation role does not reason.
+#[tokio::test]
+async fn test_migration_semantic_reasoning_is_off_after_migrations() {
+    let pool = setup().await;
+    assert_eq!(setting_value(&pool, "GENERATION_SEMANTIC_REASONING").await, "off");
+}
+
+/// A legacy `low` is corrected to `off` by the reliability migration.
+#[tokio::test]
+async fn test_consolidator_migration_forces_semantic_reasoning_off() {
+    let pool = setup().await;
+    sqlx::query("UPDATE settings SET value='low' WHERE key='GENERATION_SEMANTIC_REASONING'")
+        .execute(&pool).await.unwrap();
+    let sql = consolidator_reliability_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str())).execute(&pool).await.unwrap();
+    assert_eq!(setting_value(&pool, "GENERATION_SEMANTIC_REASONING").await, "off");
+}
+
+/// Any reasoning value other than `low` is respected.
+#[tokio::test]
+async fn test_consolidator_migration_respects_other_reasoning() {
+    let pool = setup().await;
+    sqlx::query("UPDATE settings SET value='medium' WHERE key='GENERATION_SEMANTIC_REASONING'")
+        .execute(&pool).await.unwrap();
+    let sql = consolidator_reliability_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str())).execute(&pool).await.unwrap();
+    assert_eq!(setting_value(&pool, "GENERATION_SEMANTIC_REASONING").await, "medium");
+}
+
+/// After every migration, the persistent-memory budget is 800.
+#[tokio::test]
+async fn test_migration_bumps_persistent_memory_budget_to_800() {
+    let pool = setup().await;
+    assert_eq!(setting_value(&pool, "PERSISTENT_MEMORY_BUDGET_TOKENS").await, "800");
+}
+
+/// A custom budget (not 500) is respected by the reliability migration.
+#[tokio::test]
+async fn test_consolidator_migration_respects_custom_budget() {
+    let pool = setup().await;
+    sqlx::query("UPDATE settings SET value='1200' WHERE key='PERSISTENT_MEMORY_BUDGET_TOKENS'")
+        .execute(&pool).await.unwrap();
+    let sql = consolidator_reliability_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str())).execute(&pool).await.unwrap();
+    assert_eq!(setting_value(&pool, "PERSISTENT_MEMORY_BUDGET_TOKENS").await, "1200");
+}
+
+/// The seeded consolidator prompt carries the taxonomy, the placeholders and the
+/// marker, and forbids duplicating and inventing.
+#[tokio::test]
+async fn test_migration_seeds_consolidator_prompt_taxonomy() {
+    let pool = setup().await;
+    let value = setting_value(&pool, "consolidator_prompt").await;
+    for needle in [
+        "preferences_and_tastes",
+        "dislikes_and_dealbreakers",
+        "{{ ESTADO_ACTUAL }}",
+        "{{ BLOQUE_DE_MENSAJES }}",
+        "consolidador de memoria persistente",
+    ] {
+        assert!(value.contains(needle), "consolidator_prompt must contain {needle}");
+    }
+}
+
+/// A custom consolidator prompt is preserved by the reliability migration.
+#[tokio::test]
+async fn test_migration_preserves_custom_consolidator_prompt() {
+    let pool = setup().await;
+    sqlx::query("UPDATE settings SET value='Mi consolidador personalizado' WHERE key='consolidator_prompt'")
+        .execute(&pool).await.unwrap();
+    let sql = consolidator_reliability_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str())).execute(&pool).await.unwrap();
+    assert_eq!(
+        setting_value(&pool, "consolidator_prompt").await,
+        "Mi consolidador personalizado"
     );
 }
 

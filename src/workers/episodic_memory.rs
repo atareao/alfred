@@ -1197,6 +1197,7 @@ mod tests {
         pub state_response: String,
         pub compression_response: String,
         pub fail_semantic: bool,
+        pub state_sequence: Arc<Mutex<std::collections::VecDeque<String>>>,
     }
 
     #[async_trait]
@@ -1219,7 +1220,8 @@ mod tests {
                 if system_content.contains(COMPRESSION_CALL_MARKER) {
                     self.compression_response.clone()
                 } else {
-                    self.state_response.clone()
+                    let popped = self.state_sequence.lock().unwrap().pop_front();
+                    popped.unwrap_or_else(|| self.state_response.clone())
                 }
             } else {
                 self.chat_response.clone()
@@ -1268,6 +1270,7 @@ mod tests {
                 state_response: DEFAULT_STATE_RESPONSE.to_string(),
                 compression_response: DEFAULT_STATE_RESPONSE.to_string(),
                 fail_semantic: false,
+                state_sequence: Arc::new(Mutex::new(std::collections::VecDeque::new())),
             }
         }
 
@@ -1280,6 +1283,14 @@ mod tests {
         /// Override the compression response.
         fn compression(mut self, compressed: &str) -> Self {
             self.compression_response = compressed.to_string();
+            self
+        }
+
+        /// Queue per-call consolidator responses (first call first). Falls back to
+        /// `state_response` once the queue is exhausted.
+        fn state_sequence(mut self, responses: Vec<&str>) -> Self {
+            self.state_sequence =
+                Arc::new(Mutex::new(responses.into_iter().map(String::from).collect()));
             self
         }
 
@@ -2601,6 +2612,114 @@ mod tests {
             result.is_err(),
             "an unsupported schema version must fail the pass"
         );
+    }
+
+    /// The initial consolidation is retried once: empty content then valid JSON succeeds.
+    #[tokio::test]
+    async fn test_consolidate_retries_once_on_empty_then_succeeds() {
+        let db = test_db().await;
+        set_persistent_budget(&db, "100000").await;
+        let mock = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE)
+            .state_sequence(vec!["", DEFAULT_STATE_RESPONSE]);
+        let calls = mock.chat_calls.clone();
+        let provider = mock.wrap();
+
+        let outcome = EpisodicMemoryWorker::consolidate_state(
+            &db,
+            &provider,
+            &EpisodicMemoryConfig::default(),
+            "BLOQUE",
+        )
+        .await
+        .expect("the single retry must succeed");
+
+        assert!(matches!(outcome, Consolidation::Write { .. }));
+        assert_eq!(calls.lock().unwrap().len(), 2, "empty then valid: exactly two calls");
+    }
+
+    /// Two invalid attempts abort and the error carries the content length.
+    #[tokio::test]
+    async fn test_consolidate_two_invalid_attempts_abort_with_content_len() {
+        let db = test_db().await;
+        set_persistent_budget(&db, "100000").await;
+        let mock = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE).state_sequence(vec!["", ""]);
+        let provider = mock.wrap();
+
+        let err = EpisodicMemoryWorker::consolidate_state(
+            &db,
+            &provider,
+            &EpisodicMemoryConfig::default(),
+            "BLOQUE",
+        )
+        .await
+        .expect_err("two empty attempts must fail");
+
+        let msg = err.to_string();
+        assert!(msg.contains("content_len"), "error must include content_len: {msg}");
+    }
+
+    /// An invalid schema on the first attempt is retried too.
+    #[tokio::test]
+    async fn test_consolidate_retries_on_invalid_schema_then_succeeds() {
+        let db = test_db().await;
+        set_persistent_budget(&db, "100000").await;
+        let mock = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE).state_sequence(vec![
+            r#"{"schema_version":1,"user_profile":"oops"}"#,
+            DEFAULT_STATE_RESPONSE,
+        ]);
+        let provider = mock.wrap();
+
+        let outcome = EpisodicMemoryWorker::consolidate_state(
+            &db,
+            &provider,
+            &EpisodicMemoryConfig::default(),
+            "BLOQUE",
+        )
+        .await
+        .expect("the retry must succeed after an invalid schema");
+
+        assert!(matches!(outcome, Consolidation::Write { .. }));
+    }
+
+    /// The compression pass is never retried (exactly one compression call).
+    #[tokio::test]
+    async fn test_compression_is_not_retried() {
+        let db = test_db().await;
+        let small_tokens = payload_token_count(
+            &serde_json::from_str::<serde_json::Value>(DEFAULT_STATE_RESPONSE).unwrap(),
+        );
+        set_persistent_budget(&db, &small_tokens.to_string()).await;
+        let big = big_state();
+        // The initial consolidation is forced through its single retry (empty
+        // then oversized valid state) so that reaching the compression pass
+        // already depends on the retry path; the compression itself must then
+        // run exactly once.
+        let mock = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE)
+            .state_sequence(vec!["", &big])
+            .compression("");
+        let calls = mock.chat_calls.clone();
+        let provider = mock.wrap();
+
+        let _ = EpisodicMemoryWorker::consolidate_state(
+            &db,
+            &provider,
+            &EpisodicMemoryConfig::default(),
+            "BLOQUE",
+        )
+        .await;
+
+        let compression_calls = calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| {
+                r.messages
+                    .first()
+                    .map(|m| m.content.contains(COMPRESSION_CALL_MARKER))
+                    .unwrap_or(false)
+            })
+            .count();
+        assert_eq!(compression_calls, 1, "compression must not be retried");
     }
 
     // ─── Bloque 5: pasada unificada ────────────────────────────────────────
