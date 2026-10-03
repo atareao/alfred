@@ -46,6 +46,18 @@ const defaultSettings: Record<string, string> = {
   SIMILARITY_THRESHOLD: "0.4",
   RAG_BUDGET_TOKENS: "400",
   MEMORY_KNN_CANDIDATES: "10",
+  GENERATION_CHAT_TEMPERATURE: "0.7",
+  GENERATION_CHAT_REASONING: "",
+  GENERATION_CHAT_MAX_TOKENS: "4096",
+  GENERATION_COLLAPSE_TEMPERATURE: "0.2",
+  GENERATION_COLLAPSE_REASONING: "off",
+  GENERATION_COLLAPSE_MAX_TOKENS: "1024",
+  GENERATION_MEMORY_TEMPERATURE: "0.3",
+  GENERATION_MEMORY_REASONING: "off",
+  GENERATION_MEMORY_MAX_TOKENS: "1024",
+  GENERATION_SEMANTIC_TEMPERATURE: "0.1",
+  GENERATION_SEMANTIC_REASONING: "low",
+  GENERATION_SEMANTIC_MAX_TOKENS: "2048",
 };
 
 let mockSettings: Record<string, string> = { ...defaultSettings };
@@ -724,5 +736,156 @@ describe("SettingsDialog", () => {
       "Consolida {{ ESTADO_ACTUAL }} con {{ BLOQUE_DE_MENSAJES }}",
     );
     expect(screen.queryByText(/Faltan placeholders/i)).not.toBeInTheDocument();
+  });
+
+  // ════════════════════════════════════════════════════════════════
+  // RED phase tests — pestaña "Generación" (cuatro roles × tres mandos)
+  // Escenario: SettingsDialog SHALL display a Generación tab with the
+  // generation knobs (openspec/changes/generation-params/specs/frontend).
+  // ════════════════════════════════════════════════════════════════
+
+  // Los cuatro bloques y sus doce claves, en el orden del delta.
+  const GENERATION_BLOCKS: Array<{
+    heading: string;
+    temperature: string;
+    reasoning: string;
+    maxTokens: string;
+  }> = [
+    {
+      heading: "Chat",
+      temperature: "GENERATION_CHAT_TEMPERATURE",
+      reasoning: "GENERATION_CHAT_REASONING",
+      maxTokens: "GENERATION_CHAT_MAX_TOKENS",
+    },
+    {
+      heading: "Colapso",
+      temperature: "GENERATION_COLLAPSE_TEMPERATURE",
+      reasoning: "GENERATION_COLLAPSE_REASONING",
+      maxTokens: "GENERATION_COLLAPSE_MAX_TOKENS",
+    },
+    {
+      heading: "Fichas",
+      temperature: "GENERATION_MEMORY_TEMPERATURE",
+      reasoning: "GENERATION_MEMORY_REASONING",
+      maxTokens: "GENERATION_MEMORY_MAX_TOKENS",
+    },
+    {
+      heading: "Consolidación",
+      temperature: "GENERATION_SEMANTIC_TEMPERATURE",
+      reasoning: "GENERATION_SEMANTIC_REASONING",
+      maxTokens: "GENERATION_SEMANTIC_MAX_TOKENS",
+    },
+  ];
+
+  const REASONING_OPTIONS = [
+    "default",
+    "off",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+  ];
+
+  it("renders a Generación tab", () => {
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    expect(
+      screen.getByRole("tab", { name: "Generación" }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows the four role blocks and their three generation fields", async () => {
+    const user = userEvent.setup();
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByText("Generación"));
+
+    for (const block of GENERATION_BLOCKS) {
+      expect(screen.getByText(block.heading)).toBeInTheDocument();
+      expect(screen.getByLabelText(block.temperature)).toBeInTheDocument();
+      expect(screen.getByLabelText(block.reasoning)).toBeInTheDocument();
+      expect(screen.getByLabelText(block.maxTokens)).toBeInTheDocument();
+    }
+  });
+
+  it("loads the generation values from the settings response", async () => {
+    const user = userEvent.setup();
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByText("Generación"));
+
+    // El InputNumber formatea según el `step` (0,05 → dos decimales): "0.70".
+    // Se compara numéricamente para no atar el test al formato de display.
+    const chatTemperature = screen.getByLabelText(
+      "GENERATION_CHAT_TEMPERATURE",
+    ) as HTMLInputElement;
+    expect(Number(chatTemperature.value)).toBeCloseTo(0.7);
+
+    // El Select muestra el valor seleccionado en `.ant-select-selection-item`.
+    const semanticReasoning = screen.getByLabelText(
+      "GENERATION_SEMANTIC_REASONING",
+    );
+    const semanticSelect = semanticReasoning.closest(
+      ".ant-select",
+    ) as HTMLElement;
+    expect(within(semanticSelect).getByText("low")).toBeInTheDocument();
+  });
+
+  it("offers the expected reasoning options in the generation selectors", async () => {
+    const user = userEvent.setup();
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByText("Generación"));
+    await user.click(screen.getByLabelText("GENERATION_CHAT_REASONING"));
+
+    for (const option of REASONING_OPTIONS) {
+      expect(
+        await screen.findByRole("option", { name: option }),
+      ).toBeInTheDocument();
+    }
+  });
+
+  it("saves the twelve generation knobs while keeping the other settings", async () => {
+    const user = userEvent.setup();
+    mockUpdateSettings.mockResolvedValue(undefined);
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByText("Generación"));
+
+    const chatTemperature = screen.getByLabelText(
+      "GENERATION_CHAT_TEMPERATURE",
+    );
+    await user.clear(chatTemperature);
+    await user.type(chatTemperature, "0.9");
+
+    const form = chatTemperature.closest("form") as HTMLFormElement;
+    await user.click(within(form).getByRole("button", { name: /guardar/i }));
+
+    await waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          GENERATION_CHAT_TEMPERATURE: "0.9",
+          GENERATION_CHAT_REASONING: "",
+          GENERATION_CHAT_MAX_TOKENS: "4096",
+          GENERATION_COLLAPSE_TEMPERATURE: "0.2",
+          GENERATION_COLLAPSE_REASONING: "off",
+          GENERATION_COLLAPSE_MAX_TOKENS: "1024",
+          GENERATION_MEMORY_TEMPERATURE: "0.3",
+          GENERATION_MEMORY_REASONING: "off",
+          GENERATION_MEMORY_MAX_TOKENS: "1024",
+          GENERATION_SEMANTIC_TEMPERATURE: "0.1",
+          GENERATION_SEMANTIC_REASONING: "low",
+          GENERATION_SEMANTIC_MAX_TOKENS: "2048",
+          // Las demás claves de settings no se pierden.
+          system_prompt: "Eres Valet",
+          font_size: "16",
+          MEMORY_HALF_LIFE_DAYS: "30",
+        }),
+      );
+    });
+
+    expect(await screen.findByText("Ajustes guardados")).toBeInTheDocument();
   });
 });

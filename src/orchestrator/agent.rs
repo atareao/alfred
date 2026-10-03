@@ -27,6 +27,10 @@ use uuid::Uuid;
 #[derive(Debug, Clone)]
 pub struct OrchestratorConfig {
     pub max_iterations: usize,
+    /// Legacy ceiling for tokens per turn. The chat is now governed by the
+    /// `GENERATION_CHAT_MAX_TOKENS` setting (read on every turn via
+    /// [`crate::generation::read_generation_params`]); this field is kept for
+    /// API compatibility and is no longer used to build the chat request.
     pub max_tokens_per_turn: u32,
     pub model: String,
     pub enable_reflection: bool,
@@ -661,13 +665,21 @@ impl Orchestrator {
 
             tracing::debug!(iteration = %iterations, "ReAct loop iteration");
 
+            let generation = crate::generation::read_generation_params(
+                &self.db,
+                crate::generation::GenerationRole::Chat,
+            )
+            .await;
+
             let request = ChatRequest {
                 model: self.config.model.clone(),
                 messages: messages.clone(),
                 tools: Some(self.registry.definitions()),
-                temperature: None,
-                max_tokens: Some(self.config.max_tokens_per_turn),
+                temperature: Some(generation.temperature),
+                max_tokens: Some(generation.max_tokens),
                 stream: true,
+                reasoning: generation.reasoning,
+                response_format: None,
             };
 
             let request_body_str = serde_json::to_string(&request).unwrap_or_default();
@@ -1170,6 +1182,8 @@ Respond in JSON format:
             temperature: Some(0.3),
             max_tokens: Some(256),
             stream: false,
+            reasoning: None,
+            response_format: None,
         };
 
         let request_body_str = serde_json::to_string(&request).unwrap_or_default();
@@ -1340,7 +1354,9 @@ Respond in JSON format:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::provider::{ChatResponse, LLMError, StreamEvent, TokenUsage};
+    use crate::llm::provider::{
+        ChatResponse, LLMError, ReasoningEffort, ReasoningSpec, StreamEvent, TokenUsage,
+    };
     use crate::tools::permission::Permission;
     use crate::tools::r#trait::{Tool, ToolError, ToolResult};
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -2332,6 +2348,106 @@ mod tests {
             None,
             Arc::new(RwLock::new(None)),
         )
+    }
+
+    /// Mock LLM that captures the full `ChatRequest` of the first chat call.
+    struct FullChatRequestCaptureLLM {
+        captured: Arc<Mutex<Option<ChatRequest>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl LLMProvider for FullChatRequestCaptureLLM {
+        async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, LLMError> {
+            {
+                let mut slot = self.captured.lock().unwrap();
+                if slot.is_none() {
+                    *slot = Some(request.clone());
+                }
+            }
+            Ok(ChatResponse {
+                message: ChatMessage {
+                    role: "assistant".into(),
+                    content: "OK.".into(),
+                    tool_calls: None,
+                    tool_result: None,
+                    tool_call_id: None,
+                },
+                usage: None,
+            })
+        }
+
+        async fn chat_stream(
+            &self,
+            request: ChatRequest,
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, LLMError>> + Send>>, LLMError>
+        {
+            {
+                let mut slot = self.captured.lock().unwrap();
+                if slot.is_none() {
+                    *slot = Some(request);
+                }
+            }
+            let events: Vec<Result<StreamEvent, LLMError>> =
+                vec![Ok(StreamEvent::Done(ChatResponse {
+                    message: ChatMessage {
+                        role: "assistant".into(),
+                        content: "OK.".into(),
+                        tool_calls: None,
+                        tool_result: None,
+                        tool_call_id: None,
+                    },
+                    usage: None,
+                }))];
+            Ok(Box::pin(futures::stream::iter(events)))
+        }
+    }
+
+    /// Orchestrator whose mock LLM captures the full chat request.
+    async fn build_orchestrator_capturing_chat_request(
+        pool: SqlitePool,
+        captured: Arc<Mutex<Option<ChatRequest>>>,
+    ) -> Orchestrator {
+        let llm = Arc::new(FullChatRequestCaptureLLM { captured });
+        let registry = Arc::new(crate::tools::registry::ToolRegistry::new());
+        let guardrails = Arc::new(crate::orchestrator::guardrails::Guardrails::new(
+            registry.clone(),
+        ));
+        let context_builder = Arc::new(ContextBuilder::new());
+        let config = OrchestratorConfig {
+            enable_reflection: false,
+            ..Default::default()
+        };
+        Orchestrator::new(
+            llm,
+            registry,
+            guardrails,
+            context_builder,
+            config,
+            pool,
+            None,
+            None,
+            Arc::new(RwLock::new(None)),
+        )
+    }
+
+    /// Run `process_message_stream` once and return the captured chat request.
+    async fn captured_chat_request(pool: SqlitePool) -> ChatRequest {
+        let captured: Arc<Mutex<Option<ChatRequest>>> = Arc::new(Mutex::new(None));
+        let orchestrator = build_orchestrator_capturing_chat_request(pool, captured.clone()).await;
+
+        let (tx, mut rx) = mpsc::channel(100);
+        orchestrator
+            .process_message_stream("profile-1", "Hola", None, tx)
+            .await
+            .expect("process_message_stream must succeed");
+        while rx.recv().await.is_some() {}
+
+        let request = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("the chat request must have been captured");
+        request
     }
 
     #[test]
@@ -3939,5 +4055,118 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    // ─── Contract tests: el chat usa GENERATION_CHAT_* ─────────────────────
+
+    /// Scenario: El chat envía una temperatura explícita y los defaults.
+    #[tokio::test]
+    async fn test_chat_uses_generation_defaults() {
+        let pool = setup_test_db().await;
+
+        let request = captured_chat_request(pool).await;
+
+        assert_eq!(request.temperature, Some(0.7));
+        assert!(
+            request.reasoning.is_none(),
+            "default (empty) chat reasoning must be None, got {:?}",
+            request.reasoning
+        );
+        assert_eq!(request.max_tokens, Some(4096));
+    }
+
+    /// Scenario: El chat puede pedir un nivel de razonamiento.
+    #[tokio::test]
+    async fn test_chat_can_request_reasoning_level() {
+        let pool = setup_test_db().await;
+        crate::db::repos::settings::SettingsRepo::set(&pool, "GENERATION_CHAT_REASONING", "high")
+            .await
+            .unwrap();
+
+        let request = captured_chat_request(pool).await;
+
+        assert!(
+            matches!(
+                request.reasoning,
+                Some(ReasoningSpec::Effort(ReasoningEffort::High))
+            ),
+            "expected Effort(High), got {:?}",
+            request.reasoning
+        );
+    }
+
+    /// Scenario: `off` desactiva el razonamiento del chat.
+    #[tokio::test]
+    async fn test_chat_off_disables_reasoning() {
+        let pool = setup_test_db().await;
+        crate::db::repos::settings::SettingsRepo::set(&pool, "GENERATION_CHAT_REASONING", "off")
+            .await
+            .unwrap();
+
+        let request = captured_chat_request(pool).await;
+
+        assert!(
+            matches!(request.reasoning, Some(ReasoningSpec::Off)),
+            "expected Off, got {:?}",
+            request.reasoning
+        );
+    }
+
+    /// Scenario: Los tokens máximos del chat vienen de settings.
+    #[tokio::test]
+    async fn test_chat_max_tokens_from_settings() {
+        let pool = setup_test_db().await;
+        crate::db::repos::settings::SettingsRepo::set(&pool, "GENERATION_CHAT_MAX_TOKENS", "8000")
+            .await
+            .unwrap();
+
+        let request = captured_chat_request(pool).await;
+
+        assert_eq!(request.max_tokens, Some(8000));
+    }
+
+    /// Scenario: El camino de streaming usa los mismos parámetros.
+    #[tokio::test]
+    async fn test_chat_stream_path_uses_same_generation_params() {
+        let pool = setup_test_db().await;
+        crate::db::repos::settings::SettingsRepo::set(&pool, "GENERATION_CHAT_TEMPERATURE", "0.5")
+            .await
+            .unwrap();
+        crate::db::repos::settings::SettingsRepo::set(&pool, "GENERATION_CHAT_REASONING", "medium")
+            .await
+            .unwrap();
+
+        let request = captured_chat_request(pool).await;
+
+        assert_eq!(request.temperature, Some(0.5));
+        assert!(
+            matches!(
+                request.reasoning,
+                Some(ReasoningSpec::Effort(ReasoningEffort::Medium))
+            ),
+            "expected Effort(Medium), got {:?}",
+            request.reasoning
+        );
+    }
+
+    /// Scenario: Una temperatura no parseable cae al default con warning.
+    #[tokio::test]
+    async fn test_chat_unparseable_temperature_falls_back_to_default() {
+        let pool = setup_test_db().await;
+        crate::db::repos::settings::SettingsRepo::set(
+            &pool,
+            "GENERATION_CHAT_TEMPERATURE",
+            "caliente",
+        )
+        .await
+        .unwrap();
+
+        let request = captured_chat_request(pool).await;
+
+        assert_eq!(
+            request.temperature,
+            Some(0.7),
+            "an unparseable temperature must fall back to 0.7"
+        );
     }
 }
