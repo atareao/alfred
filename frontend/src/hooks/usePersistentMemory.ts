@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { api, ApiError } from "../api/client";
 import type { PersistentMemoryState } from "../types";
 
@@ -43,8 +43,22 @@ export function validatePersistentPayload(parsed: unknown): string | null {
     return `Clave no permitida: ${unknownKey}`;
   }
 
-  if (obj.system_rules !== undefined && !Array.isArray(obj.system_rules)) {
-    return "system_rules debe ser un array";
+  if (
+    obj.user_profile !== undefined &&
+    (obj.user_profile === null ||
+      typeof obj.user_profile !== "object" ||
+      Array.isArray(obj.user_profile))
+  ) {
+    return "user_profile debe ser un objeto";
+  }
+
+  if (obj.system_rules !== undefined) {
+    if (!Array.isArray(obj.system_rules)) {
+      return "system_rules debe ser un array";
+    }
+    if (!obj.system_rules.every((rule) => typeof rule === "string")) {
+      return "system_rules debe contener solo strings";
+    }
   }
 
   return null;
@@ -57,26 +71,35 @@ export function usePersistentMemory(): UsePersistentMemoryReturn {
   const [error, setError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
   const [conflict, setConflict] = useState<string | null>(null);
+  const mountedRef = useRef(true);
 
   const load = useCallback(() => {
     return api
       .getPersistentMemory()
       .then((data) => {
+        if (!mountedRef.current) return;
         setState(data);
         setError(null);
       })
       .catch((e: unknown) => {
+        if (!mountedRef.current) return;
         setError(
           e instanceof Error
             ? e.message
             : "Error al cargar la memoria persistente",
         );
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (mountedRef.current) setLoading(false);
+      });
   }, []);
 
   useEffect(() => {
+    mountedRef.current = true;
     void load();
+    return () => {
+      mountedRef.current = false;
+    };
   }, [load]);
 
   const save = useCallback(

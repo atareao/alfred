@@ -16,6 +16,8 @@ import { usePersistentMemory } from "../hooks/usePersistentMemory";
 const { Text } = Typography;
 const { TextArea } = Input;
 
+const DEFAULT_BUDGET_TOKENS = 500;
+
 export interface PersistentMemoryPanelProps {
   settings: Record<string, string> | null;
   updateSettings: (data: Record<string, string>) => Promise<void>;
@@ -33,18 +35,31 @@ export function PersistentMemoryPanel({
 
   const [draft, setDraft] = useState<string | null>(null);
   const [editBudget, setEditBudget] = useState<number | undefined>(undefined);
+  // Distingue «no editado» (mostrar el presupuesto guardado) de «vacío» (el
+  // usuario ha borrado el campo mientras escribe).
+  const [budgetDirty, setBudgetDirty] = useState(false);
 
   const formatted = state?.payload ? JSON.stringify(state.payload, null, 2) : "";
   const text = draft ?? formatted;
 
   const settingsBudget = settings?.PERSISTENT_MEMORY_BUDGET_TOKENS;
-  const budget =
+  const parsedBudget =
     settingsBudget !== undefined && settingsBudget !== ""
       ? parseInt(settingsBudget, 10)
       : (state?.budget_tokens ?? 0);
-  const budgetDraft = editBudget ?? (Number.isNaN(budget) ? null : budget);
+  // m3: nunca comparar ni pintar NaN; si el valor de settings no es parseable,
+  // cae al presupuesto del estado (o al default coherente).
+  const budget = Number.isNaN(parsedBudget)
+    ? (state?.budget_tokens ?? DEFAULT_BUDGET_TOKENS)
+    : parsedBudget;
+  const budgetDraft = budgetDirty ? (editBudget ?? null) : budget;
+
+  // M1: el valor editado debe reflejarse de inmediato en la comparación, sin
+  // esperar a guardar. Si el campo está vacío no hay valor editado, así que se
+  // usa el presupuesto vigente.
+  const effectiveBudget = editBudget ?? budget;
   const tokenCount = state?.token_count ?? 0;
-  const overBudget = tokenCount > budget;
+  const overBudget = tokenCount > effectiveBudget;
 
   const handleSave = async () => {
     const outcome = await save(text);
@@ -64,12 +79,16 @@ export function PersistentMemoryPanel({
   };
 
   const handleSaveBudget = async () => {
-    if (budgetDraft === null) return;
+    if (budgetDraft === null) {
+      messageApi.warning("Introduce un presupuesto válido");
+      return;
+    }
     try {
       await updateSettings({
         PERSISTENT_MEMORY_BUDGET_TOKENS: budgetDraft.toString(),
       });
       setEditBudget(undefined);
+      setBudgetDirty(false);
       messageApi.success("Presupuesto guardado");
     } catch {
       messageApi.error("Error al guardar el presupuesto");
@@ -98,7 +117,7 @@ export function PersistentMemoryPanel({
         <Text>Última actualización: {state?.updated_at ?? "—"}</Text>
 
         <Text type={overBudget ? "danger" : undefined}>
-          {tokenCount} / {budget} tokens
+          {tokenCount} / {effectiveBudget} tokens
           {overBudget ? " · Supera el presupuesto" : ""}
         </Text>
 
@@ -137,7 +156,10 @@ export function PersistentMemoryPanel({
             max={1000000}
             step={100}
             value={budgetDraft}
-            onChange={(value) => setEditBudget(value ?? undefined)}
+            onChange={(value) => {
+              setBudgetDirty(true);
+              setEditBudget(value ?? undefined);
+            }}
           />
           <Button onClick={handleSaveBudget} loading={savingSettings}>
             Guardar presupuesto

@@ -121,6 +121,53 @@ describe("usePersistentMemory", () => {
     expect(mockUpdate).not.toHaveBeenCalled();
   });
 
+  it("rechaza user_profile que no sea objeto", async () => {
+    const { result } = renderHook(() => usePersistentMemory());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    let outcome: string = "";
+    await act(async () => {
+      outcome = await result.current.save(
+        JSON.stringify({ schema_version: 1, user_profile: "no-objeto" }),
+      );
+    });
+
+    expect(outcome).toBe("invalid");
+    expect(result.current.error).toBeTruthy();
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it("rechaza system_rules con elementos que no son strings", async () => {
+    const { result } = renderHook(() => usePersistentMemory());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    let outcome: string = "";
+    await act(async () => {
+      outcome = await result.current.save(
+        JSON.stringify({ schema_version: 1, system_rules: [1, 2] }),
+      );
+    });
+
+    expect(outcome).toBe("invalid");
+    expect(result.current.error).toBeTruthy();
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it("muestra el error del servidor ante 422 y conserva el estado", async () => {
+    mockUpdate.mockRejectedValue(new ApiError("payload inválido", 422));
+    const { result } = renderHook(() => usePersistentMemory());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    let outcome: string = "";
+    await act(async () => {
+      outcome = await result.current.save(JSON.stringify({ schema_version: 1 }));
+    });
+
+    expect(outcome).toBe("error");
+    expect(result.current.error).toBe("payload inválido");
+    expect(result.current.state).toEqual(stateFixture);
+  });
+
   it("expone el warning devuelto por el servidor", async () => {
     mockUpdate.mockResolvedValue({
       ...stateFixture,

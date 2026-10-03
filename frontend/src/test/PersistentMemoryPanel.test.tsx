@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { App as AntdApp } from "antd";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 
 // ---------------------------------------------------------------------------
 // Ant Design matchMedia mock
@@ -55,6 +55,23 @@ const stateFixture = {
 const AppWrapper = ({ children }: { children: ReactNode }) => (
   <AntdApp>{children}</AntdApp>
 );
+
+/**
+ * Wrapper con estado que actualiza el prop `settings` al guardar, para poder
+ * comprobar que la comparación de tokens refleja el presupuesto vigente.
+ */
+function SettingsHarness() {
+  const [settings, setSettings] = useState<Record<string, string>>({
+    PERSISTENT_MEMORY_BUDGET_TOKENS: "500",
+  });
+  return (
+    <PersistentMemoryPanel
+      settings={settings}
+      savingSettings={false}
+      updateSettings={async (data) => setSettings(data)}
+    />
+  );
+}
 
 function renderPanel(
   props: Partial<React.ComponentProps<typeof PersistentMemoryPanel>> = {},
@@ -213,5 +230,54 @@ describe("PersistentMemoryPanel", () => {
     });
     expect(mockUpdate).not.toHaveBeenCalled();
     expect(mockClear).not.toHaveBeenCalled();
+  });
+
+  it("refleja de inmediato el presupuesto editado en la comparación de tokens", async () => {
+    render(<SettingsHarness />, { wrapper: AppWrapper });
+    await waitForTextarea();
+
+    const input = screen.getByLabelText("PERSISTENT_MEMORY_BUDGET_TOKENS");
+    fireEvent.change(input, { target: { value: "800" } });
+
+    expect(await screen.findByText(/120 \/ 800 tokens/)).toBeInTheDocument();
+  });
+
+  it("mantiene el presupuesto editado tras guardarlo (settings actualizado)", async () => {
+    const user = userEvent.setup();
+    render(<SettingsHarness />, { wrapper: AppWrapper });
+    await waitForTextarea();
+
+    const input = screen.getByLabelText("PERSISTENT_MEMORY_BUDGET_TOKENS");
+    fireEvent.change(input, { target: { value: "800" } });
+    await user.click(saveBudgetButton());
+
+    expect(await screen.findByText(/120 \/ 800 tokens/)).toBeInTheDocument();
+  });
+
+  it("permite vaciar el campo de presupuesto mientras se escribe", async () => {
+    renderPanel();
+    await waitForTextarea();
+
+    const input = screen.getByLabelText(
+      "PERSISTENT_MEMORY_BUDGET_TOKENS",
+    ) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "" } });
+
+    expect(input.value).toBe("");
+  });
+
+  it("avisa al intentar guardar un presupuesto vacío", async () => {
+    const user = userEvent.setup();
+    const { updateSettings } = renderPanel();
+    await waitForTextarea();
+
+    const input = screen.getByLabelText("PERSISTENT_MEMORY_BUDGET_TOKENS");
+    fireEvent.change(input, { target: { value: "" } });
+    await user.click(saveBudgetButton());
+
+    expect(
+      await screen.findByText("Introduce un presupuesto válido"),
+    ).toBeInTheDocument();
+    expect(updateSettings).not.toHaveBeenCalled();
   });
 });
