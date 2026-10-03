@@ -7,6 +7,7 @@ pub mod handlers;
 pub mod llm;
 pub mod models;
 pub mod orchestrator;
+pub mod persistent_memory;
 pub mod routes;
 pub mod services;
 pub mod telemetry;

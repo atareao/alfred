@@ -113,6 +113,7 @@ impl WorkerPool {
                     overlap: _config.memory_overlap,
                     poll_interval_minutes: _config.memory_poll_interval_minutes,
                     model: _config.memory_model.clone(),
+                    semantic_model: _config.semantic_model.clone(),
                 };
                 let handle = EpisodicMemoryWorker::start(
                     db,
@@ -282,6 +283,7 @@ mod tests {
             memory_overlap: 2,
             memory_poll_interval_minutes: 30,
             memory_model: "mistralai/mistral-small".into(),
+            semantic_model: "mistralai/mistral-small".into(),
             rag_budget_tokens: 2000,
             embedding_provider: None,
             embedding_model: None,

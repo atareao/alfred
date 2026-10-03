@@ -129,3 +129,7 @@ path = "tests/api/shutdown.rs"
 [[test]]
 name = "last-call-pipeline"
 path = "tests/api/last_call_pipeline.rs"
+
+[[test]]
+name = "persistent-memory-core"
+path = "tests/db/persistent_memory_core.rs"

@@ -316,16 +316,30 @@ struct NoNetworkLLM;
 
 #[async_trait]
 impl LLMProvider for NoNetworkLLM {
-    async fn chat(&self, _request: ChatRequest) -> Result<ChatResponse, LLMError> {
-        Ok(ChatResponse {
-            message: ChatMessage {
-                role: "assistant".into(),
-                content: "\
+    async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, LLMError> {
+        // The worker now makes two calls per pass: the archivist (Layer B) and
+        // the consolidator (Layer C). Reply with a valid JSON state for the
+        // latter, told apart by its prompt marker.
+        let system_content = request
+            .messages
+            .first()
+            .map(|m| m.content.as_str())
+            .unwrap_or_default();
+        let content = if system_content.contains("consolidador de memoria persistente") {
+            r#"{"schema_version":1,"user_profile":{"note":"reset test"},"system_rules":["una regla"]}"#
+                .to_string()
+        } else {
+            "\
 - FECHA/CONTEXTO: test de reseteo
 - TEMAS TRATADOS: reconstrucción del índice
 - HECHOS Y DECISIONES: la fuente se ha reseteado
 - SÍNTESIS: el worker rearchiva desde el mensaje original"
-                    .into(),
+                .to_string()
+        };
+        Ok(ChatResponse {
+            message: ChatMessage {
+                role: "assistant".into(),
+                content,
                 tool_calls: None,
                 tool_result: None,
                 tool_call_id: None,

@@ -209,6 +209,15 @@ const MAX_TOOL_RETRIES: usize = 5;
 /// the editable `settings.system_prompt` (design D2).
 const EPISODIC_MEMORY_SECTION_TITLE: &str = "# CONTEXTO DE MEMORIA EPISÓDICA (CAPA B)";
 
+/// Title of the code-composed persistent-memory section (Layer C). It is
+/// injected between the prompt and the episodic section when the state is
+/// non-empty, and omitted entirely otherwise.
+const PERSISTENT_MEMORY_SECTION_TITLE: &str = "# MEMORIA PERSISTENTE (CAPA C)";
+
+/// Explicit instruction that the persistent state is stable, permanent context
+/// and not the user's current turn.
+const PERSISTENT_MEMORY_INSTRUCTION: &str = "Estado estable del usuario (perfil y reglas fijadas). Es contexto permanente; NO es el turno actual del usuario.";
+
 /// Explicit instruction that the recovered cards are background, not the turn
 /// currently being answered. Without it the model can reply to a memory as if
 /// it were the user's current message.
@@ -239,13 +248,31 @@ fn compose_episodic_memory_block(memories: &[String]) -> Option<String> {
     Some(block)
 }
 
+/// Compose the persistent-memory section (Layer C) from the raw stored JSON
+/// payload, or `None` when there is nothing to inject.
+///
+/// The payload is re-serialized in its **minified** form, preceded by a short
+/// header and a one-line purpose. An empty state — or an unparseable payload —
+/// yields `None`, so no header, marker or blank line is ever left behind. The
+/// state is read in every request construction by the caller.
+fn compose_persistent_memory_block(payload_json: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(payload_json).ok()?;
+    if crate::persistent_memory::is_empty_state(&value) {
+        return None;
+    }
+    Some(format!(
+        "{PERSISTENT_MEMORY_SECTION_TITLE}\n{PERSISTENT_MEMORY_INSTRUCTION}\n{}",
+        crate::persistent_memory::minified_json(&value)
+    ))
+}
+
 /// Compose the single `role:"system"` message that opens every request.
 ///
 /// Sections are appended in order and the ones that are present are separated
 /// by a blank line (`\n\n`):
 ///
 ///   1. the prompt (`settings.system_prompt`),
-///   2. the reserved persistent-memory slot (empty today; insertion point),
+///   2. the persistent-memory section (Capa C), when the state is non-empty,
 ///   3. the episodic-memory section, when there are cards, and
 ///   4. the date/time/location section, when the browser sent context.
 ///
@@ -528,13 +555,29 @@ impl Orchestrator {
             None
         };
 
-        // Single system message: prompt → reserved persistent-memory slot
-        // (empty today) → episodic section → browser context. Absent sections
+        // Layer C: read the persistent state on EVERY request construction and
+        // inject its minified section between the prompt and the episodic one.
+        // A missing row or an empty state leaves no trace.
+        let persistent_section =
+            match crate::db::repos::persistent_memory::PersistentMemoryRepo::get(&self.db).await {
+                Ok(Some(state)) => compose_persistent_memory_block(&state.payload),
+                Ok(None) => None,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "failed to read persistent memory; omitting the section"
+                    );
+                    None
+                }
+            };
+
+        // Single system message: prompt → persistent-memory section (Capa C,
+        // when non-empty) → episodic section → browser context. Absent sections
         // leave no trace, so with only the prompt the message is exactly the
         // prompt, and the browser section always closes it.
         let system_content = compose_system_message(
             &system_prompt,
-            None, // persistent-memory slot: reserved, intentionally empty for now
+            persistent_section,
             compose_episodic_memory_block(&ctx.rag_memories),
             browser_section,
         );
@@ -1776,19 +1819,18 @@ mod tests {
         Ok(())
     }
 
-    // ─── unified-system-message block 4: reserved persistent-memory slot ──────
+    // ─── unified-system-message: persistent-memory section (Capa C) ──────────
 
-    /// 4.1 — the composer accepts an OPTIONAL persistent-memory section placed
-    /// between the prompt and the episodic one. With the slot empty (`None`,
-    /// today's only value) it emits nothing: no title, marker, comment,
-    /// separator or stray blank line.
+    /// The composer accepts an OPTIONAL persistent-memory section placed
+    /// between the prompt and the episodic one. When it is absent (`None`) it
+    /// emits nothing: no title, marker, comment, separator or stray blank line.
     #[test]
-    fn compose_system_message_reserves_persistent_slot_without_text() {
-        // Empty slot: prompt + episodic only, no trace of the reservation.
+    fn compose_system_message_places_persistent_section_between_prompt_and_episodic() {
+        // Absent section: prompt + episodic only, no trace of a placeholder.
         let empty = compose_system_message("PROMPT", None, Some("EPISODIC".to_string()), None);
         assert_eq!(empty, "PROMPT\n\nEPISODIC");
 
-        // A future section would land exactly between prompt and episodic.
+        // A present section lands exactly between prompt and episodic.
         let filled = compose_system_message(
             "PROMPT",
             Some("PERSISTENT".to_string()),
@@ -1798,14 +1840,15 @@ mod tests {
         assert_eq!(filled, "PROMPT\n\nPERSISTENT\n\nEPISODIC\n\nBROWSER");
     }
 
-    /// 4.1 (request level) — the assembled request carries no persistent-memory
-    /// section at all: the prompt and the episodic section are adjacent, with no
-    /// marker between them.
+    /// Request level — with no persistent state, the assembled request carries
+    /// no persistent-memory section at all: the prompt and the episodic section
+    /// are adjacent, with no marker between them.
     #[tokio::test]
-    async fn request_has_no_persistent_memory_section() -> Result<(), Box<dyn std::error::Error>> {
+    async fn request_without_persistent_state_has_no_section(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let pool = setup_test_db().await;
         seed_one_memory(&pool).await;
-        let prompt = "PROMPT_HUECO";
+        let prompt = "PROMPT_SIN_ESTADO";
         crate::db::repos::settings::SettingsRepo::set(&pool, "system_prompt", prompt).await?;
 
         let captured: Arc<Mutex<Option<Vec<ChatMessage>>>> = Arc::new(Mutex::new(None));
@@ -1836,8 +1879,8 @@ mod tests {
         Ok(())
     }
 
-    /// 4.3 — full order with prompt, cards and browser context:
-    /// prompt → (empty persistent slot) → episodic → date/time/location.
+    /// Full order with prompt, cards and browser context (no persistent state):
+    /// prompt → episodic → date/time/location.
     #[tokio::test]
     async fn single_system_message_full_section_order() -> Result<(), Box<dyn std::error::Error>> {
         let pool = setup_test_db().await;
@@ -1885,7 +1928,143 @@ mod tests {
         assert!(content.ends_with("Ubicación: Madrid (40.4168, -3.7038)."));
         assert!(
             content.starts_with(&format!("{prompt}\n\n{EPISODIC_MEMORY_SECTION_TITLE}")),
-            "the empty persistent slot leaves no text between prompt and episodic"
+            "the absent persistent section leaves no text between prompt and episodic"
+        );
+
+        Ok(())
+    }
+
+    // ─── Capa C: sección de memoria persistente (Bloque 6) ─────────────────
+
+    /// The composer minifies the stored payload and omits empty/unparseable
+    /// states entirely.
+    #[test]
+    fn compose_persistent_memory_block_minifies_and_omits_empty() {
+        let non_empty = compose_persistent_memory_block(
+            r#"{ "schema_version": 1, "user_profile": {"city": "Madrid"} }"#,
+        )
+        .expect("a non-empty state must produce a section");
+        assert!(
+            non_empty.starts_with(PERSISTENT_MEMORY_SECTION_TITLE),
+            "the section starts with its title, got {non_empty:?}"
+        );
+        assert!(
+            non_empty.contains(PERSISTENT_MEMORY_INSTRUCTION),
+            "the section states its purpose, got {non_empty:?}"
+        );
+        assert!(
+            non_empty.contains(r#""user_profile":{"city":"Madrid"}"#),
+            "the payload must be minified, got {non_empty:?}"
+        );
+
+        // Empty states leave no trace.
+        assert!(compose_persistent_memory_block(r#"{"schema_version":1}"#).is_none());
+        assert!(compose_persistent_memory_block(
+            r#"{"schema_version":1,"user_profile":{},"system_rules":[]}"#
+        )
+        .is_none());
+
+        // Unparseable payloads leave no trace.
+        assert!(compose_persistent_memory_block("not json").is_none());
+    }
+
+    /// A non-empty state is injected between the prompt and the episodic
+    /// section, as minified JSON under a short header.
+    #[tokio::test]
+    async fn persistent_memory_section_is_injected_between_prompt_and_episodic(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+        seed_one_memory(&pool).await;
+        seed_persistent_state(
+            &pool,
+            r#"{"schema_version":1,"user_profile":{"city":"Madrid"}}"#,
+        )
+        .await;
+
+        let prompt = "PROMPT_PERSIST";
+        crate::db::repos::settings::SettingsRepo::set(&pool, "system_prompt", prompt).await?;
+
+        let captured: Arc<Mutex<Option<Vec<ChatMessage>>>> = Arc::new(Mutex::new(None));
+        let orchestrator = build_orchestrator_with_full_capture(
+            pool.clone(),
+            captured.clone(),
+            memory_context_builder(pool.clone()),
+        )
+        .await;
+
+        let (tx, mut rx) = mpsc::channel(100);
+        orchestrator
+            .process_message_stream("profile-1", "Hola", None, tx)
+            .await?;
+        while rx.recv().await.is_some() {}
+
+        let messages = captured.lock().unwrap().clone().unwrap();
+        let system_messages: Vec<&ChatMessage> =
+            messages.iter().filter(|m| m.role == "system").collect();
+        assert_eq!(system_messages.len(), 1);
+        let content = &system_messages[0].content;
+
+        let prompt_pos = content.find(prompt).expect("prompt present");
+        let persistent_pos = content
+            .find(PERSISTENT_MEMORY_SECTION_TITLE)
+            .expect("persistent section present");
+        let episodic_pos = content
+            .find(EPISODIC_MEMORY_SECTION_TITLE)
+            .expect("episodic section present");
+        assert!(prompt_pos < persistent_pos, "prompt before persistent");
+        assert!(
+            persistent_pos < episodic_pos,
+            "persistent section between the prompt and the episodic one"
+        );
+        assert!(
+            content.contains(r#""user_profile":{"city":"Madrid"}"#),
+            "the minified payload must be present, got {content:?}"
+        );
+
+        Ok(())
+    }
+
+    /// An empty stored state leaves no trace: no header, no marker, no blank
+    /// line between the prompt and the episodic section.
+    #[tokio::test]
+    async fn empty_persistent_state_leaves_no_trace() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+        seed_one_memory(&pool).await;
+        seed_persistent_state(
+            &pool,
+            r#"{"schema_version":1,"user_profile":{},"system_rules":[]}"#,
+        )
+        .await;
+
+        let prompt = "PROMPT_EMPTY_PERSIST";
+        crate::db::repos::settings::SettingsRepo::set(&pool, "system_prompt", prompt).await?;
+
+        let captured: Arc<Mutex<Option<Vec<ChatMessage>>>> = Arc::new(Mutex::new(None));
+        let orchestrator = build_orchestrator_with_full_capture(
+            pool.clone(),
+            captured.clone(),
+            memory_context_builder(pool.clone()),
+        )
+        .await;
+
+        let (tx, mut rx) = mpsc::channel(100);
+        orchestrator
+            .process_message_stream("profile-1", "Hola", None, tx)
+            .await?;
+        while rx.recv().await.is_some() {}
+
+        let messages = captured.lock().unwrap().clone().unwrap();
+        let system_messages: Vec<&ChatMessage> =
+            messages.iter().filter(|m| m.role == "system").collect();
+        let content = &system_messages[0].content;
+
+        assert!(
+            !content.contains(PERSISTENT_MEMORY_SECTION_TITLE),
+            "an empty state must not inject the persistent header"
+        );
+        assert!(
+            content.starts_with(&format!("{prompt}\n\n{EPISODIC_MEMORY_SECTION_TITLE}")),
+            "an empty state leaves no trace between prompt and episodic, got {content:?}"
         );
 
         Ok(())
@@ -2103,6 +2282,17 @@ mod tests {
             .execute(pool)
             .await
             .expect("insert vec_memory row");
+    }
+
+    /// Seed the Layer C `persistent_memory` global state with a raw payload.
+    async fn seed_persistent_state(pool: &SqlitePool, payload: &str) {
+        crate::db::repos::persistent_memory::PersistentMemoryRepo::upsert(
+            pool,
+            payload,
+            "2026-10-01T10:00:00Z",
+        )
+        .await
+        .expect("upsert persistent memory");
     }
 
     /// Builder wired with pool + provider and one seeded memory, so the RAG

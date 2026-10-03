@@ -130,6 +130,7 @@ mod tests {
             memory_overlap: 2,
             memory_poll_interval_minutes: 30,
             memory_model: "mistralai/mistral-small".into(),
+            semantic_model: "mistralai/mistral-small".into(),
             rag_budget_tokens: 2000,
             embedding_provider: None,
             embedding_model: None,
